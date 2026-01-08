@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smt-oversub-model"
+version = "0.1.0"
+description = "Framework for modeling SMT vs non-SMT oversubscription carbon/TCO tradeoffs"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "Jaylen", email = "example@cmu.edu"}
+]
+keywords = ["cloud", "virtualization", "carbon", "smt", "oversubscription"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: System :: Hardware",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+dependencies = []
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.5", "numpy>=1.20"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+all = ["matplotlib>=3.5", "numpy>=1.20", "pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+include = ["smt_oversub_model*"]
+
+[tool.pytest.ini_options]
+testpaths = ["smt_oversub_model"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
