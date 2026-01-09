@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**Note**: This repo is for personal use/experimentation.
+
+**Environment**: Use `python` (not `python3`) for running Python commands.
+
 ## Build and Test Commands
 
 ```bash
@@ -38,6 +42,21 @@ This is a pure Python library (no external dependencies for core functionality) 
 
 - **`create_default_sweeper()`**: Factory function for creating a sweeper with sensible defaults, accepting keyword overrides.
 
+### Analysis Utilities (`analysis.py`)
+
+Flexible API for comparing arbitrary scenarios without the breakeven-finding workflow:
+
+- **`compare_smt_vs_nosmt()`**: Quick comparison of SMT vs non-SMT at the same oversubscription ratio.
+- **`compare_oversub_ratios()`**: Compare different R values for the same processor type.
+- **`ScenarioBuilder`**: Build custom scenarios with processor/cost overrides.
+- **`compare_scenarios()`**: General-purpose scenario comparison.
+
+### Plotting (`plot.py`)
+
+- **`plot_scenarios()`**: Flexible plotting for arbitrary scenario lists. Shows TCO and Carbon stacked bars with baseline diff annotations.
+- **`plot_scenario_comparison()`**: Plot results from Runner for breakeven analysis.
+- **`plot_sweep_breakeven()`**: Plot breakeven curves across parameter sweeps.
+
 ### Key Calculations
 
 Server count: `ceil(total_vcpus / (pcpus_per_server * oversub_ratio))`
@@ -46,8 +65,14 @@ Effective utilization: `min(1.0, (total_vcpus * avg_util) / (num_servers * pcpus
 
 Total carbon: Embodied (servers * kg_per_server) + Operational (energy_kwh * carbon_intensity)
 
-### Three Scenarios Compared
+### Three Scenarios Compared (Breakeven Analysis)
 
 1. **Baseline**: SMT with no oversubscription (R=1.0)
 2. **SMT + Oversub**: SMT with achievable oversubscription (default R=1.3) plus utilization overhead
 3. **Non-SMT + Oversub**: Binary search finds the R that matches SMT+Oversub carbon/TCO
+
+## Example Notebooks
+
+See `notebooks/` for Jupyter notebooks demonstrating various analyses:
+
+- **`smt_vs_nosmt_comparison.ipynb`**: Compare SMT vs non-SMT at the same oversubscription ratio

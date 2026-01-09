@@ -64,11 +64,24 @@ from .runner import (
     load_result,
 )
 
+# Analysis utilities
+from .analysis import (
+    ScenarioBuilder,
+    ScenarioSpec,
+    ProcessorDefaults,
+    CostDefaults,
+    evaluate_scenarios,
+    compare_scenarios,
+    compare_smt_vs_nosmt,
+    compare_oversub_ratios,
+)
+
 # Plotting (optional, requires matplotlib)
 try:
     from .plot import (
         plot_scenario_comparison,
         plot_sweep_breakeven,
+        plot_scenarios,
         plot_result,
     )
     _HAS_PLOT = True
@@ -76,6 +89,7 @@ except ImportError:
     _HAS_PLOT = False
     plot_scenario_comparison = None
     plot_sweep_breakeven = None
+    plot_scenarios = None
     plot_result = None
 
 __all__ = [
@@ -108,9 +122,19 @@ __all__ = [
     'RunResult',
     'save_result',
     'load_result',
+    # Analysis utilities
+    'ScenarioBuilder',
+    'ScenarioSpec',
+    'ProcessorDefaults',
+    'CostDefaults',
+    'evaluate_scenarios',
+    'compare_scenarios',
+    'compare_smt_vs_nosmt',
+    'compare_oversub_ratios',
     # Plotting (optional)
     'plot_scenario_comparison',
     'plot_sweep_breakeven',
+    'plot_scenarios',
     'plot_result',
 ]
 
