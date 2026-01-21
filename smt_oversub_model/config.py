@@ -9,22 +9,30 @@ from typing import Optional, Callable, List, Any, Dict
 import json
 from pathlib import Path
 
+from .model import polynomial_power_curve_fn
+
 
 # --- Power Curve Presets ---
 
 POWER_CURVE_PRESETS: Dict[str, Callable[[float], float]] = {
     "linear": lambda u: u,
     "specpower": lambda u: u ** 0.9,
+    "polynomial": polynomial_power_curve_fn(),  # Default freq
 }
 
 
-def make_power_curve_fn(curve_type: str, exponent: Optional[float] = None) -> Callable[[float], float]:
+def make_power_curve_fn(
+    curve_type: str,
+    exponent: Optional[float] = None,
+    freq_mhz: Optional[float] = None,
+) -> Callable[[float], float]:
     """
-    Create a power curve function from a type name and optional exponent.
+    Create a power curve function from a type name and optional parameters.
 
     Args:
-        curve_type: One of "linear", "power", or "specpower"
+        curve_type: One of "linear", "power", "specpower", or "polynomial"
         exponent: Required for "power" type, ignored for others
+        freq_mhz: Optional frequency for "polynomial" type (default 3500 MHz)
 
     Returns:
         Callable mapping utilization [0,1] -> [0,1]
@@ -38,9 +46,12 @@ def make_power_curve_fn(curve_type: str, exponent: Optional[float] = None) -> Ca
             raise ValueError("power curve type requires 'exponent' parameter")
         exp = exponent  # Capture in closure
         return lambda u: u ** exp
+    elif curve_type == "polynomial":
+        freq = freq_mhz if freq_mhz is not None else 3500.0
+        return polynomial_power_curve_fn(freq_mhz=freq)
     else:
         raise ValueError(f"Unknown power curve type: {curve_type}. "
-                        f"Valid types: linear, power, specpower")
+                        f"Valid types: linear, power, specpower, polynomial")
 
 
 # --- Config Dataclasses ---
@@ -50,15 +61,18 @@ class PowerCurveSpec:
     """Serializable specification for a power curve."""
     type: str = "specpower"
     exponent: Optional[float] = None
+    freq_mhz: Optional[float] = None  # For polynomial curve type
 
     def to_callable(self) -> Callable[[float], float]:
         """Convert spec to actual callable function."""
-        return make_power_curve_fn(self.type, self.exponent)
+        return make_power_curve_fn(self.type, self.exponent, self.freq_mhz)
 
     def to_dict(self) -> dict:
         d = {"type": self.type}
         if self.exponent is not None:
             d["exponent"] = self.exponent
+        if self.freq_mhz is not None:
+            d["freq_mhz"] = self.freq_mhz
         return d
 
     @classmethod
@@ -66,6 +80,7 @@ class PowerCurveSpec:
         return cls(
             type=data.get("type", "specpower"),
             exponent=data.get("exponent"),
+            freq_mhz=data.get("freq_mhz"),
         )
 
 
@@ -351,7 +366,7 @@ def validate_config(config: ExperimentConfig) -> List[str]:
     if config.power_curve.type == "power" and config.power_curve.exponent is None:
         errors.append("power_curve type 'power' requires 'exponent' parameter")
 
-    if config.power_curve.type not in ("linear", "power", "specpower"):
+    if config.power_curve.type not in ("linear", "power", "specpower", "polynomial"):
         errors.append(f"Unknown power_curve type: {config.power_curve.type}")
 
     # Check sweep if present

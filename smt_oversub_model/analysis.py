@@ -41,12 +41,14 @@ class ProcessorDefaults:
     smt_threads_per_core: int = 2
     smt_power_idle_w: float = 100.0
     smt_power_max_w: float = 400.0
+    smt_core_overhead: int = 0  # pCPUs reserved for host
 
     # Non-SMT processor
     nosmt_physical_cores: int = 48
     nosmt_threads_per_core: int = 1
     nosmt_power_ratio: float = 0.85  # Relative to SMT max power
     nosmt_idle_ratio: float = 0.9    # Relative to SMT idle power
+    nosmt_core_overhead: int = 0  # pCPUs reserved for host
 
 
 @dataclass
@@ -99,6 +101,7 @@ class ScenarioBuilder:
         threads_per_core = overrides.get('threads_per_core', self.proc.smt_threads_per_core)
         power_idle = overrides.get('power_idle_w', self.proc.smt_power_idle_w)
         power_max = overrides.get('power_max_w', self.proc.smt_power_max_w)
+        core_overhead = overrides.get('core_overhead', self.proc.smt_core_overhead)
 
         power_curve = PowerCurve(
             p_idle=power_idle,
@@ -110,12 +113,14 @@ class ScenarioBuilder:
             physical_cores=physical_cores,
             threads_per_core=threads_per_core,
             power_curve=power_curve,
+            core_overhead=core_overhead,
         )
 
     def build_nosmt_processor(self, **overrides) -> ProcessorConfig:
         """Build a non-SMT processor config with optional overrides."""
         physical_cores = overrides.get('physical_cores', self.proc.nosmt_physical_cores)
         threads_per_core = overrides.get('threads_per_core', self.proc.nosmt_threads_per_core)
+        core_overhead = overrides.get('core_overhead', self.proc.nosmt_core_overhead)
 
         # Power derived from SMT power with ratios
         power_idle = overrides.get(
@@ -137,6 +142,7 @@ class ScenarioBuilder:
             physical_cores=physical_cores,
             threads_per_core=threads_per_core,
             power_curve=power_curve,
+            core_overhead=core_overhead,
         )
 
     def build_scenario(
@@ -224,6 +230,7 @@ def evaluate_scenarios(
             'is_smt': spec.processor.threads_per_core > 1,
             'physical_cores': spec.processor.physical_cores,
             'threads_per_core': spec.processor.threads_per_core,
+            'core_overhead': spec.processor.core_overhead,
             **asdict(result),
         })
 
@@ -306,6 +313,8 @@ def compare_smt_vs_nosmt(
     smt_power_max_w: float = 400.0,
     nosmt_power_ratio: float = 0.85,
     nosmt_idle_ratio: float = 0.9,
+    smt_core_overhead: int = 0,
+    nosmt_core_overhead: int = 0,
     # Cost overrides
     embodied_carbon_kg: float = 1000.0,
     server_cost_usd: float = 10000.0,
@@ -347,9 +356,11 @@ def compare_smt_vs_nosmt(
         smt_physical_cores=smt_physical_cores,
         smt_power_idle_w=smt_power_idle_w,
         smt_power_max_w=smt_power_max_w,
+        smt_core_overhead=smt_core_overhead,
         nosmt_physical_cores=nosmt_physical_cores,
         nosmt_power_ratio=nosmt_power_ratio,
         nosmt_idle_ratio=nosmt_idle_ratio,
+        nosmt_core_overhead=nosmt_core_overhead,
     )
 
     cost_defaults = CostDefaults(
@@ -409,9 +420,11 @@ def compare_oversub_ratios(
         smt_physical_cores=kwargs.get('smt_physical_cores', 48),
         smt_power_idle_w=kwargs.get('smt_power_idle_w', 100.0),
         smt_power_max_w=kwargs.get('smt_power_max_w', 400.0),
+        smt_core_overhead=kwargs.get('smt_core_overhead', 0),
         nosmt_physical_cores=kwargs.get('nosmt_physical_cores', 48),
         nosmt_power_ratio=kwargs.get('nosmt_power_ratio', 0.85),
         nosmt_idle_ratio=kwargs.get('nosmt_idle_ratio', 0.9),
+        nosmt_core_overhead=kwargs.get('nosmt_core_overhead', 0),
     )
 
     cost_defaults = CostDefaults(

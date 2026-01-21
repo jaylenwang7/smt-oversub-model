@@ -37,34 +37,38 @@ class ParameterSweeper:
         # Base processor configs
         smt_physical_cores: int = 64,
         nosmt_physical_cores: int = 48,  # Parameterized
-        
+        smt_core_overhead: int = 0,  # pCPUs reserved for host on SMT servers
+        nosmt_core_overhead: int = 0,  # pCPUs reserved for host on non-SMT servers
+
         # Power curves
         smt_p_idle: float = 100.0,
         smt_p_max: float = 300.0,
         nosmt_power_ratio: float = 0.85,  # Non-SMT P_max as fraction of SMT
         nosmt_idle_ratio: float = 0.85,   # Non-SMT P_idle as fraction of SMT
-        
+
         # Oversubscription
         smt_oversub_ratio: float = 1.3,
         smt_util_overhead: float = 0.05,  # 5% util overhead from SMT contention
         nosmt_util_overhead: float = 0.0,
-        
+
         # Workload
         total_vcpus: int = 10000,
         avg_util: float = 0.3,
-        
+
         # Cost params
         embodied_carbon_kg: float = 1000.0,
         server_cost_usd: float = 15000.0,
         carbon_intensity_g_kwh: float = 400.0,
         electricity_cost_usd_kwh: float = 0.10,
         lifetime_years: float = 4.0,
-        
+
         # Power curve shape (default: slightly sublinear)
         power_curve_fn: Callable[[float], float] = None,
     ):
         self.smt_physical_cores = smt_physical_cores
         self.nosmt_physical_cores = nosmt_physical_cores
+        self.smt_core_overhead = smt_core_overhead
+        self.nosmt_core_overhead = nosmt_core_overhead
         self.smt_p_idle = smt_p_idle
         self.smt_p_max = smt_p_max
         self.nosmt_power_ratio = nosmt_power_ratio
@@ -98,11 +102,13 @@ class ParameterSweeper:
             physical_cores=self.smt_physical_cores,
             threads_per_core=2,
             power_curve=smt_power,
+            core_overhead=self.smt_core_overhead,
         )
         nosmt_proc = ProcessorConfig(
             physical_cores=self.nosmt_physical_cores,
             threads_per_core=1,
             power_curve=nosmt_power,
+            core_overhead=self.nosmt_core_overhead,
         )
         
         workload = WorkloadParams(

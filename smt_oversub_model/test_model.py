@@ -223,23 +223,28 @@ class TestBreakevenSearch:
         assert breakeven > 1.0
     
     def test_breakeven_achieves_target(self, model_setup):
-        """At breakeven, carbon should match target."""
+        """At breakeven, carbon should match target.
+
+        Note: Due to discrete server counts (ceiling function), the binary search
+        can only approximate the target. We use 2% tolerance to account for step
+        changes in carbon when server count changes by 1.
+        """
         smt_proc, nosmt_proc, workload, cost = model_setup
         model = OverssubModel(workload, cost)
-        
+
         smt_scenario = ScenarioParams(smt_proc, 1.3, 0.05)
         smt_result = model.evaluate_scenario(smt_scenario)
-        
+
         breakeven = model.find_breakeven_oversub(
             smt_result, nosmt_proc, 0.0, metric='carbon'
         )
-        
+
         if breakeven:
             nosmt_scenario = ScenarioParams(nosmt_proc, breakeven, 0.0)
             nosmt_result = model.evaluate_scenario(nosmt_scenario)
-            
+
             assert nosmt_result.total_carbon_kg == pytest.approx(
-                smt_result.total_carbon_kg, rel=0.01
+                smt_result.total_carbon_kg, rel=0.02
             )
 
 
@@ -294,6 +299,92 @@ class TestParameterSweeper:
         # So embodied savings matter relatively less
         # Breakeven oversub should change accordingly
         assert low_result['breakeven_oversub_carbon'] != high_result['breakeven_oversub_carbon']
+
+
+class TestCoreOverhead:
+    """Tests for core overhead functionality."""
+
+    def test_available_pcpus_no_overhead(self):
+        """With no overhead, available_pcpus equals pcpus."""
+        power = PowerCurve(100, 300)
+        proc = ProcessorConfig(physical_cores=64, threads_per_core=2, power_curve=power)
+        assert proc.available_pcpus == proc.pcpus == 128
+
+    def test_available_pcpus_with_overhead(self):
+        """With overhead, available_pcpus is reduced."""
+        power = PowerCurve(100, 300)
+        proc = ProcessorConfig(physical_cores=64, threads_per_core=2, power_curve=power, core_overhead=8)
+        assert proc.pcpus == 128
+        assert proc.available_pcpus == 120
+
+    def test_available_pcpus_nosmt_with_overhead(self):
+        """Non-SMT processor with overhead."""
+        power = PowerCurve(100, 300)
+        proc = ProcessorConfig(physical_cores=48, threads_per_core=1, power_curve=power, core_overhead=4)
+        assert proc.pcpus == 48
+        assert proc.available_pcpus == 44
+
+    def test_available_pcpus_clamps_to_zero(self):
+        """available_pcpus should not go negative."""
+        power = PowerCurve(100, 300)
+        proc = ProcessorConfig(physical_cores=8, threads_per_core=1, power_curve=power, core_overhead=100)
+        assert proc.available_pcpus == 0
+
+    def test_server_count_with_overhead(self):
+        """Server count should increase when cores are reserved for host."""
+        power = PowerCurve(100, 300)
+        # 64 physical * 2 threads = 128 pCPUs, minus 8 overhead = 120 available
+        proc = ProcessorConfig(physical_cores=64, threads_per_core=2, power_curve=power, core_overhead=8)
+        workload = WorkloadParams(total_vcpus=1000, avg_util=0.3)
+        cost = CostParams(1000, 15000, 400, 0.10, 4 * 8760)
+
+        model = OverssubModel(workload, cost)
+        scenario = ScenarioParams(proc, oversub_ratio=1.0)
+        result = model.evaluate_scenario(scenario)
+
+        # 1000 vCPUs / 120 available pCPUs = 8.33 -> 9 servers
+        assert result.num_servers == 9
+
+    def test_server_count_without_overhead_for_comparison(self):
+        """Baseline: same config without overhead needs fewer servers."""
+        power = PowerCurve(100, 300)
+        proc = ProcessorConfig(physical_cores=64, threads_per_core=2, power_curve=power, core_overhead=0)
+        workload = WorkloadParams(total_vcpus=1000, avg_util=0.3)
+        cost = CostParams(1000, 15000, 400, 0.10, 4 * 8760)
+
+        model = OverssubModel(workload, cost)
+        scenario = ScenarioParams(proc, oversub_ratio=1.0)
+        result = model.evaluate_scenario(scenario)
+
+        # 1000 vCPUs / 128 pCPUs = 7.8125 -> 8 servers
+        assert result.num_servers == 8
+
+    def test_overhead_affects_utilization_calculation(self):
+        """Utilization should be calculated based on available pCPUs."""
+        power = PowerCurve(100, 300)
+        proc_no_overhead = ProcessorConfig(64, 2, power, core_overhead=0)
+        proc_with_overhead = ProcessorConfig(64, 2, power, core_overhead=8)
+
+        # Use exact vCPU count to avoid rounding differences
+        workload = WorkloadParams(total_vcpus=120, avg_util=0.5)
+        cost = CostParams(1000, 15000, 400, 0.10, 4 * 8760)
+        model = OverssubModel(workload, cost)
+
+        # With overhead: 120 vCPUs / 120 available = 1 server
+        scenario_with = ScenarioParams(proc_with_overhead, 1.0)
+        result_with = model.evaluate_scenario(scenario_with)
+
+        # Without overhead: 120 vCPUs / 128 available = 1 server
+        scenario_without = ScenarioParams(proc_no_overhead, 1.0)
+        result_without = model.evaluate_scenario(scenario_without)
+
+        # Both need 1 server, but utilization differs
+        assert result_with.num_servers == 1
+        assert result_without.num_servers == 1
+
+        # With overhead: 120 * 0.5 / 120 = 0.5
+        # Without overhead: 120 * 0.5 / 128 = 0.46875
+        assert result_with.avg_util_per_server > result_without.avg_util_per_server
 
 
 class TestEdgeCases:

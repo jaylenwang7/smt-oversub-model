@@ -14,6 +14,72 @@ from typing import Callable, Optional
 import math
 
 
+def _polynomial_power_raw(cpu_util_pct: float, freq_mhz: float) -> float:
+    """
+    Raw polynomial power model (internal use).
+
+    Based on empirical SPECpower-like curve fitting.
+
+    Args:
+        cpu_util_pct: CPU utilization percentage (0-100)
+        freq_mhz: CPU frequency in MHz
+
+    Returns:
+        Power consumption in watts (raw, unnormalized)
+    """
+    cpu = cpu_util_pct
+    freq = freq_mhz
+
+    power = (225 + 2.14*cpu - 0.0166*freq - 0.0248*cpu*cpu +
+            0.000784*cpu*freq + 7.31e-08*freq*freq + 0.000136*cpu*cpu*cpu -
+            1.22e-05*cpu*cpu*freq + 4.08e-07*cpu*freq*freq + 8e-10*freq*freq*freq)
+
+    return max(power, 0)
+
+
+def polynomial_power_curve_fn(freq_mhz: float = 3500.0) -> Callable[[float], float]:
+    """
+    Create a normalized power curve function based on polynomial model.
+
+    The polynomial model captures nonlinear power-utilization behavior
+    observed in real server hardware (similar to SPECpower curves).
+
+    The returned function maps utilization [0,1] -> [0,1] where:
+    - 0 corresponds to idle power
+    - 1 corresponds to max power
+    - Values in between follow the polynomial shape
+
+    Args:
+        freq_mhz: CPU frequency in MHz (default 3500 for typical max freq)
+
+    Returns:
+        A curve_fn suitable for use with PowerCurve
+
+    Example:
+        curve_fn = polynomial_power_curve_fn(freq_mhz=3500)
+        power_curve = PowerCurve(p_idle=100, p_max=500, curve_fn=curve_fn)
+    """
+    # Compute raw power at idle and max for normalization
+    power_at_idle = _polynomial_power_raw(0, freq_mhz)
+    power_at_max = _polynomial_power_raw(100, freq_mhz)
+    power_range = power_at_max - power_at_idle
+
+    def curve_fn(util: float) -> float:
+        """Normalized polynomial curve: maps [0,1] -> [0,1]."""
+        if power_range <= 0:
+            return util  # Fallback to linear if curve is degenerate
+        cpu_pct = util * 100
+        raw_power = _polynomial_power_raw(cpu_pct, freq_mhz)
+        return (raw_power - power_at_idle) / power_range
+
+    return curve_fn
+
+
+# Pre-built curve functions for convenience
+SPECPOWER_CURVE_FN = lambda u: u ** 0.9  # Classic SPECpower approximation
+POLYNOMIAL_CURVE_FN = polynomial_power_curve_fn()  # Default polynomial at 3500 MHz
+
+
 @dataclass
 class PowerCurve:
     """
@@ -47,11 +113,17 @@ class ProcessorConfig:
     physical_cores: int
     threads_per_core: int  # 2 for SMT, 1 for non-SMT
     power_curve: PowerCurve
-    
+    core_overhead: int = 0  # pCPUs reserved for host (not oversubscribable)
+
     @property
     def pcpus(self) -> int:
         """Total logical cores (pCPUs) per processor."""
         return self.physical_cores * self.threads_per_core
+
+    @property
+    def available_pcpus(self) -> int:
+        """pCPUs available for VMs (total minus overhead)."""
+        return max(0, self.pcpus - self.core_overhead)
 
 
 @dataclass
@@ -122,15 +194,16 @@ class OverssubModel:
     def evaluate_scenario(self, scenario: ScenarioParams) -> ScenarioResult:
         """Evaluate carbon and TCO for a given scenario."""
         proc = scenario.processor
-        
-        # Calculate server count needed
-        vcpu_capacity_per_server = proc.pcpus * scenario.oversub_ratio
+
+        # Calculate server count needed (using available pCPUs, excluding host overhead)
+        vcpu_capacity_per_server = proc.available_pcpus * scenario.oversub_ratio
         num_servers = math.ceil(self.workload.total_vcpus / vcpu_capacity_per_server)
-        
+
         # Calculate utilization per server
         # Total "work" in pCPU-equivalents = total_vcpus * avg_util
+        # Use available_pcpus for capacity since overhead cores run host workload
         total_work = self.workload.total_vcpus * self.workload.avg_util
-        total_pcpu_capacity = num_servers * proc.pcpus
+        total_pcpu_capacity = num_servers * proc.available_pcpus
         avg_util = total_work / total_pcpu_capacity
         
         # Apply utilization overhead

@@ -63,7 +63,7 @@ I need realistic, industry-grounded parameter values. Please research and provid
 
 - **Academic literature on SMT design tradeoffs**:
   - ISCA/MICRO/HPCA papers analyzing SMT area/power/performance
-  - "Simultaneous Multithreading" seminal papers (Tullsen, Eggers, Levy)
+  - "Simultaneous Multithreading" seminal papers (Tullsen, Eggers, Levy) or recent research (conferences like ISCA, MICRO, HPCA, ASPLOS, etc.)
   - Industry analyses of SMT efficiency at different utilization levels
 
 ### 2. Power Consumption: SMT vs Non-SMT Architectures
@@ -99,40 +99,6 @@ I need realistic, industry-grounded parameter values. Please research and provid
 - What academic or industry studies quantify SMT contention in multi-tenant cloud workloads?
 - Are there security-related SMT constraints (e.g., core scheduling, L1TF mitigations) that affect practical oversubscription?
 
-### 4. Oversubscription Ratios in Cloud Environments
-
-- **What CPU oversubscription ratios are typical in public cloud providers?** (AWS, Azure, GCP, etc.)
-- How do SMT scheduling constraints (e.g., not placing different VMs on sibling threads) limit practical oversubscription?
-- What oversubscription ratios are achievable with SMT constraints vs without?
-- Any data on the difference between "sold" vCPU ratios and actual achievable scheduling?
-
-### 5. VM Workload Utilization
-
-- **What is the average CPU utilization of VMs in production cloud environments?**
-- Distribution of VM utilization (mean, median, P90, P99)?
-- Studies on cloud workload characterization (e.g., Microsoft Azure traces, Google cluster traces, Alibaba traces)
-- How does utilization vary by workload type (web, batch, database, ML inference)?
-
-### 6. Server Costs and Lifecycle
-
-- **What is the typical purchase cost of a 2-socket x86 server?** (with and without specific processor options)
-- Server refresh cycles and typical operational lifetime (3, 4, 5, 6 years?)
-- TCO breakdown: hardware vs electricity vs cooling vs maintenance
-
-### 7. Embodied Carbon and Sustainability
-
-- **What is the embodied carbon of a typical data center server?** (kg CO2e)
-- Dell, HP, Lenovo, or other OEM product carbon footprint disclosures
-- Ratio of embodied vs operational carbon over server lifetime at different grid carbon intensities
-- Industry reports on sustainable computing and server carbon footprints
-
-### 8. Electricity Costs and Carbon Intensity
-
-- **What are typical data center electricity rates?** ($/kWh by region)
-- Grid carbon intensity by region (g CO2/kWh) - global averages and ranges
-- PUE (Power Usage Effectiveness) values for modern data centers
-- How do hyperscalers' renewable energy commitments affect effective carbon intensity?
-
 ---
 
 ## Output Format Requested
@@ -158,21 +124,13 @@ For each parameter category, please provide:
 | `nosmt_power_ratio` | Non-SMT P_max / SMT P_max | 0.85 | For equivalent compute capacity |
 | `nosmt_idle_ratio` | Non-SMT P_idle / SMT P_idle | 0.85 | For equivalent compute capacity |
 | `power_curve_exponent` | Sublinearity of power curve | 0.9 | May differ by architecture |
-| `smt_ratio` | Achievable SMT oversub ratio | 1.3 | With cloud scheduling constraints |
-| `smt_util_overhead` | SMT contention overhead | 0.05 | Thread interference penalty |
-| `avg_util` | Mean VM CPU utilization | 0.30 | From cloud traces |
-| `embodied_carbon_kg` | Embodied CO2 per server (kg) | 1000 | May differ by chip architecture |
-| `server_cost_usd` | Server purchase cost ($) | 15000 | Compare x86 vs ARM server costs |
-| `carbon_intensity_g_kwh` | Grid carbon (g CO2/kWh) | 400 | Regional variation |
-| `electricity_cost_usd_kwh` | Electricity cost ($/kWh) | 0.10 | Regional variation |
-| `lifetime_years` | Server operational life | 4-6 | Industry standard |
 
 ---
 
 ## Key Academic Papers and Industry Sources to Prioritize
 
 **SMT architecture research** (highest priority for this theoretical comparison):
-- Seminal SMT papers: Tullsen, Eggers, Levy — "Simultaneous Multithreading: Maximizing On-Chip Parallelism"
+- SMT papers: Tullsen, Eggers, Levy — "Simultaneous Multithreading: Maximizing On-Chip Parallelism"
 - ISCA/MICRO/HPCA papers quantifying SMT area overhead, power overhead, and throughput gains
 - Intel/AMD architectural documentation on Hyper-Threading / SMT implementation details
 - Studies on SMT efficiency at different utilization levels and workload types
@@ -193,11 +151,6 @@ For each parameter category, please provide:
 - SPECpower benchmark results and methodology papers
 - Google/Microsoft/Alibaba cluster trace analyses
 - Cloud provider architecture disclosures (AWS re:Invent, Google I/O, etc.)
-
-**Sustainability and cost**:
-- Dell/HP/Lenovo product carbon footprint reports
-- IEA/EPA data center energy reports
-- Uptime Institute surveys on data center operations
 
 ---
 

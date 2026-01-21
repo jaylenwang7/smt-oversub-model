@@ -35,6 +35,9 @@ from .model import (
     CostParams,
     ScenarioResult,
     OverssubModel,
+    polynomial_power_curve_fn,
+    SPECPOWER_CURVE_FN,
+    POLYNOMIAL_CURVE_FN,
 )
 
 from .sweep import (
@@ -101,6 +104,9 @@ __all__ = [
     'CostParams',
     'ScenarioResult',
     'OverssubModel',
+    'polynomial_power_curve_fn',
+    'SPECPOWER_CURVE_FN',
+    'POLYNOMIAL_CURVE_FN',
     # Sweep utilities
     'ParameterSweeper',
     'SweepResult',
