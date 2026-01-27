@@ -68,6 +68,7 @@ class ScenarioSpec:
     processor: ProcessorConfig
     oversub_ratio: float
     util_overhead: float = 0.0
+    vcpu_demand_multiplier: float = 1.0  # Multiplier for vCPU demand (e.g., 0.7 = 30% less demand)
 
 
 class ScenarioBuilder:
@@ -151,6 +152,7 @@ class ScenarioBuilder:
         smt: bool = True,
         oversub_ratio: float = 1.0,
         util_overhead: float = 0.0,
+        vcpu_demand_multiplier: float = 1.0,
         **processor_overrides,
     ) -> ScenarioSpec:
         """
@@ -161,6 +163,7 @@ class ScenarioBuilder:
             smt: Whether to use SMT (True) or non-SMT (False) processor
             oversub_ratio: Oversubscription ratio (vCPU:pCPU)
             util_overhead: Additional utilization overhead
+            vcpu_demand_multiplier: Multiplier for vCPU demand (e.g., 0.7 = 30% less demand)
             **processor_overrides: Processor parameter overrides
 
         Returns:
@@ -176,6 +179,7 @@ class ScenarioBuilder:
             processor=processor,
             oversub_ratio=oversub_ratio,
             util_overhead=util_overhead,
+            vcpu_demand_multiplier=vcpu_demand_multiplier,
         )
 
     def build_cost_params(self, **overrides) -> CostParams:
@@ -220,6 +224,7 @@ def evaluate_scenarios(
             processor=spec.processor,
             oversub_ratio=spec.oversub_ratio,
             util_overhead=spec.util_overhead,
+            vcpu_demand_multiplier=spec.vcpu_demand_multiplier,
         )
         result = model.evaluate_scenario(scenario_params)
 
@@ -227,6 +232,7 @@ def evaluate_scenarios(
             'name': spec.name,
             'oversub_ratio': spec.oversub_ratio,
             'util_overhead': spec.util_overhead,
+            'vcpu_demand_multiplier': spec.vcpu_demand_multiplier,
             'is_smt': spec.processor.threads_per_core > 1,
             'physical_cores': spec.processor.physical_cores,
             'threads_per_core': spec.processor.threads_per_core,
@@ -306,6 +312,8 @@ def compare_smt_vs_nosmt(
     avg_util: float = 0.3,
     smt_util_overhead: float = 0.0,
     nosmt_util_overhead: float = 0.0,
+    smt_vcpu_demand_multiplier: float = 1.0,
+    nosmt_vcpu_demand_multiplier: float = 1.0,
     # Processor overrides
     smt_physical_cores: int = 48,
     nosmt_physical_cores: int = 48,
@@ -336,6 +344,8 @@ def compare_smt_vs_nosmt(
         avg_util: Average VM utilization (default 0.3)
         smt_util_overhead: Utilization overhead for SMT
         nosmt_util_overhead: Utilization overhead for non-SMT
+        smt_vcpu_demand_multiplier: vCPU demand multiplier for SMT (default 1.0)
+        nosmt_vcpu_demand_multiplier: vCPU demand multiplier for non-SMT (e.g., 0.7 = 30% less demand)
         smt_physical_cores: Physical cores per SMT server
         nosmt_physical_cores: Physical cores per non-SMT server
         smt_power_idle_w: SMT server idle power (watts)
@@ -379,12 +389,14 @@ def compare_smt_vs_nosmt(
         smt=True,
         oversub_ratio=oversub_ratio,
         util_overhead=smt_util_overhead,
+        vcpu_demand_multiplier=smt_vcpu_demand_multiplier,
     )
     nosmt_scenario = builder.build_scenario(
         name="Non-SMT",
         smt=False,
         oversub_ratio=oversub_ratio,
         util_overhead=nosmt_util_overhead,
+        vcpu_demand_multiplier=nosmt_vcpu_demand_multiplier,
     )
 
     workload = builder.build_workload_params(total_vcpus, avg_util)
@@ -399,6 +411,7 @@ def compare_oversub_ratios(
     smt: bool = True,
     avg_util: float = 0.3,
     util_overhead: float = 0.0,
+    vcpu_demand_multiplier: float = 1.0,
     # Cost/processor kwargs
     **kwargs,
 ) -> Dict[str, Any]:
@@ -411,6 +424,7 @@ def compare_oversub_ratios(
         smt: Whether to use SMT processor (default True)
         avg_util: Average VM utilization (default 0.3)
         util_overhead: Utilization overhead
+        vcpu_demand_multiplier: Multiplier for vCPU demand (e.g., 0.7 = 30% less demand)
         **kwargs: Additional processor/cost parameters
 
     Returns:
@@ -446,6 +460,7 @@ def compare_oversub_ratios(
             smt=smt,
             oversub_ratio=ratio,
             util_overhead=util_overhead,
+            vcpu_demand_multiplier=vcpu_demand_multiplier,
         ))
 
     workload = builder.build_workload_params(total_vcpus, avg_util)

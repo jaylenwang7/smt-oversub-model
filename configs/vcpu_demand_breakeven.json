@@ -1,0 +1,58 @@
+{
+  "name": "vcpu_demand_breakeven",
+  "description": "Find the vCPU demand multiplier for non-SMT that matches SMT+oversub carbon",
+  "scenarios": {
+    "baseline": {
+      "processor": "smt",
+      "oversub_ratio": 1.0
+    },
+    "smt_oversub": {
+      "processor": "smt",
+      "oversub_ratio": 1.1,
+      "util_overhead": 0.05
+    },
+    "nosmt_oversub": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.4,
+      "vcpu_demand_multiplier": 1.0
+    }
+  },
+  "analysis": {
+    "type": "find_breakeven",
+    "baseline": "baseline",
+    "reference": "smt_oversub",
+    "target": "nosmt_oversub",
+    "vary_parameter": "vcpu_demand_multiplier",
+    "match_metric": "carbon",
+    "search_bounds": [0.5, 1.0]
+  },
+  "processor": {
+    "smt": {
+      "physical_cores": 48,
+      "power_idle_w": 100.0,
+      "power_max_w": 400.0,
+      "core_overhead": 0
+    },
+    "nosmt": {
+      "physical_cores": 48,
+      "power_ratio": 0.85,
+      "idle_ratio": 0.9,
+      "core_overhead": 0
+    }
+  },
+  "workload": {
+    "total_vcpus": 10000,
+    "avg_util": 0.3
+  },
+  "cost": {
+    "embodied_carbon_kg": 1000,
+    "server_cost_usd": 10000,
+    "carbon_intensity_g_kwh": 400,
+    "electricity_cost_usd_kwh": 0.10,
+    "lifetime_years": 5
+  },
+  "power_curve": {
+    "type": "specpower"
+  },
+  "output_dir": "./results/vcpu_demand_breakeven"
+}

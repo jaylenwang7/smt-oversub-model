@@ -56,6 +56,22 @@ Flexible API for comparing arbitrary scenarios without the breakeven-finding wor
 - **`plot_scenarios()`**: Flexible plotting for arbitrary scenario lists. Shows TCO and Carbon stacked bars with baseline diff annotations.
 - **`plot_scenario_comparison()`**: Plot results from Runner for breakeven analysis.
 - **`plot_sweep_breakeven()`**: Plot breakeven curves across parameter sweeps.
+- **`plot_breakeven_search()`**: Visualize breakeven search convergence.
+- **`plot_analysis_result()`**: Auto-detect analysis type and plot appropriate visualization.
+
+### Declarative Analysis Framework (`declarative.py`)
+
+Generalized, config-driven analysis where breakeven can be found for **any** numeric parameter.
+
+- **`ParameterPath`**: Resolve dot-notation paths like `processor.physical_cores` for nested parameter access.
+- **`SimpleCondition`/`CompoundCondition`**: Define match conditions (e.g., `"carbon": "match"`, `"tco": "within_5%"`).
+- **`GeneralizedBreakevenFinder`**: Binary search to find any parameter value matching reference.
+- **`AnalysisConfig`**: JSON config schema for declarative analyses.
+- **`DeclarativeAnalysisEngine`**: Run analyses from config objects or JSON files.
+
+### Output Utilities (`output.py`)
+
+- **`OutputWriter`**: Write structured results to directory (results.json, config.json, summary.md, plots/).
 
 ### Key Calculations
 
@@ -70,6 +86,72 @@ Total carbon: Embodied (servers * kg_per_server) + Operational (energy_kwh * car
 1. **Baseline**: SMT with no oversubscription (R=1.0)
 2. **SMT + Oversub**: SMT with achievable oversubscription (default R=1.3) plus utilization overhead
 3. **Non-SMT + Oversub**: Binary search finds the R that matches SMT+Oversub carbon/TCO
+
+## Declarative Analysis API
+
+The declarative framework allows config-driven analyses with support for finding breakeven on any parameter.
+
+### Analysis Types
+
+1. **`find_breakeven`**: Binary search to find parameter value matching reference
+2. **`compare`**: Compare multiple scenarios
+3. **`sweep`**: Run breakeven analysis across parameter sweep
+
+### Example Config
+
+```json
+{
+  "name": "vcpu_demand_breakeven",
+  "scenarios": {
+    "baseline": {"processor": "smt", "oversub_ratio": 1.0},
+    "smt_oversub": {"processor": "smt", "oversub_ratio": 1.1, "util_overhead": 0.05},
+    "nosmt_oversub": {"processor": "nosmt", "oversub_ratio": 1.4}
+  },
+  "analysis": {
+    "type": "find_breakeven",
+    "baseline": "baseline",
+    "reference": "smt_oversub",
+    "target": "nosmt_oversub",
+    "vary_parameter": "vcpu_demand_multiplier",
+    "match_metric": "carbon",
+    "search_bounds": [0.5, 1.0]
+  },
+  "workload": {"total_vcpus": 10000, "avg_util": 0.3}
+}
+```
+
+### CLI Usage
+
+```bash
+python -m smt_oversub_model.declarative configs/vcpu_demand_breakeven.json
+```
+
+### Programmatic Usage
+
+```python
+from smt_oversub_model import DeclarativeAnalysisEngine, run_analysis
+
+# From file
+result = run_analysis("configs/vcpu_demand_breakeven.json")
+
+# Or with engine
+engine = DeclarativeAnalysisEngine()
+result = engine.run_from_file("configs/analysis.json")
+print(result.summary)
+```
+
+### Supported Parameter Paths
+
+- Direct: `oversub_ratio`, `util_overhead`, `vcpu_demand_multiplier`
+- Nested: `processor.physical_cores`, `processor.power_curve.p_max`
+- Workload: `workload.avg_util`, `workload.total_vcpus`
+- Cost: `cost.embodied_carbon_kg`, `cost.carbon_intensity_g_kwh`
+
+### Match Conditions
+
+- Simple: `"carbon"` or `"tco"` (match exactly)
+- Compound: `{"carbon": "match", "tco": "within_5%"}`
+- Comparison: `"<="`, `">="`
 
 ## Example Notebooks
 

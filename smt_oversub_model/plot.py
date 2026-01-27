@@ -536,3 +536,311 @@ def plot_result(
         return plot_sweep_breakeven(result, save_path=save_path, show=show, **kwargs)
     else:
         return plot_scenario_comparison(result, save_path=save_path, show=show, **kwargs)
+
+
+def plot_breakeven_search(
+    breakeven_result,
+    save_path: Optional[Union[str, Path]] = None,
+    figsize: Tuple[float, float] = (10, 6),
+    show: bool = True,
+    title: Optional[str] = None,
+) -> Optional[Any]:
+    """
+    Plot the convergence of a breakeven search.
+
+    Shows how the parameter value and error converged over iterations.
+
+    Args:
+        breakeven_result: BreakevenResult from GeneralizedBreakevenFinder
+        save_path: Optional path to save the figure
+        figsize: Figure size (width, height) in inches
+        show: Whether to display the plot (default True)
+        title: Optional custom title
+
+    Returns:
+        matplotlib Figure object if matplotlib is available
+    """
+    _check_matplotlib()
+
+    # Extract search history
+    if hasattr(breakeven_result, 'search_history'):
+        history = breakeven_result.search_history
+    elif isinstance(breakeven_result, dict):
+        history = breakeven_result.get('search_history', [])
+    else:
+        raise ValueError("Expected BreakevenResult or dict with search_history")
+
+    if not history:
+        return None
+
+    # Extract data
+    iterations = list(range(len(history)))
+    values = []
+    errors = []
+
+    for entry in history:
+        if hasattr(entry, 'value'):
+            values.append(entry.value)
+            errors.append(entry.error)
+        else:
+            values.append(entry.get('value', 0))
+            errors.append(entry.get('error', 0))
+
+    # Set up professional style
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.size': 10,
+    })
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
+    fig.patch.set_facecolor('white')
+
+    # Plot parameter values
+    ax1.set_facecolor('white')
+    ax1.plot(iterations, values, 'o-', linewidth=2, markersize=6,
+             color=COLORS['embodied'], label='Parameter Value')
+
+    # Mark final value if breakeven achieved
+    final_value = None
+    if hasattr(breakeven_result, 'breakeven_value'):
+        final_value = breakeven_result.breakeven_value
+    elif isinstance(breakeven_result, dict):
+        final_value = breakeven_result.get('breakeven_value')
+
+    if final_value is not None:
+        ax1.axhline(final_value, color=COLORS['positive'], linestyle='--',
+                   alpha=0.7, linewidth=1.5, label=f'Breakeven: {final_value:.4f}')
+
+    ax1.set_ylabel('Parameter Value', fontsize=11)
+    ax1.legend(loc='best', frameon=True, fontsize=9)
+    ax1.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
+    ax1.spines['top'].set_visible(False)
+    ax1.spines['right'].set_visible(False)
+
+    # Plot errors
+    ax2.set_facecolor('white')
+    ax2.plot(iterations, errors, 'o-', linewidth=2, markersize=6,
+             color=COLORS['operational'], label='Error')
+    ax2.axhline(0, color=COLORS['neutral'], linestyle='-', alpha=0.5, linewidth=1)
+
+    ax2.set_xlabel('Iteration', fontsize=11)
+    ax2.set_ylabel('Normalized Error', fontsize=11)
+    ax2.legend(loc='best', frameon=True, fontsize=9)
+    ax2.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
+    ax2.spines['top'].set_visible(False)
+    ax2.spines['right'].set_visible(False)
+
+    if title is None:
+        title = "Breakeven Search Convergence"
+    fig.suptitle(title, fontsize=13, fontweight='bold', y=0.98, color='#333333')
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+
+    if show:
+        plt.show()
+
+    return fig
+
+
+def plot_analysis_result(
+    result,
+    save_path: Optional[Union[str, Path]] = None,
+    show: bool = True,
+    **kwargs,
+) -> Optional[Any]:
+    """
+    Auto-detect analysis type and plot appropriate visualization.
+
+    For declarative AnalysisResult:
+    - find_breakeven: plots scenario comparison and optionally breakeven search
+    - compare: plots scenario comparison
+    - sweep: plots sweep results
+
+    Args:
+        result: AnalysisResult from DeclarativeAnalysisEngine, or dict
+        save_path: Optional path to save the figure
+        show: Whether to display the plot
+        **kwargs: Additional arguments passed to specific plot function
+
+    Returns:
+        matplotlib Figure object
+    """
+    _check_matplotlib()
+
+    # Determine analysis type
+    analysis_type = None
+    if hasattr(result, 'analysis_type'):
+        analysis_type = result.analysis_type
+    elif isinstance(result, dict):
+        analysis_type = result.get('analysis_type')
+
+    if analysis_type == 'find_breakeven':
+        # Get scenario results for comparison plot
+        if hasattr(result, 'scenario_results'):
+            scenario_results = result.scenario_results
+        else:
+            scenario_results = result.get('scenario_results', {})
+
+        scenarios = [{'name': k, **v} for k, v in scenario_results.items()]
+
+        if scenarios:
+            config_name = None
+            if hasattr(result, 'config') and hasattr(result.config, 'name'):
+                config_name = result.config.name
+            elif isinstance(result, dict) and 'config' in result:
+                config_name = result['config'].get('name')
+
+            return plot_scenarios(
+                scenarios,
+                baseline_idx=0,
+                save_path=save_path,
+                show=show,
+                title=f"Scenario Comparison: {config_name}" if config_name else None,
+                **kwargs,
+            )
+
+    elif analysis_type == 'compare':
+        if hasattr(result, 'scenario_results'):
+            scenario_results = result.scenario_results
+        else:
+            scenario_results = result.get('scenario_results', {})
+
+        scenarios = [{'name': k, **v} for k, v in scenario_results.items()]
+
+        if scenarios:
+            return plot_scenarios(
+                scenarios,
+                baseline_idx=0,
+                save_path=save_path,
+                show=show,
+                **kwargs,
+            )
+
+    elif analysis_type == 'sweep':
+        return plot_sweep_analysis(result, save_path=save_path, show=show, **kwargs)
+
+    return None
+
+
+def plot_sweep_analysis(
+    result,
+    save_path: Optional[Union[str, Path]] = None,
+    figsize: Tuple[float, float] = (10, 6),
+    show: bool = True,
+    title: Optional[str] = None,
+) -> Optional[Any]:
+    """
+    Plot sweep analysis results showing breakeven values across parameter sweep.
+
+    Args:
+        result: AnalysisResult with sweep_results, or dict
+        save_path: Optional path to save the figure
+        figsize: Figure size (width, height) in inches
+        show: Whether to display the plot (default True)
+        title: Optional custom title
+
+    Returns:
+        matplotlib Figure object if matplotlib is available
+    """
+    _check_matplotlib()
+
+    # Extract sweep results
+    if hasattr(result, 'sweep_results'):
+        sweep_results = result.sweep_results
+    elif isinstance(result, dict):
+        sweep_results = result.get('sweep_results', [])
+    else:
+        raise ValueError("Expected result with sweep_results")
+
+    if not sweep_results:
+        return None
+
+    # Extract data
+    param_values = []
+    breakeven_values = []
+    achieved = []
+
+    for point in sweep_results:
+        if isinstance(point, dict):
+            param_values.append(point.get('parameter_value', 0))
+            breakeven_values.append(point.get('breakeven_value'))
+            achieved.append(point.get('achieved', False))
+        else:
+            param_values.append(getattr(point, 'parameter_value', 0))
+            breakeven_values.append(getattr(point, 'breakeven_value', None))
+            achieved.append(getattr(point, 'achieved', False))
+
+    # Get parameter name from config
+    param_name = 'Parameter'
+    if hasattr(result, 'config') and hasattr(result.config, 'analysis'):
+        param_name = result.config.analysis.sweep_parameter or 'Parameter'
+    elif isinstance(result, dict) and 'config' in result:
+        analysis = result['config'].get('analysis', {})
+        param_name = analysis.get('sweep_parameter', 'Parameter')
+
+    # Set up professional style
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.size': 10,
+    })
+
+    fig, ax = plt.subplots(figsize=figsize)
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('white')
+
+    # Separate achieved and not achieved
+    valid_x = []
+    valid_y = []
+    none_x = []
+
+    for x, y, ach in zip(param_values, breakeven_values, achieved):
+        if y is not None and ach:
+            valid_x.append(x)
+            valid_y.append(y)
+        else:
+            none_x.append(x)
+
+    # Plot achieved points
+    if valid_x:
+        ax.plot(valid_x, valid_y, 'o-', linewidth=2, markersize=8,
+                color=COLORS['embodied'], label='Breakeven Value')
+
+    # Mark not achieved
+    if none_x:
+        for x in none_x:
+            ax.axvline(x, color=COLORS['negative'], linestyle='--', alpha=0.5, linewidth=1)
+        ax.plot([], [], color=COLORS['negative'], linestyle='--', label='Not achievable')
+
+    # Reference line at R=1.0
+    ax.axhline(1.0, color=COLORS['neutral'], linestyle=':', alpha=0.7, linewidth=1.5,
+               label='No oversubscription (R=1.0)')
+
+    ax.set_xlabel(param_name.replace('_', ' ').replace('.', ' ').title(), fontsize=11)
+    ax.set_ylabel('Breakeven Value', fontsize=11)
+    ax.legend(loc='best', frameon=True, fontsize=9)
+    ax.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    if title is None:
+        config_name = None
+        if hasattr(result, 'config') and hasattr(result.config, 'name'):
+            config_name = result.config.name
+        elif isinstance(result, dict) and 'config' in result:
+            config_name = result['config'].get('name')
+        title = f"Sweep Analysis: {config_name}" if config_name else "Sweep Analysis"
+
+    ax.set_title(title, fontsize=13, fontweight='bold', color='#333333')
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+
+    if show:
+        plt.show()
+
+    return fig

@@ -432,3 +432,77 @@ class TestEdgeCases:
         r2 = model.evaluate_scenario(high_oversub)
         
         assert r2.num_servers < r1.num_servers / 3
+
+
+class TestVcpuDemandMultiplier:
+    """Tests for vCPU demand multiplier functionality."""
+
+    def test_multiplier_default_is_one(self):
+        """Default multiplier should be 1.0 (no change)."""
+        power = PowerCurve(100, 300)
+        proc = ProcessorConfig(64, 2, power)
+        scenario = ScenarioParams(proc, oversub_ratio=1.0)
+        assert scenario.vcpu_demand_multiplier == 1.0
+
+    def test_multiplier_reduces_server_count(self):
+        """A 0.5 multiplier should roughly halve the required servers."""
+        power = PowerCurve(100, 300)
+        proc = ProcessorConfig(64, 2, power)  # 128 pCPUs
+        workload = WorkloadParams(total_vcpus=1000, avg_util=0.3)
+        cost = CostParams(1000, 15000, 400, 0.10, 4 * 8760)
+
+        model = OverssubModel(workload, cost)
+
+        # Without multiplier: 1000 / 128 = 7.8 -> 8 servers
+        scenario_full = ScenarioParams(proc, oversub_ratio=1.0, vcpu_demand_multiplier=1.0)
+        result_full = model.evaluate_scenario(scenario_full)
+
+        # With 0.5 multiplier: 500 / 128 = 3.9 -> 4 servers
+        scenario_half = ScenarioParams(proc, oversub_ratio=1.0, vcpu_demand_multiplier=0.5)
+        result_half = model.evaluate_scenario(scenario_half)
+
+        assert result_full.num_servers == 8
+        assert result_half.num_servers == 4
+
+    def test_multiplier_affects_utilization(self):
+        """Multiplier should affect calculated utilization."""
+        power = PowerCurve(100, 300)
+        proc = ProcessorConfig(64, 2, power)  # 128 pCPUs
+        # Use exact numbers for clean math
+        workload = WorkloadParams(total_vcpus=128, avg_util=0.5)
+        cost = CostParams(1000, 15000, 400, 0.10, 4 * 8760)
+
+        model = OverssubModel(workload, cost)
+
+        # Without multiplier: 128 vCPUs on 1 server, util = 0.5
+        scenario_full = ScenarioParams(proc, oversub_ratio=1.0, vcpu_demand_multiplier=1.0)
+        result_full = model.evaluate_scenario(scenario_full)
+
+        # With 0.5 multiplier: 64 vCPUs on 1 server, util = 64 * 0.5 / 128 = 0.25
+        scenario_half = ScenarioParams(proc, oversub_ratio=1.0, vcpu_demand_multiplier=0.5)
+        result_half = model.evaluate_scenario(scenario_half)
+
+        assert result_full.num_servers == 1
+        assert result_half.num_servers == 1
+        assert result_full.avg_util_per_server == 0.5
+        assert result_half.avg_util_per_server == 0.25
+
+    def test_per_vcpu_metrics_use_original_demand(self):
+        """Per-vCPU metrics should use original total_vcpus for fair comparison."""
+        power = PowerCurve(100, 300)
+        proc = ProcessorConfig(64, 2, power)
+        workload = WorkloadParams(total_vcpus=1000, avg_util=0.3)
+        cost = CostParams(1000, 15000, 400, 0.10, 4 * 8760)
+
+        model = OverssubModel(workload, cost)
+
+        # With 0.7 multiplier (30% less demand)
+        scenario = ScenarioParams(proc, oversub_ratio=1.0, vcpu_demand_multiplier=0.7)
+        result = model.evaluate_scenario(scenario)
+
+        # Per-vCPU metrics should divide by original 1000, not effective 700
+        expected_carbon_per_vcpu = result.total_carbon_kg / 1000
+        expected_cost_per_vcpu = result.total_cost_usd / 1000
+
+        assert abs(result.carbon_per_vcpu_kg - expected_carbon_per_vcpu) < 0.001
+        assert abs(result.cost_per_vcpu_usd - expected_cost_per_vcpu) < 0.001

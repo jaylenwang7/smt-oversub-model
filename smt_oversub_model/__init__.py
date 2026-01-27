@@ -79,6 +79,29 @@ from .analysis import (
     compare_oversub_ratios,
 )
 
+# Declarative analysis framework
+from .declarative import (
+    ParameterPath,
+    MatchType,
+    SimpleCondition,
+    CompoundCondition,
+    GeneralizedBreakevenFinder,
+    BreakevenResult,
+    ScenarioConfig,
+    AnalysisSpec,
+    AnalysisConfig,
+    AnalysisResult,
+    DeclarativeAnalysisEngine,
+    run_analysis,
+)
+
+# Output utilities
+from .output import (
+    OutputWriter,
+    save_result as save_declarative_result,
+    load_result as load_declarative_result,
+)
+
 # Plotting (optional, requires matplotlib)
 try:
     from .plot import (
@@ -86,6 +109,9 @@ try:
         plot_sweep_breakeven,
         plot_scenarios,
         plot_result,
+        plot_breakeven_search,
+        plot_analysis_result,
+        plot_sweep_analysis,
     )
     _HAS_PLOT = True
 except ImportError:
@@ -94,6 +120,9 @@ except ImportError:
     plot_sweep_breakeven = None
     plot_scenarios = None
     plot_result = None
+    plot_breakeven_search = None
+    plot_analysis_result = None
+    plot_sweep_analysis = None
 
 __all__ = [
     # Core model
@@ -137,11 +166,31 @@ __all__ = [
     'compare_scenarios',
     'compare_smt_vs_nosmt',
     'compare_oversub_ratios',
+    # Declarative analysis framework
+    'ParameterPath',
+    'MatchType',
+    'SimpleCondition',
+    'CompoundCondition',
+    'GeneralizedBreakevenFinder',
+    'BreakevenResult',
+    'ScenarioConfig',
+    'AnalysisSpec',
+    'AnalysisConfig',
+    'AnalysisResult',
+    'DeclarativeAnalysisEngine',
+    'run_analysis',
+    # Output utilities
+    'OutputWriter',
+    'save_declarative_result',
+    'load_declarative_result',
     # Plotting (optional)
     'plot_scenario_comparison',
     'plot_sweep_breakeven',
     'plot_scenarios',
     'plot_result',
+    'plot_breakeven_search',
+    'plot_analysis_result',
+    'plot_sweep_analysis',
 ]
 
 __version__ = '0.1.0'

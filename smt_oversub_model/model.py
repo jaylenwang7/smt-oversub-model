@@ -132,6 +132,7 @@ class ScenarioParams:
     processor: ProcessorConfig
     oversub_ratio: float  # vCPU:pCPU ratio (1.0 = no oversub)
     util_overhead: float = 0.0  # Additive overhead to effective utilization
+    vcpu_demand_multiplier: float = 1.0  # Multiplier for vCPU demand (e.g., 0.7 = 30% less demand)
 
 
 @dataclass 
@@ -195,14 +196,17 @@ class OverssubModel:
         """Evaluate carbon and TCO for a given scenario."""
         proc = scenario.processor
 
+        # Apply vCPU demand multiplier (e.g., 0.7 means 30% less vCPU demand)
+        effective_vcpus = self.workload.total_vcpus * scenario.vcpu_demand_multiplier
+
         # Calculate server count needed (using available pCPUs, excluding host overhead)
         vcpu_capacity_per_server = proc.available_pcpus * scenario.oversub_ratio
-        num_servers = math.ceil(self.workload.total_vcpus / vcpu_capacity_per_server)
+        num_servers = math.ceil(effective_vcpus / vcpu_capacity_per_server)
 
         # Calculate utilization per server
-        # Total "work" in pCPU-equivalents = total_vcpus * avg_util
+        # Total "work" in pCPU-equivalents = effective_vcpus * avg_util
         # Use available_pcpus for capacity since overhead cores run host workload
-        total_work = self.workload.total_vcpus * self.workload.avg_util
+        total_work = effective_vcpus * self.workload.avg_util
         total_pcpu_capacity = num_servers * proc.available_pcpus
         avg_util = total_work / total_pcpu_capacity
         

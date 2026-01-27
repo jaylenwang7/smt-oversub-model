@@ -2,6 +2,8 @@
 
 A first-order framework for modeling the carbon and TCO tradeoffs between SMT-enabled processors with constrained oversubscription versus non-SMT processors with potentially higher oversubscription.
 
+**[📖 Detailed Model Documentation](docs/MODELING.md)** — Mathematical formulas, assumptions, and worked examples.
+
 ## Problem Statement
 
 SMT constraints in cloud settings limit practical oversubscription:
@@ -70,7 +72,116 @@ sweep = sweeper.sweep_parameter('carbon_intensity_g_kwh', [100, 200, 400, 600, 8
 comparison = sweeper.sweep_nosmt_oversub([1.0, 1.5, 2.0, 2.5, 3.0])
 ```
 
+## Declarative Analysis (Config-Driven)
+
+For reproducible, shareable analyses, use JSON configuration files with the declarative API. This approach separates configuration from code and supports finding breakeven on **any** numeric parameter.
+
+### Quick Start
+
+```bash
+# Run analysis from config file
+python -m smt_oversub_model.declarative configs/vcpu_demand_breakeven.json
+```
+
+Or programmatically:
+
+```python
+from smt_oversub_model import DeclarativeAnalysisEngine, run_analysis
+
+# Simple: run from file
+result = run_analysis("configs/analysis.json")
+print(result.summary)
+
+# Or with engine for more control
+engine = DeclarativeAnalysisEngine()
+result = engine.run_from_file("configs/analysis.json")
+```
+
+### Example Config
+
+```json
+{
+  "name": "oversub_breakeven",
+  "scenarios": {
+    "baseline": {"processor": "smt", "oversub_ratio": 1.0},
+    "smt_oversub": {"processor": "smt", "oversub_ratio": 1.3, "util_overhead": 0.05},
+    "nosmt_target": {"processor": "nosmt", "oversub_ratio": 1.0}
+  },
+  "analysis": {
+    "type": "find_breakeven",
+    "baseline": "baseline",
+    "reference": "smt_oversub",
+    "target": "nosmt_target",
+    "vary_parameter": "oversub_ratio",
+    "match_metric": "carbon",
+    "search_bounds": [1.0, 5.0]
+  },
+  "workload": {"total_vcpus": 10000, "avg_util": 0.3},
+  "cost": {
+    "embodied_carbon_kg": 1000,
+    "carbon_intensity_g_kwh": 400,
+    "lifetime_years": 5
+  }
+}
+```
+
+### Analysis Types
+
+| Type | Description |
+|------|-------------|
+| `find_breakeven` | Binary search to find a single parameter value where target matches reference |
+| `compare` | Evaluate and compare multiple scenarios side-by-side (no search) |
+| `sweep` | Run `find_breakeven` repeatedly across different values of a second parameter |
+
+**`find_breakeven`** answers: "What value of X makes target match reference?"
+- Varies one parameter (`vary_parameter`) via binary search
+- Returns a single breakeven value
+
+**`sweep`** answers: "How does the breakeven value change as Y varies?"
+- Iterates over values of one parameter (`sweep_parameter` + `sweep_values`)
+- At each value, runs a full `find_breakeven` on another parameter (`vary_parameter`)
+- Returns a table of (sweep_value → breakeven_value) pairs
+
+Example: Sweep `carbon_intensity_g_kwh` from 100-800 to see how grid carbon intensity affects the breakeven `oversub_ratio`.
+
+### Supported Parameter Paths
+
+The `vary_parameter` field supports dot-notation for nested access:
+
+- **Direct**: `oversub_ratio`, `util_overhead`, `vcpu_demand_multiplier`
+- **Processor**: `processor.physical_cores`, `processor.power_curve.p_max`
+- **Workload**: `workload.avg_util`, `workload.total_vcpus`
+- **Cost**: `cost.embodied_carbon_kg`, `cost.carbon_intensity_g_kwh`
+
+### Match Conditions
+
+Control how breakeven is determined:
+
+```json
+"match_metric": "carbon"                    // Match carbon exactly
+"match_metric": "tco"                       // Match TCO exactly
+"match_metric": {"carbon": "match", "tco": "within_5%"}  // Compound condition
+"match_metric": {"carbon": "<="}            // Carbon at or below reference
+```
+
+### Output
+
+Results include:
+- Scenario metrics (carbon, TCO, server count)
+- Comparisons vs baseline (% and absolute differences)
+- Breakeven value and search history
+- Human-readable summary
+
+```python
+result = run_analysis("config.json")
+print(result.summary)                    # Markdown summary
+print(result.breakeven.breakeven_value)  # The found value
+print(result.scenario_results)           # Full metrics dict
+```
+
 ## Model Details
+
+> **For detailed formulas, assumptions, and worked examples, see [docs/MODELING.md](docs/MODELING.md).**
 
 ### Server Count
 ```
@@ -117,7 +228,8 @@ To match SMT+oversub, non-SMT needs:
 ## Extensions
 
 The model can be extended for:
-- Non-linear power curves (pass custom `power_curve_fn`)
+- Non-linear power curves (pass custom `power_curve_fn` or use `"power_curve": {"type": "polynomial"}` in config)
 - Multiple workload classes with different utilizations
 - Time-varying carbon intensity
 - Server power-off modeling
+- Custom breakeven parameters via declarative configs (sweep any numeric parameter)
