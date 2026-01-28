@@ -35,7 +35,14 @@ from .model import (
 
 @dataclass
 class ProcessorDefaults:
-    """Default processor parameters (can be overridden)."""
+    """Default processor parameters (can be overridden).
+
+    Power values can be specified either:
+    1. As absolute values (nosmt_power_idle_w, nosmt_power_max_w)
+    2. As ratios relative to SMT (nosmt_power_ratio, nosmt_idle_ratio)
+
+    If absolute values are provided, they take precedence over ratios.
+    """
     # SMT processor
     smt_physical_cores: int = 48
     smt_threads_per_core: int = 2
@@ -46,9 +53,16 @@ class ProcessorDefaults:
     # Non-SMT processor
     nosmt_physical_cores: int = 48
     nosmt_threads_per_core: int = 1
+    nosmt_core_overhead: int = 0  # pCPUs reserved for host
+
+    # Power can be specified as absolute values OR as ratios
+    # Absolute values (take precedence if set)
+    nosmt_power_idle_w: Optional[float] = None
+    nosmt_power_max_w: Optional[float] = None
+
+    # Ratios relative to SMT power (used if absolute values not set)
     nosmt_power_ratio: float = 0.85  # Relative to SMT max power
     nosmt_idle_ratio: float = 0.9    # Relative to SMT idle power
-    nosmt_core_overhead: int = 0  # pCPUs reserved for host
 
 
 @dataclass
@@ -123,15 +137,21 @@ class ScenarioBuilder:
         threads_per_core = overrides.get('threads_per_core', self.proc.nosmt_threads_per_core)
         core_overhead = overrides.get('core_overhead', self.proc.nosmt_core_overhead)
 
-        # Power derived from SMT power with ratios
-        power_idle = overrides.get(
-            'power_idle_w',
-            self.proc.smt_power_idle_w * self.proc.nosmt_idle_ratio
-        )
-        power_max = overrides.get(
-            'power_max_w',
-            self.proc.smt_power_max_w * self.proc.nosmt_power_ratio
-        )
+        # Power can be specified as absolute values or derived from SMT with ratios
+        # Absolute values take precedence
+        if 'power_idle_w' in overrides:
+            power_idle = overrides['power_idle_w']
+        elif self.proc.nosmt_power_idle_w is not None:
+            power_idle = self.proc.nosmt_power_idle_w
+        else:
+            power_idle = self.proc.smt_power_idle_w * self.proc.nosmt_idle_ratio
+
+        if 'power_max_w' in overrides:
+            power_max = overrides['power_max_w']
+        elif self.proc.nosmt_power_max_w is not None:
+            power_max = self.proc.nosmt_power_max_w
+        else:
+            power_max = self.proc.smt_power_max_w * self.proc.nosmt_power_ratio
 
         power_curve = PowerCurve(
             p_idle=power_idle,

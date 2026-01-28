@@ -122,28 +122,34 @@ class Runner:
         cfg = self.config
         curve_fn = cfg.power_curve.to_callable()
 
+        # Build processor configs from named processors
+        smt_spec = cfg.processor.smt
+        nosmt_spec = cfg.processor.nosmt
+
         # SMT processor
         smt_power = PowerCurve(
-            p_idle=cfg.processor.smt.power_idle_w,
-            p_max=cfg.processor.smt.power_max_w,
+            p_idle=smt_spec.power_idle_w,
+            p_max=smt_spec.power_max_w,
             curve_fn=curve_fn,
         )
         smt_proc = ProcessorConfig(
-            physical_cores=cfg.processor.smt.physical_cores,
-            threads_per_core=2,
+            physical_cores=smt_spec.physical_cores,
+            threads_per_core=smt_spec.threads_per_core,
             power_curve=smt_power,
+            core_overhead=smt_spec.core_overhead,
         )
 
         # Non-SMT processor
         nosmt_power = PowerCurve(
-            p_idle=cfg.processor.smt.power_idle_w * cfg.processor.nosmt.idle_ratio,
-            p_max=cfg.processor.smt.power_max_w * cfg.processor.nosmt.power_ratio,
+            p_idle=nosmt_spec.power_idle_w,
+            p_max=nosmt_spec.power_max_w,
             curve_fn=curve_fn,
         )
         nosmt_proc = ProcessorConfig(
-            physical_cores=cfg.processor.nosmt.physical_cores,
-            threads_per_core=1,
+            physical_cores=nosmt_spec.physical_cores,
+            threads_per_core=nosmt_spec.threads_per_core,
             power_curve=nosmt_power,
+            core_overhead=nosmt_spec.core_overhead,
         )
 
         # Workload

@@ -1,0 +1,58 @@
+{
+  "name": "smt_vs_nosmt_40pct_discount",
+  "description": "Compare SMT baseline vs non-SMT with 40% vCPU demand discount",
+  "scenarios": {
+    "baseline": {
+      // SMT with no oversubscription
+      "processor": "smt",
+      "oversub_ratio": 1.0
+    },
+    "smt_oversub": {
+      // SMT with 2x oversubscription
+      "processor": "smt",
+      "oversub_ratio": 2.0,
+      "util_overhead": 0.05
+    },
+    "nosmt_50pct_discount": {
+      // Non-SMT with 2x oversub and 50% vCPU demand reduction
+      "processor": "nosmt",
+      "oversub_ratio": 2.0,
+      "vcpu_demand_multiplier": 0.5  // 50% discount = 50% of original demand
+    }
+  },
+  "workload": {
+    "total_vcpus": 10000,
+    "avg_util": 0.1
+  },
+  "analysis": {
+    "type": "compare",
+    "baseline": "baseline"
+  },
+  "processor": {
+    "smt": {
+      "physical_cores": 48,
+      "threads_per_core": 2,
+      "power_idle_w": 300.0,
+      "power_max_w": 800.0,
+      "core_overhead": 4  // 10% core overhead
+    },
+    "nosmt": {
+      "physical_cores": 52,  // 5% area decrease when not using SMT
+      "threads_per_core": 1,
+      "power_idle_w": 300.0,
+      "power_max_w": 800.0,
+      "core_overhead": 5  // 10% core overhead
+    }
+  },
+  "cost": {
+    "embodied_carbon_kg": 4000,
+    "server_cost_usd": 15000,
+    "carbon_intensity_g_kwh": 200,
+    "electricity_cost_usd_kwh": 0.28,
+    "lifetime_years": 6
+  },
+  "power_curve": {
+    "type": "specpower"
+  },
+  "output_dir": "./results/vcpu_demand_breakeven/util_10_compare_50pct_discount"
+}

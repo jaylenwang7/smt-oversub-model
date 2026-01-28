@@ -4,14 +4,16 @@
   "processor": {
     "smt": {
       "physical_cores": 84,
+      "threads_per_core": 2,
       "power_idle_w": 300.0,
       "power_max_w": 800.0,
       "core_overhead": 8
     },
     "nosmt": {
       "physical_cores": 120,
-      "power_ratio": 1.0,
-      "idle_ratio": 1.0,
+      "threads_per_core": 1,
+      "power_idle_w": 300.0,
+      "power_max_w": 800.0,
       "core_overhead": 9
     }
   },

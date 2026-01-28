@@ -32,7 +32,7 @@ This is a pure Python library (no external dependencies for core functionality) 
 
 - **`PowerCurve`**: Models server power consumption as a function of utilization. Default is linear but supports custom curves (e.g., `u^0.9` for SPECpower-like behavior).
 
-- **`ProcessorConfig`**: Defines processor characteristics - physical cores, threads per core (2 for SMT, 1 for non-SMT), and associated power curve.
+- **`ProcessorConfig`**: Defines processor characteristics - physical cores, threads per core (configurable: 1 = no SMT, 2+ = SMT enabled), and associated power curve.
 
 - **`OverssubModel`**: Main model class. Given workload and cost parameters, evaluates scenarios and finds breakeven oversubscription ratios using binary search.
 
@@ -99,6 +99,8 @@ The declarative framework allows config-driven analyses with support for finding
 
 ### Example Config
 
+Processors are defined with arbitrary names and explicit `threads_per_core` (1 = no SMT, 2+ = SMT enabled):
+
 ```json
 {
   "name": "vcpu_demand_breakeven",
@@ -116,7 +118,35 @@ The declarative framework allows config-driven analyses with support for finding
     "match_metric": "carbon",
     "search_bounds": [0.5, 1.0]
   },
+  "processor": {
+    "smt": {
+      "physical_cores": 48,
+      "threads_per_core": 2,
+      "power_idle_w": 100.0,
+      "power_max_w": 400.0,
+      "core_overhead": 0
+    },
+    "nosmt": {
+      "physical_cores": 48,
+      "threads_per_core": 1,
+      "power_idle_w": 90.0,
+      "power_max_w": 340.0,
+      "core_overhead": 0
+    }
+  },
   "workload": {"total_vcpus": 10000, "avg_util": 0.3}
+}
+```
+
+You can define processors with any name (not limited to "smt"/"nosmt"):
+
+```json
+{
+  "processor": {
+    "standard": {"physical_cores": 32, "threads_per_core": 1, "power_idle_w": 80, "power_max_w": 300},
+    "hyperthreaded": {"physical_cores": 32, "threads_per_core": 2, "power_idle_w": 90, "power_max_w": 350},
+    "smt4": {"physical_cores": 16, "threads_per_core": 4, "power_idle_w": 100, "power_max_w": 400}
+  }
 }
 ```
 

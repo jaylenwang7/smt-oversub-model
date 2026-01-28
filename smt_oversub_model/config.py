@@ -9,6 +9,12 @@ from typing import Optional, Callable, List, Any, Dict
 import json
 from pathlib import Path
 
+try:
+    import json5
+    _HAS_JSON5 = True
+except ImportError:
+    _HAS_JSON5 = False
+
 from .model import polynomial_power_curve_fn
 
 
@@ -86,10 +92,20 @@ class PowerCurveSpec:
 
 @dataclass
 class ProcessorSpec:
-    """Specification for SMT processor configuration."""
-    physical_cores: int = 64
+    """Specification for a processor configuration.
+
+    Args:
+        physical_cores: Number of physical CPU cores
+        threads_per_core: SMT threads per core (1 = no SMT, 2+ = SMT enabled)
+        power_idle_w: Idle power consumption in watts
+        power_max_w: Maximum power consumption in watts
+        core_overhead: Number of pCPUs reserved for host (not available for VMs)
+    """
+    physical_cores: int = 48
+    threads_per_core: int = 1  # 1 = no SMT, 2 = SMT (hyperthreading)
     power_idle_w: float = 100.0
-    power_max_w: float = 300.0
+    power_max_w: float = 400.0
+    core_overhead: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -97,49 +113,64 @@ class ProcessorSpec:
     @classmethod
     def from_dict(cls, data: dict) -> "ProcessorSpec":
         return cls(
-            physical_cores=data.get("physical_cores", 64),
-            power_idle_w=data.get("power_idle_w", 100.0),
-            power_max_w=data.get("power_max_w", 300.0),
-        )
-
-
-@dataclass
-class NoSmtProcessorSpec:
-    """Specification for non-SMT processor configuration."""
-    physical_cores: int = 48
-    power_ratio: float = 0.85  # P_max as fraction of SMT
-    idle_ratio: float = 0.85   # P_idle as fraction of SMT
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "NoSmtProcessorSpec":
-        return cls(
             physical_cores=data.get("physical_cores", 48),
-            power_ratio=data.get("power_ratio", 0.85),
-            idle_ratio=data.get("idle_ratio", 0.85),
+            threads_per_core=data.get("threads_per_core", 1),
+            power_idle_w=data.get("power_idle_w", 100.0),
+            power_max_w=data.get("power_max_w", 400.0),
+            core_overhead=data.get("core_overhead", 0),
         )
+
+    @property
+    def is_smt(self) -> bool:
+        """Return True if this processor has SMT enabled (threads_per_core > 1)."""
+        return self.threads_per_core > 1
 
 
 @dataclass
 class ProcessorConfigSpec:
-    """Combined processor configuration for both SMT and non-SMT."""
-    smt: ProcessorSpec = field(default_factory=ProcessorSpec)
-    nosmt: NoSmtProcessorSpec = field(default_factory=NoSmtProcessorSpec)
+    """Container for named processor configurations.
+
+    Processors are stored in a dict keyed by name, allowing arbitrary
+    processor definitions (not limited to 'smt'/'nosmt').
+    """
+    processors: Dict[str, ProcessorSpec] = field(default_factory=dict)
+
+    def __post_init__(self):
+        # Ensure at least default processors exist for backward compatibility
+        if not self.processors:
+            self.processors = {
+                "smt": ProcessorSpec(physical_cores=48, threads_per_core=2,
+                                    power_idle_w=100.0, power_max_w=400.0),
+                "nosmt": ProcessorSpec(physical_cores=48, threads_per_core=1,
+                                      power_idle_w=90.0, power_max_w=340.0),
+            }
 
     def to_dict(self) -> dict:
-        return {
-            "smt": self.smt.to_dict(),
-            "nosmt": self.nosmt.to_dict(),
-        }
+        return {name: spec.to_dict() for name, spec in self.processors.items()}
 
     @classmethod
     def from_dict(cls, data: dict) -> "ProcessorConfigSpec":
-        return cls(
-            smt=ProcessorSpec.from_dict(data.get("smt", {})),
-            nosmt=NoSmtProcessorSpec.from_dict(data.get("nosmt", {})),
-        )
+        processors = {}
+        for name, spec_data in data.items():
+            processors[name] = ProcessorSpec.from_dict(spec_data)
+        return cls(processors=processors)
+
+    def get(self, name: str) -> ProcessorSpec:
+        """Get a processor by name."""
+        if name not in self.processors:
+            raise KeyError(f"Unknown processor: {name}. Available: {list(self.processors.keys())}")
+        return self.processors[name]
+
+    # Backward compatibility properties
+    @property
+    def smt(self) -> ProcessorSpec:
+        """Get the 'smt' processor (backward compatibility)."""
+        return self.get("smt")
+
+    @property
+    def nosmt(self) -> ProcessorSpec:
+        """Get the 'nosmt' processor (backward compatibility)."""
+        return self.get("nosmt")
 
 
 @dataclass
@@ -302,6 +333,8 @@ def load_config(path: str | Path) -> ExperimentConfig:
     """
     Load an experiment configuration from a JSON file.
 
+    Supports JSON with comments (JSONC) if json5 is installed.
+
     Args:
         path: Path to JSON config file
 
@@ -315,7 +348,10 @@ def load_config(path: str | Path) -> ExperimentConfig:
     """
     path = Path(path)
     with open(path, 'r') as f:
-        data = json.load(f)
+        if _HAS_JSON5:
+            data = json5.load(f)
+        else:
+            data = json.load(f)
     return ExperimentConfig.from_dict(data)
 
 
@@ -353,11 +389,18 @@ def validate_config(config: ExperimentConfig) -> List[str]:
     if config.workload.total_vcpus <= 0:
         errors.append(f"total_vcpus must be positive, got {config.workload.total_vcpus}")
 
-    if config.processor.smt.physical_cores <= 0:
-        errors.append(f"smt physical_cores must be positive")
-
-    if config.processor.nosmt.physical_cores <= 0:
-        errors.append(f"nosmt physical_cores must be positive")
+    # Check all processors have valid values
+    for name, proc in config.processor.processors.items():
+        if proc.physical_cores <= 0:
+            errors.append(f"Processor '{name}' physical_cores must be positive")
+        if proc.threads_per_core <= 0:
+            errors.append(f"Processor '{name}' threads_per_core must be positive")
+        if proc.power_idle_w < 0:
+            errors.append(f"Processor '{name}' power_idle_w must be non-negative")
+        if proc.power_max_w <= 0:
+            errors.append(f"Processor '{name}' power_max_w must be positive")
+        if proc.power_idle_w > proc.power_max_w:
+            errors.append(f"Processor '{name}' power_idle_w must be <= power_max_w")
 
     if config.oversubscription.smt_ratio < 1.0:
         errors.append(f"smt_ratio must be >= 1.0, got {config.oversubscription.smt_ratio}")

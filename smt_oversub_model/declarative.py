@@ -23,6 +23,12 @@ import copy
 import json
 import re
 
+try:
+    import json5
+    _HAS_JSON5 = True
+except ImportError:
+    _HAS_JSON5 = False
+
 from .model import (
     OverssubModel, PowerCurve, ProcessorConfig,
     ScenarioParams, WorkloadParams, CostParams, ScenarioResult,
@@ -550,8 +556,17 @@ class AnalysisSpec:
 
 @dataclass
 class ProcessorSpec:
-    """Processor configuration."""
+    """Processor configuration with explicit SMT thread count.
+
+    Args:
+        physical_cores: Number of physical CPU cores
+        threads_per_core: SMT threads per core (1 = no SMT, 2+ = SMT enabled)
+        power_idle_w: Idle power consumption in watts
+        power_max_w: Maximum power consumption in watts
+        core_overhead: Number of pCPUs reserved for host (not available for VMs)
+    """
     physical_cores: int = 48
+    threads_per_core: int = 1  # 1 = no SMT, 2 = SMT (hyperthreading)
     power_idle_w: float = 100.0
     power_max_w: float = 400.0
     core_overhead: int = 0
@@ -560,6 +575,7 @@ class ProcessorSpec:
     def from_dict(cls, data: Dict[str, Any]) -> 'ProcessorSpec':
         return cls(
             physical_cores=data.get('physical_cores', 48),
+            threads_per_core=data.get('threads_per_core', 1),
             power_idle_w=data.get('power_idle_w', 100.0),
             power_max_w=data.get('power_max_w', 400.0),
             core_overhead=data.get('core_overhead', 0),
@@ -568,46 +584,57 @@ class ProcessorSpec:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
-
-@dataclass
-class NoSmtProcessorSpec:
-    """Non-SMT processor configuration."""
-    physical_cores: int = 48
-    power_ratio: float = 0.85  # Relative to SMT
-    idle_ratio: float = 0.9
-    core_overhead: int = 0
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'NoSmtProcessorSpec':
-        return cls(
-            physical_cores=data.get('physical_cores', 48),
-            power_ratio=data.get('power_ratio', 0.85),
-            idle_ratio=data.get('idle_ratio', 0.9),
-            core_overhead=data.get('core_overhead', 0),
-        )
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+    @property
+    def is_smt(self) -> bool:
+        """Return True if this processor has SMT enabled."""
+        return self.threads_per_core > 1
 
 
 @dataclass
 class ProcessorConfigSpec:
-    """Combined processor specs."""
-    smt: ProcessorSpec = field(default_factory=ProcessorSpec)
-    nosmt: NoSmtProcessorSpec = field(default_factory=NoSmtProcessorSpec)
+    """Container for named processor configurations.
+
+    Processors are stored in a dict keyed by name, allowing arbitrary
+    processor definitions (not limited to 'smt'/'nosmt').
+    """
+    processors: Dict[str, ProcessorSpec] = field(default_factory=dict)
+
+    def __post_init__(self):
+        # Ensure defaults for backward compatibility
+        if not self.processors:
+            self.processors = {
+                "smt": ProcessorSpec(physical_cores=48, threads_per_core=2,
+                                    power_idle_w=100.0, power_max_w=400.0),
+                "nosmt": ProcessorSpec(physical_cores=48, threads_per_core=1,
+                                      power_idle_w=90.0, power_max_w=340.0),
+            }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ProcessorConfigSpec':
-        return cls(
-            smt=ProcessorSpec.from_dict(data.get('smt', {})),
-            nosmt=NoSmtProcessorSpec.from_dict(data.get('nosmt', {})),
-        )
+        processors = {}
+        for name, spec_data in data.items():
+            processors[name] = ProcessorSpec.from_dict(spec_data)
+        return cls(processors=processors)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            'smt': self.smt.to_dict(),
-            'nosmt': self.nosmt.to_dict(),
-        }
+        return {name: spec.to_dict() for name, spec in self.processors.items()}
+
+    def get(self, name: str) -> ProcessorSpec:
+        """Get a processor by name."""
+        if name not in self.processors:
+            raise KeyError(f"Unknown processor: {name}. Available: {list(self.processors.keys())}")
+        return self.processors[name]
+
+    # Backward compatibility properties
+    @property
+    def smt(self) -> ProcessorSpec:
+        """Get the 'smt' processor (backward compatibility)."""
+        return self.get("smt")
+
+    @property
+    def nosmt(self) -> ProcessorSpec:
+        """Get the 'nosmt' processor (backward compatibility)."""
+        return self.get("nosmt")
 
 
 @dataclass
@@ -714,9 +741,12 @@ class AnalysisConfig:
 
     @classmethod
     def from_json(cls, path: Path) -> 'AnalysisConfig':
-        """Load config from JSON file."""
+        """Load config from JSON file. Supports comments if json5 is installed."""
         with open(path, 'r') as f:
-            data = json.load(f)
+            if _HAS_JSON5:
+                data = json5.load(f)
+            else:
+                data = json.load(f)
         return cls.from_dict(data)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -819,15 +849,23 @@ class DeclarativeAnalysisEngine:
         proc = cfg.processor
         cost = cfg.cost
 
+        # Get processor specs (supporting arbitrary names)
+        smt_spec = proc.get("smt") if "smt" in proc.processors else None
+        nosmt_spec = proc.get("nosmt") if "nosmt" in proc.processors else None
+
+        # Build ProcessorDefaults from the processor specs
+        # For backward compatibility, we use smt/nosmt if available
         proc_defaults = ProcessorDefaults(
-            smt_physical_cores=proc.smt.physical_cores,
-            smt_power_idle_w=proc.smt.power_idle_w,
-            smt_power_max_w=proc.smt.power_max_w,
-            smt_core_overhead=proc.smt.core_overhead,
-            nosmt_physical_cores=proc.nosmt.physical_cores,
-            nosmt_power_ratio=proc.nosmt.power_ratio,
-            nosmt_idle_ratio=proc.nosmt.idle_ratio,
-            nosmt_core_overhead=proc.nosmt.core_overhead,
+            smt_physical_cores=smt_spec.physical_cores if smt_spec else 48,
+            smt_threads_per_core=smt_spec.threads_per_core if smt_spec else 2,
+            smt_power_idle_w=smt_spec.power_idle_w if smt_spec else 100.0,
+            smt_power_max_w=smt_spec.power_max_w if smt_spec else 400.0,
+            smt_core_overhead=smt_spec.core_overhead if smt_spec else 0,
+            nosmt_physical_cores=nosmt_spec.physical_cores if nosmt_spec else 48,
+            nosmt_threads_per_core=nosmt_spec.threads_per_core if nosmt_spec else 1,
+            nosmt_power_idle_w=nosmt_spec.power_idle_w if nosmt_spec else 90.0,
+            nosmt_power_max_w=nosmt_spec.power_max_w if nosmt_spec else 340.0,
+            nosmt_core_overhead=nosmt_spec.core_overhead if nosmt_spec else 0,
         )
 
         cost_defaults = CostDefaults(
@@ -841,6 +879,9 @@ class DeclarativeAnalysisEngine:
         power_fn = cfg.power_curve.to_callable()
         self._builder = ScenarioBuilder(proc_defaults, cost_defaults, power_fn)
 
+        # Store processor config for direct access
+        self._processor_config = proc
+
         workload = self._builder.build_workload_params(
             cfg.workload.total_vcpus,
             cfg.workload.avg_util,
@@ -850,8 +891,12 @@ class DeclarativeAnalysisEngine:
 
     def _build_scenario_spec(self, name: str, scenario_cfg: ScenarioConfig) -> ScenarioSpec:
         """Build a ScenarioSpec from config."""
-        is_smt = scenario_cfg.processor.lower() == 'smt'
+        proc_name = scenario_cfg.processor
         overrides = scenario_cfg.overrides or {}
+
+        # Get processor spec and determine if SMT based on threads_per_core
+        proc_spec = self._processor_config.get(proc_name)
+        is_smt = proc_spec.threads_per_core > 1
 
         return self._builder.build_scenario(
             name=name,
@@ -864,13 +909,33 @@ class DeclarativeAnalysisEngine:
 
     def _build_scenario_params(self, scenario_cfg: ScenarioConfig) -> ScenarioParams:
         """Build ScenarioParams from config."""
-        is_smt = scenario_cfg.processor.lower() == 'smt'
+        proc_name = scenario_cfg.processor
         overrides = scenario_cfg.overrides or {}
 
-        if is_smt:
-            processor = self._builder.build_smt_processor(**overrides)
-        else:
-            processor = self._builder.build_nosmt_processor(**overrides)
+        # Get processor spec from config
+        proc_spec = self._processor_config.get(proc_name)
+
+        # Build ProcessorConfig from spec with overrides
+        power_fn = self._config.power_curve.to_callable()
+
+        physical_cores = overrides.get('physical_cores', proc_spec.physical_cores)
+        threads_per_core = overrides.get('threads_per_core', proc_spec.threads_per_core)
+        power_idle = overrides.get('power_idle_w', proc_spec.power_idle_w)
+        power_max = overrides.get('power_max_w', proc_spec.power_max_w)
+        core_overhead = overrides.get('core_overhead', proc_spec.core_overhead)
+
+        power_curve = PowerCurve(
+            p_idle=power_idle,
+            p_max=power_max,
+            curve_fn=power_fn,
+        )
+
+        processor = ProcessorConfig(
+            physical_cores=physical_cores,
+            threads_per_core=threads_per_core,
+            power_curve=power_curve,
+            core_overhead=core_overhead,
+        )
 
         return ScenarioParams(
             processor=processor,
@@ -1202,10 +1267,116 @@ class DeclarativeAnalysisEngine:
         return "\n".join(lines)
 
 
+def is_valid_analysis_config(path: Path) -> bool:
+    """
+    Check if a file is a valid declarative analysis config.
+
+    A valid config must have 'name', 'scenarios', and 'analysis' keys.
+    """
+    try:
+        with open(path, 'r') as f:
+            if _HAS_JSON5:
+                data = json5.load(f)
+            else:
+                data = json.load(f)
+        # Check for required keys
+        return all(key in data for key in ('name', 'scenarios', 'analysis'))
+    except (json.JSONDecodeError, KeyError, OSError):
+        return False
+    except Exception:
+        # json5 may raise different exceptions
+        return False
+
+
 def run_analysis(config_path: Union[str, Path]) -> AnalysisResult:
     """Convenience function to run analysis from config file."""
     engine = DeclarativeAnalysisEngine()
     return engine.run_from_file(config_path)
+
+
+@dataclass
+class BatchResult:
+    """Result of running multiple analyses."""
+    results: Dict[str, AnalysisResult]  # path -> result
+    errors: Dict[str, str]  # path -> error message
+    skipped: List[str]  # paths skipped (not valid configs)
+
+    @property
+    def summary(self) -> str:
+        """Build summary of batch run."""
+        lines = [
+            f"# Batch Analysis Results",
+            f"",
+            f"- Successful: {len(self.results)}",
+            f"- Errors: {len(self.errors)}",
+            f"- Skipped: {len(self.skipped)}",
+            f"",
+        ]
+
+        if self.results:
+            lines.append("## Successful Analyses")
+            for path, result in self.results.items():
+                lines.append(f"- {path}: {result.config.name}")
+            lines.append("")
+
+        if self.errors:
+            lines.append("## Errors")
+            for path, error in self.errors.items():
+                lines.append(f"- {path}: {error}")
+            lines.append("")
+
+        if self.skipped:
+            lines.append("## Skipped (not valid analysis configs)")
+            for path in self.skipped:
+                lines.append(f"- {path}")
+
+        return "\n".join(lines)
+
+
+def run_analysis_batch(
+    directory: Union[str, Path],
+    pattern: str = "*.json*",
+) -> BatchResult:
+    """
+    Run all valid analysis configs in a directory.
+
+    Args:
+        directory: Directory containing config files
+        pattern: Glob pattern for config files (default: "*.json*" matches .json and .jsonc)
+
+    Returns:
+        BatchResult with results, errors, and skipped files
+    """
+    directory = Path(directory)
+    if not directory.is_dir():
+        raise ValueError(f"Not a directory: {directory}")
+
+    results: Dict[str, AnalysisResult] = {}
+    errors: Dict[str, str] = {}
+    skipped: List[str] = []
+
+    # Find all matching files
+    config_files = sorted(directory.glob(pattern))
+
+    for config_path in config_files:
+        if not config_path.is_file():
+            continue
+
+        path_str = str(config_path)
+
+        # Check if it's a valid analysis config
+        if not is_valid_analysis_config(config_path):
+            skipped.append(path_str)
+            continue
+
+        # Try to run the analysis
+        try:
+            result = run_analysis(config_path)
+            results[path_str] = result
+        except Exception as e:
+            errors[path_str] = str(e)
+
+    return BatchResult(results=results, errors=errors, skipped=skipped)
 
 
 # CLI entry point
@@ -1213,18 +1384,40 @@ if __name__ == '__main__':
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python -m smt_oversub_model.declarative <config.json>")
+        print("Usage: python -m smt_oversub_model.declarative <config.json | directory>")
         sys.exit(1)
 
-    config_path = sys.argv[1]
-    result = run_analysis(config_path)
+    input_path = Path(sys.argv[1])
 
-    # Print summary
-    print(result.summary)
+    if input_path.is_dir():
+        # Run all configs in directory
+        batch_result = run_analysis_batch(input_path)
+        print(batch_result.summary)
 
-    # Save results if output_dir specified
-    if result.config.output_dir:
-        from .output import OutputWriter
-        writer = OutputWriter(result.config.output_dir)
-        writer.write(result)
-        print(f"\nResults saved to: {result.config.output_dir}")
+        # Print individual summaries for successful runs
+        if batch_result.results:
+            print("\n" + "=" * 60 + "\n")
+            for path, result in batch_result.results.items():
+                print(f"## {path}\n")
+                print(result.summary)
+                print("\n" + "-" * 40 + "\n")
+
+                # Save results if output_dir specified
+                if result.config.output_dir:
+                    from .output import OutputWriter
+                    writer = OutputWriter(result.config.output_dir)
+                    writer.write(result)
+                    print(f"Results saved to: {result.config.output_dir}\n")
+    else:
+        # Single file
+        result = run_analysis(input_path)
+
+        # Print summary
+        print(result.summary)
+
+        # Save results if output_dir specified
+        if result.config.output_dir:
+            from .output import OutputWriter
+            writer = OutputWriter(result.config.output_dir)
+            writer.write(result)
+            print(f"\nResults saved to: {result.config.output_dir}")

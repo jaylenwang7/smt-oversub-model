@@ -50,7 +50,7 @@ from .config import (
     ExperimentConfig,
     PowerCurveSpec,
     ProcessorSpec,
-    NoSmtProcessorSpec,
+    ProcessorConfigSpec,
     WorkloadSpec,
     CostSpec,
     OversubSpec,
@@ -93,6 +93,9 @@ from .declarative import (
     AnalysisResult,
     DeclarativeAnalysisEngine,
     run_analysis,
+    BatchResult,
+    run_analysis_batch,
+    is_valid_analysis_config,
 )
 
 # Output utilities
@@ -144,7 +147,7 @@ __all__ = [
     'ExperimentConfig',
     'PowerCurveSpec',
     'ProcessorSpec',
-    'NoSmtProcessorSpec',
+    'ProcessorConfigSpec',
     'WorkloadSpec',
     'CostSpec',
     'OversubSpec',
@@ -179,6 +182,9 @@ __all__ = [
     'AnalysisResult',
     'DeclarativeAnalysisEngine',
     'run_analysis',
+    'BatchResult',
+    'run_analysis_batch',
+    'is_valid_analysis_config',
     # Output utilities
     'OutputWriter',
     'save_declarative_result',
