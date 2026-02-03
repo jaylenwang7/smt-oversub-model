@@ -196,7 +196,7 @@ Load all processors from an external JSON file. Multiple analysis configs can sh
 ```json
 {
   "name": "my_analysis",
-  "processor": "../shared/processors.jsonc",
+  "processor": "configs/shared/processors.jsonc",
   "scenarios": { ... }
 }
 ```
@@ -205,7 +205,7 @@ Or use the `processor_file` key:
 ```json
 {
   "name": "my_analysis",
-  "processor_file": "../shared/processors.jsonc",
+  "processor_file": "configs/shared/processors.jsonc",
   "scenarios": { ... }
 }
 ```
@@ -234,11 +234,11 @@ Mix inline definitions with selective imports from external files. Each processo
 {
   "processor": {
     // Import 'smt' from external file, rename to 'standard_smt'
-    "standard_smt": "../shared/processors.jsonc:smt",
-    
+    "standard_smt": "configs/shared/processors.jsonc:smt",
+
     // Object reference format (equivalent)
-    "standard_nosmt": {"file": "../shared/processors.jsonc", "name": "nosmt"},
-    
+    "standard_nosmt": {"file": "configs/shared/processors.jsonc", "name": "nosmt"},
+
     // Custom inline definition
     "custom_lowpower": {
       "physical_cores": 32,
@@ -278,9 +278,12 @@ This allows you to:
 ```
 
 **Path resolution:**
-- Relative paths are resolved relative to the config file's directory
+- Relative paths are first tried relative to the repository root (directory containing `.git` or `pyproject.toml`)
+- If not found at repo root, falls back to resolving relative to the config file's directory
 - Absolute paths work as-is
 - Supports `.json` and `.jsonc` (with comments, requires `json5` package)
+
+Recommended: Use repo-relative paths like `"configs/shared/processors.jsonc:smt"` for clarity.
 
 ### CLI Usage
 

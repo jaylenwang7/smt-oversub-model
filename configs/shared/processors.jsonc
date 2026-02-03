@@ -1,6 +1,6 @@
 {
   // Shared processor configurations
-  // Use by referencing: "smt": "../shared/processors.jsonc:smt"
+  // Use by referencing: "smt": "configs/shared/processors.jsonc:smt"
 
   "smt": {
     "physical_cores": 48,

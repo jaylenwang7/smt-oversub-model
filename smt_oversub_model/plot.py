@@ -745,6 +745,7 @@ def plot_compare_sweep(
     scenario_filter: Optional[List[str]] = None,
     show_plot_title: Optional[bool] = None,
     x_axis_markers: Optional[List[float]] = None,
+    x_axis_marker_labels: Optional[List[str]] = None,
 ) -> Optional[Any]:
     """
     Plot compare_sweep results showing % difference vs sweep parameter.
@@ -763,6 +764,7 @@ def plot_compare_sweep(
         scenario_filter: Optional list of scenario names to include (for individual plots)
         show_plot_title: Whether to show the title (default from config or True)
         x_axis_markers: List of x-values to draw vertical lines and label intersections (default from config or None)
+        x_axis_marker_labels: Labels for x_axis_markers, displayed at top of vertical lines (default from config or None)
 
     Returns:
         matplotlib Figure object if matplotlib is available
@@ -805,6 +807,13 @@ def plot_compare_sweep(
         elif isinstance(result, dict) and 'config' in result:
             analysis = result['config'].get('analysis', {})
             x_axis_markers = analysis.get('x_axis_markers')
+
+    if x_axis_marker_labels is None:
+        if hasattr(result, 'config') and hasattr(result.config, 'analysis'):
+            x_axis_marker_labels = result.config.analysis.x_axis_marker_labels
+        elif isinstance(result, dict) and 'config' in result:
+            analysis = result['config'].get('analysis', {})
+            x_axis_marker_labels = analysis.get('x_axis_marker_labels')
 
     # Get labels from config
     labels = {}
@@ -927,7 +936,7 @@ def plot_compare_sweep(
                 if breakeven_x is not None:
                     # Interpolate y value (should be ~0)
                     ax.plot(breakeven_x, 0, 'D', markersize=12, color=color,
-                           markeredgecolor='white', markeredgewidth=2, zorder=10)
+                           markeredgecolor='white', markeredgewidth=2, zorder=15)
                     breakeven_points.append((breakeven_x, scenario_label, metric_name, color))
 
     # Reference line at 0%
@@ -945,7 +954,7 @@ def plot_compare_sweep(
     ax.text(0.02, 0.98, 'Increase', transform=ax.transAxes, fontsize=9,
             color=COLORS['negative'], fontweight='bold', alpha=0.7, va='top')
 
-    # Add breakeven labels
+    # Add breakeven labels (high zorder to appear above x_axis_marker labels)
     if show_breakeven_marker and breakeven_points:
         # Offset labels to avoid overlap
         for i, (bx, slabel, mname, color) in enumerate(breakeven_points):
@@ -958,31 +967,44 @@ def plot_compare_sweep(
                        textcoords='offset points', ha='center', va='bottom',
                        fontsize=9, fontweight='bold', color=color,
                        bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
-                                edgecolor=color, alpha=0.9))
+                                edgecolor=color, alpha=0.9),
+                       zorder=20)
 
     ax.set_xlabel(display_param_name, fontsize=11)
     ax.set_ylabel('Change vs Baseline (%)', fontsize=11)
     
     # Draw x-axis markers if specified
     if x_axis_markers:
-        for marker_x in x_axis_markers:
+        for marker_idx, marker_x in enumerate(x_axis_markers):
             # Draw vertical line
             ax.axvline(marker_x, color='gray', linestyle='--', alpha=0.5, linewidth=1.5, zorder=1)
-            
+
+            # Add label at top of vertical line if provided
+            if x_axis_marker_labels and marker_idx < len(x_axis_marker_labels):
+                marker_label = x_axis_marker_labels[marker_idx]
+                # Position label at top of plot area
+                y_top = ax.get_ylim()[1]
+                ax.annotate(marker_label, xy=(marker_x, y_top),
+                           xytext=(0, 5), textcoords='offset points',
+                           fontsize=9, color='#555555', fontweight='bold',
+                           ha='center', va='bottom',
+                           bbox=dict(boxstyle='round,pad=0.2', facecolor='white',
+                                   edgecolor='gray', alpha=0.9))
+
             # Find and label intersection points for each scenario
             for scenario_idx, scenario_name in enumerate(scenario_names):
                 base_color = scenario_colors[scenario_idx % len(scenario_colors)]
-                
+
                 for metric_name in metrics_to_plot:
                     metric_key = f'{metric_name}_diff_pct'
-                    
+
                     # Extract values for this scenario and metric
                     if is_multi:
                         y_values = [p['scenarios'].get(scenario_name, {}).get(metric_key, 0)
                                    for p in compare_sweep_results]
                     else:
                         y_values = [p.get(metric_key, 0) for p in compare_sweep_results]
-                    
+
                     # Interpolate y-value at marker_x
                     y_at_marker = _interpolate_y_at_x(param_values, y_values, marker_x)
                     if y_at_marker is not None:
@@ -992,14 +1014,14 @@ def plot_compare_sweep(
                             color = _adjust_color_brightness(base_color, 1.0 - metric_idx * 0.2)
                         else:
                             color = base_color
-                        
+
                         # Plot marker point
                         ax.plot(marker_x, y_at_marker, 'o', markersize=8, color=color,
                                markeredgecolor='white', markeredgewidth=1.5, zorder=10)
-                        
+
                         # Add label with y-value
                         label_text = f"{y_at_marker:.1f}%"
-                        ax.annotate(label_text, xy=(marker_x, y_at_marker), 
+                        ax.annotate(label_text, xy=(marker_x, y_at_marker),
                                    xytext=(5, 5), textcoords='offset points',
                                    fontsize=8, color=color, fontweight='bold',
                                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white',

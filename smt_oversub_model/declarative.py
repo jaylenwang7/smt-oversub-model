@@ -37,6 +37,26 @@ from .analysis import ScenarioSpec, ScenarioBuilder, ProcessorDefaults, CostDefa
 from .config import make_power_curve_fn
 
 
+def _find_repo_root(start_path: Optional[Path] = None) -> Optional[Path]:
+    """Find the repository root by looking for .git or pyproject.toml.
+
+    Args:
+        start_path: Directory to start searching from (default: cwd)
+
+    Returns:
+        Path to repo root, or None if not found
+    """
+    if start_path is None:
+        start_path = Path.cwd()
+
+    current = start_path.resolve()
+    while current != current.parent:
+        if (current / '.git').exists() or (current / 'pyproject.toml').exists():
+            return current
+        current = current.parent
+    return None
+
+
 class CostMode(Enum):
     """Mode for cost specification."""
     RAW = "raw"  # Direct specification of all cost parameters
@@ -528,6 +548,7 @@ class AnalysisSpec:
     sweep_parameter_label: Optional[str] = None  # Display label for sweep parameter (e.g., "vCPU Demand Discount")
     show_plot_title: bool = True  # For line plots: show title (default True)
     x_axis_markers: Optional[List[float]] = None  # For line plots: draw vertical lines at these x-values and label intersections
+    x_axis_marker_labels: Optional[List[str]] = None  # For line plots: labels for x_axis_markers (same length as x_axis_markers)
     separate_metric_plots: bool = False  # For compare_sweep: generate separate plots for carbon and TCO instead of combined
 
     @classmethod
@@ -550,6 +571,7 @@ class AnalysisSpec:
             sweep_parameter_label=data.get('sweep_parameter_label'),
             show_plot_title=data.get('show_plot_title', True),
             x_axis_markers=data.get('x_axis_markers'),
+            x_axis_marker_labels=data.get('x_axis_marker_labels'),
             separate_metric_plots=data.get('separate_metric_plots', False),
         )
 
@@ -587,6 +609,8 @@ class AnalysisSpec:
             d['show_plot_title'] = False
         if self.x_axis_markers:
             d['x_axis_markers'] = self.x_axis_markers
+        if self.x_axis_marker_labels:
+            d['x_axis_marker_labels'] = self.x_axis_marker_labels
         if self.separate_metric_plots:
             d['separate_metric_plots'] = True
         return d
@@ -721,10 +745,38 @@ class ProcessorConfigSpec:
 
     @classmethod
     def _resolve_path(cls, path_str: str, base_path: Optional[Path]) -> Path:
-        """Resolve a path string relative to base_path."""
+        """Resolve a path string relative to repo root or config directory.
+
+        Resolution order:
+        1. If path starts with configs/ or is repo-relative, resolve from repo root
+        2. Otherwise try repo root first, then fall back to config directory
+
+        This allows both repo-relative paths (e.g., "configs/shared/processors.jsonc")
+        and config-relative paths (e.g., "../shared/processors.jsonc") to work.
+        """
         path = Path(path_str)
-        if base_path and not path.is_absolute():
-            path = base_path / path
+        if path.is_absolute():
+            return path.resolve()
+
+        repo_root = _find_repo_root(base_path)
+
+        # Try repo root first
+        if repo_root:
+            repo_path = repo_root / path
+            if repo_path.exists():
+                return repo_path.resolve()
+
+        # Fall back to config file directory
+        if base_path:
+            config_path = base_path / path
+            if config_path.exists():
+                return config_path.resolve()
+
+        # If neither exists, return repo-relative path (will fail with clearer error)
+        if repo_root:
+            return (repo_root / path).resolve()
+        elif base_path:
+            return (base_path / path).resolve()
         return path.resolve()
 
     @classmethod

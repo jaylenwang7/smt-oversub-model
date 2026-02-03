@@ -1,6 +1,6 @@
 {
-  "name": "util_10pct_smt_vs_nosmt_oversub",
-  "description": "At 10% utilization: Compare SMT (R=2.0) vs No-SMT (R=2.0) while sweeping vCPU demand discount for No-SMT",
+  "name": "util_10pct_smt_vs_nosmt_linear_oversub",
+  "description": "At 10% utilization: Compare SMT (R=2.0) vs No-SMT Linear (R=2.0) while sweeping vCPU demand discount for No-SMT",
   "scenarios": {
     "smt_oversub": {
       "processor": "smt",
@@ -8,7 +8,7 @@
       "util_overhead": 0.05
     },
     "nosmt_oversub": {
-      "processor": "nosmt",
+      "processor": "nosmt_linear",
       "oversub_ratio": 2.0,
       "vcpu_demand_multiplier": 1.0
     }
@@ -31,12 +31,12 @@
     "x_axis_marker_labels": ["low", "geomean", "high"],
     "labels": {
       "smt_oversub": "SMT (R=2.0, 50% oversub)",
-      "nosmt_oversub": "No-SMT (R=2.0, 50% oversub)"
+      "nosmt_oversub": "No-SMT Linear (R=2.0, 50% oversub)"
     }
   },
   "processor": {
     "smt": "configs/shared/processors.jsonc:smt",
-    "nosmt": "configs/shared/processors.jsonc:nosmt"
+    "nosmt_linear": "configs/shared/processors.jsonc:nosmt_linear"
   },
   "cost": {
     "carbon_intensity_g_kwh": 175,
@@ -46,5 +46,5 @@
   "power_curve": {
     "type": "polynomial"
   },
-  "output_dir": "./results/util_oversub_comparison/util_10pct"
+  "output_dir": "./results/util_oversub_comparison/linear/util_10pct_linear"
 }
