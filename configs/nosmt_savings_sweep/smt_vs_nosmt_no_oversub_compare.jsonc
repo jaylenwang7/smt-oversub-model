@@ -1,0 +1,41 @@
+{
+  "name": "smt_vs_nosmt_no_oversub_compare",
+  "description": "Direct comparison of SMT vs no-SMT, both with no oversubscription. Shows bar chart breakdown of operational/embodied carbon and opex/capex costs.",
+  "scenarios": {
+    "smt_no_oversub": {
+      "processor": "smt",
+      "oversub_ratio": 1.0
+    },
+    "nosmt_no_oversub": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.0
+    }
+  },
+  "workload": {
+    "total_vcpus": 10000,
+    "avg_util": 0.1
+  },
+  "analysis": {
+    "type": "compare",
+    "baseline": "smt_no_oversub",
+    "scenarios": ["smt_no_oversub", "nosmt_no_oversub"],
+    "labels": {
+      "smt_no_oversub": "SMT (R=1.0)",
+      "nosmt_no_oversub": "No-SMT (R=1.0)"
+    },
+    "show_plot_title": false
+  },
+  "processor": {
+    "smt": "../shared/processors.jsonc:smt",
+    "nosmt": "../shared/processors.jsonc:nosmt"
+  },
+  "cost": {
+    "carbon_intensity_g_kwh": 175,
+    "electricity_cost_usd_kwh": 0.28,
+    "lifetime_years": 6
+  },
+  "power_curve": {
+    "type": "specpower"
+  },
+  "output_dir": "./results/nosmt_savings_sweep/smt_vs_nosmt_no_oversub_compare"
+}

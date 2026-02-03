@@ -598,12 +598,17 @@ class ProcessorSpec:
         power_idle_w: Idle power consumption in watts
         power_max_w: Maximum power consumption in watts
         core_overhead: Number of pCPUs reserved for host (not available for VMs)
+        embodied_carbon_kg: Optional per-server embodied carbon (overrides cost.embodied_carbon_kg)
+        server_cost_usd: Optional per-server cost (overrides cost.server_cost_usd)
     """
     physical_cores: int = 48
     threads_per_core: int = 1  # 1 = no SMT, 2 = SMT (hyperthreading)
     power_idle_w: float = 100.0
     power_max_w: float = 400.0
     core_overhead: int = 0
+    # Optional cost overrides - if set, these override the values in CostSpec
+    embodied_carbon_kg: Optional[float] = None
+    server_cost_usd: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ProcessorSpec':
@@ -613,10 +618,24 @@ class ProcessorSpec:
             power_idle_w=data.get('power_idle_w', 100.0),
             power_max_w=data.get('power_max_w', 400.0),
             core_overhead=data.get('core_overhead', 0),
+            embodied_carbon_kg=data.get('embodied_carbon_kg'),
+            server_cost_usd=data.get('server_cost_usd'),
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        d = {
+            'physical_cores': self.physical_cores,
+            'threads_per_core': self.threads_per_core,
+            'power_idle_w': self.power_idle_w,
+            'power_max_w': self.power_max_w,
+            'core_overhead': self.core_overhead,
+        }
+        # Only include optional fields if set
+        if self.embodied_carbon_kg is not None:
+            d['embodied_carbon_kg'] = self.embodied_carbon_kg
+        if self.server_cost_usd is not None:
+            d['server_cost_usd'] = self.server_cost_usd
+        return d
 
     @property
     def is_smt(self) -> bool:
@@ -630,8 +649,33 @@ class ProcessorConfigSpec:
 
     Processors are stored in a dict keyed by name, allowing arbitrary
     processor definitions (not limited to 'smt'/'nosmt').
+
+    Supports multiple loading modes:
+
+    1. **Load all from file**: `"processor": "./processors.json"`
+       Loads all processors from the external file.
+
+    2. **Inline definitions**: Define processors directly in the config.
+       ```json
+       "processor": {
+         "smt": { "physical_cores": 48, ... },
+         "nosmt": { ... }
+       }
+       ```
+
+    3. **Mixed mode**: Combine inline definitions with selective imports.
+       ```json
+       "processor": {
+         "custom_a": "./processors.json:smt",  // String reference: file:processor_name
+         "custom_b": { "file": "./processors.json", "name": "nosmt" },  // Object reference
+         "my_custom": { "physical_cores": 32, ... }  // Inline definition
+       }
+       ```
+
+    Paths are resolved relative to the config file directory.
     """
     processors: Dict[str, ProcessorSpec] = field(default_factory=dict)
+    source_file: Optional[str] = None  # Track where processors were loaded from (if all from one file)
 
     def __post_init__(self):
         # Ensure defaults for backward compatibility
@@ -644,13 +688,197 @@ class ProcessorConfigSpec:
             }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ProcessorConfigSpec':
-        processors = {}
-        for name, spec_data in data.items():
-            processors[name] = ProcessorSpec.from_dict(spec_data)
-        return cls(processors=processors)
+    def _load_external_file(cls, file_path: Path) -> Dict[str, Any]:
+        """Load and cache external processor file.
 
-    def to_dict(self) -> Dict[str, Any]:
+        Args:
+            file_path: Resolved path to the processor config file
+
+        Returns:
+            Dict of processor data from the file
+        """
+        if not file_path.exists():
+            raise FileNotFoundError(f"Processor config file not found: {file_path}")
+
+        with open(file_path, 'r') as f:
+            if _HAS_JSON5:
+                return json5.load(f)
+            else:
+                return json.load(f)
+
+    @classmethod
+    def _resolve_path(cls, path_str: str, base_path: Optional[Path]) -> Path:
+        """Resolve a path string relative to base_path."""
+        path = Path(path_str)
+        if base_path and not path.is_absolute():
+            path = base_path / path
+        return path.resolve()
+
+    @classmethod
+    def _parse_reference(
+        cls,
+        ref: Union[str, Dict[str, Any]],
+        base_path: Optional[Path],
+    ) -> Tuple[Path, str]:
+        """Parse a processor reference to get file path and processor name.
+
+        Args:
+            ref: Either "file:name" string or {"file": "...", "name": "..."}
+            base_path: Base directory for resolving relative paths
+
+        Returns:
+            Tuple of (resolved_file_path, processor_name)
+        """
+        if isinstance(ref, str):
+            # String format: "path/to/file.json:processor_name"
+            if ':' not in ref:
+                raise ValueError(
+                    f"Invalid processor reference '{ref}': "
+                    "expected 'file:name' format (e.g., './processors.json:smt')"
+                )
+            # Handle Windows paths with drive letters (e.g., C:\path\file.json:name)
+            # Split from the right to handle this case
+            last_colon = ref.rfind(':')
+            file_part = ref[:last_colon]
+            name_part = ref[last_colon + 1:]
+            return cls._resolve_path(file_part, base_path), name_part
+        else:
+            # Object format: {"file": "...", "name": "..."}
+            if 'file' not in ref or 'name' not in ref:
+                raise ValueError(
+                    f"Invalid processor reference object: "
+                    "expected {{'file': '...', 'name': '...'}} format"
+                )
+            return cls._resolve_path(ref['file'], base_path), ref['name']
+
+    @classmethod
+    def _is_processor_reference(cls, spec_data: Any) -> bool:
+        """Check if spec_data is a reference to an external processor.
+
+        A reference is either:
+        - A string containing ':' (file:name format)
+        - A dict with 'file' and 'name' keys
+        """
+        if isinstance(spec_data, str):
+            return ':' in spec_data
+        if isinstance(spec_data, dict):
+            return 'file' in spec_data and 'name' in spec_data
+        return False
+
+    @classmethod
+    def _is_inline_processor(cls, spec_data: Any) -> bool:
+        """Check if spec_data is an inline processor definition.
+
+        An inline processor has processor-specific fields like physical_cores,
+        threads_per_core, power_idle_w, etc.
+        """
+        if not isinstance(spec_data, dict):
+            return False
+        # Check for at least one processor field
+        processor_fields = {'physical_cores', 'threads_per_core', 'power_idle_w', 'power_max_w', 'core_overhead'}
+        return bool(processor_fields & set(spec_data.keys()))
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: Union[Dict[str, Any], str],
+        base_path: Optional[Path] = None,
+    ) -> 'ProcessorConfigSpec':
+        """Load processor config from dict or file path.
+
+        Supports three modes:
+        1. String path: Load all processors from external file
+        2. Dict of inline specs: Define processors directly
+        3. Mixed: Each processor can be inline or a reference to external file
+
+        Args:
+            data: Either a dict of processor specs, or a string path to a JSON file
+            base_path: Base directory for resolving relative paths (usually config file dir)
+
+        Returns:
+            ProcessorConfigSpec with loaded processors
+
+        Examples:
+            # Mode 1: Load all from file
+            ProcessorConfigSpec.from_dict("./processors.json", base_path)
+
+            # Mode 2: Inline definitions
+            ProcessorConfigSpec.from_dict({
+                "smt": {"physical_cores": 48, "threads_per_core": 2, ...},
+                "nosmt": {"physical_cores": 48, "threads_per_core": 1, ...}
+            }, base_path)
+
+            # Mode 3: Mixed
+            ProcessorConfigSpec.from_dict({
+                "smt": "./processors.json:smt",  # Reference from file
+                "nosmt": {"file": "./processors.json", "name": "nosmt"},  # Object reference
+                "custom": {"physical_cores": 32, "threads_per_core": 1, ...}  # Inline
+            }, base_path)
+        """
+        source_file = None
+
+        # Mode 1: String path - load ALL processors from external file
+        if isinstance(data, str):
+            processor_path = cls._resolve_path(data, base_path)
+
+            if not processor_path.exists():
+                raise FileNotFoundError(f"Processor config file not found: {processor_path}")
+
+            file_data = cls._load_external_file(processor_path)
+            source_file = str(processor_path)
+
+            processors = {}
+            for name, spec_data in file_data.items():
+                processors[name] = ProcessorSpec.from_dict(spec_data)
+            return cls(processors=processors, source_file=source_file)
+
+        # Mode 2 & 3: Dict - could be inline, references, or mixed
+        # Cache loaded files to avoid re-reading
+        file_cache: Dict[str, Dict[str, Any]] = {}
+        processors = {}
+
+        for name, spec_data in data.items():
+            if cls._is_processor_reference(spec_data):
+                # Load from external file reference
+                file_path, proc_name = cls._parse_reference(spec_data, base_path)
+                file_key = str(file_path)
+
+                # Load file if not cached
+                if file_key not in file_cache:
+                    file_cache[file_key] = cls._load_external_file(file_path)
+
+                # Get the specific processor from the file
+                if proc_name not in file_cache[file_key]:
+                    available = list(file_cache[file_key].keys())
+                    raise KeyError(
+                        f"Processor '{proc_name}' not found in {file_path}. "
+                        f"Available: {available}"
+                    )
+
+                processors[name] = ProcessorSpec.from_dict(file_cache[file_key][proc_name])
+
+            elif cls._is_inline_processor(spec_data):
+                # Inline processor definition
+                processors[name] = ProcessorSpec.from_dict(spec_data)
+
+            else:
+                raise ValueError(
+                    f"Invalid processor spec for '{name}': "
+                    f"expected inline definition (with physical_cores, threads_per_core, etc.) "
+                    f"or reference ('file:name' string or {{'file': '...', 'name': '...'}} object)"
+                )
+
+        return cls(processors=processors, source_file=source_file)
+
+    def to_dict(self, include_source: bool = False) -> Dict[str, Any]:
+        """Convert to dict representation.
+
+        Args:
+            include_source: If True and loaded from file, return the source path
+                          instead of inline specs. Default False returns inline specs.
+        """
+        if include_source and self.source_file:
+            return self.source_file
         return {name: spec.to_dict() for name, spec in self.processors.items()}
 
     def get(self, name: str) -> ProcessorSpec:
@@ -1063,6 +1291,13 @@ class AnalysisConfig:
     Complete declarative analysis configuration.
 
     This is the top-level config loaded from JSON.
+
+    Supports loading processor configs from external files:
+    - "processor": "./processors.json" - path to processor config file
+    - "processor_file": "./processors.json" - alternative key for external file
+    - "processor": {...} - inline processor definitions (original behavior)
+
+    Paths are resolved relative to the config file directory.
     """
     name: str
     scenarios: Dict[str, ScenarioConfig]
@@ -1075,17 +1310,44 @@ class AnalysisConfig:
     description: str = ""
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'AnalysisConfig':
+    def from_dict(
+        cls,
+        data: Dict[str, Any],
+        base_path: Optional[Path] = None,
+    ) -> 'AnalysisConfig':
+        """Load config from dict.
+
+        Args:
+            data: Config dict
+            base_path: Base directory for resolving relative paths (e.g., processor_file)
+
+        Returns:
+            AnalysisConfig instance
+        """
         scenarios = {}
         for name, spec in data.get('scenarios', {}).items():
             scenarios[name] = ScenarioConfig.from_dict(spec)
+
+        # Handle processor config - can be inline dict, string path, or via processor_file key
+        processor_data = data.get('processor', {})
+        processor_file = data.get('processor_file')
+
+        if processor_file:
+            # processor_file key takes precedence
+            processor_spec = ProcessorConfigSpec.from_dict(processor_file, base_path)
+        elif isinstance(processor_data, str):
+            # processor is a path string
+            processor_spec = ProcessorConfigSpec.from_dict(processor_data, base_path)
+        else:
+            # processor is inline dict (original behavior)
+            processor_spec = ProcessorConfigSpec.from_dict(processor_data, base_path)
 
         return cls(
             name=data.get('name', 'unnamed'),
             description=data.get('description', ''),
             scenarios=scenarios,
             analysis=AnalysisSpec.from_dict(data.get('analysis', {})),
-            processor=ProcessorConfigSpec.from_dict(data.get('processor', {})),
+            processor=processor_spec,
             workload=WorkloadSpec.from_dict(data.get('workload', {})),
             cost=CostSpec.from_dict(data.get('cost', {})),
             power_curve=PowerCurveSpec.from_dict(data.get('power_curve', {})),
@@ -1094,13 +1356,18 @@ class AnalysisConfig:
 
     @classmethod
     def from_json(cls, path: Path) -> 'AnalysisConfig':
-        """Load config from JSON file. Supports comments if json5 is installed."""
+        """Load config from JSON file. Supports comments if json5 is installed.
+
+        Relative paths in the config (e.g., processor_file) are resolved
+        relative to the config file's directory.
+        """
+        path = Path(path).resolve()
         with open(path, 'r') as f:
             if _HAS_JSON5:
                 data = json5.load(f)
             else:
                 data = json.load(f)
-        return cls.from_dict(data)
+        return cls.from_dict(data, base_path=path.parent)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1429,7 +1696,17 @@ class DeclarativeAnalysisEngine:
         """Evaluate a scenario by name and return params and result."""
         scenario_cfg = self._config.scenarios[name]
         params = self._build_scenario_params(scenario_cfg)
-        result = self._model.evaluate_scenario(params)
+
+        # Check for processor-specific cost overrides
+        proc_name = scenario_cfg.processor
+        proc_spec = self._processor_config.get(proc_name)
+        cost_overrides = {}
+        if proc_spec.embodied_carbon_kg is not None:
+            cost_overrides['embodied_carbon_kg'] = proc_spec.embodied_carbon_kg
+        if proc_spec.server_cost_usd is not None:
+            cost_overrides['server_cost_usd'] = proc_spec.server_cost_usd
+
+        result = self._model.evaluate_scenario(params, cost_overrides if cost_overrides else None)
         return params, result
 
     def _run_find_breakeven(self) -> AnalysisResult:

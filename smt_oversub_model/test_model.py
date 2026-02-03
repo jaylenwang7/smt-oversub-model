@@ -1130,3 +1130,201 @@ class TestCompareSweep:
         assert 'nosmt_r1' in result.summary
         assert 'nosmt_r2' in result.summary
         assert 'Breakeven Points' in result.summary
+
+
+class TestRemoteProcessorConfig:
+    """Tests for loading processor configs from external files."""
+
+    def test_load_processor_from_dict(self):
+        """Basic test: loading from inline dict still works."""
+        from .declarative import ProcessorConfigSpec
+
+        data = {
+            'smt': {'physical_cores': 48, 'threads_per_core': 2, 'power_idle_w': 100, 'power_max_w': 400},
+            'nosmt': {'physical_cores': 48, 'threads_per_core': 1, 'power_idle_w': 90, 'power_max_w': 340},
+        }
+        spec = ProcessorConfigSpec.from_dict(data)
+        assert 'smt' in spec.processors
+        assert 'nosmt' in spec.processors
+        assert spec.processors['smt'].threads_per_core == 2
+        assert spec.source_file is None
+
+    def test_load_processor_from_file(self, tmp_path):
+        """Test loading processor config from an external JSON file."""
+        import json
+        from .declarative import ProcessorConfigSpec
+
+        # Create processor config file
+        processor_file = tmp_path / "processors.json"
+        processor_data = {
+            'high_core': {'physical_cores': 64, 'threads_per_core': 2, 'power_idle_w': 120, 'power_max_w': 500},
+            'low_power': {'physical_cores': 32, 'threads_per_core': 1, 'power_idle_w': 60, 'power_max_w': 200},
+        }
+        with open(processor_file, 'w') as f:
+            json.dump(processor_data, f)
+
+        # Load from string path
+        spec = ProcessorConfigSpec.from_dict(str(processor_file))
+        assert 'high_core' in spec.processors
+        assert 'low_power' in spec.processors
+        assert spec.processors['high_core'].physical_cores == 64
+        assert spec.processors['low_power'].threads_per_core == 1
+        assert spec.source_file == str(processor_file)
+
+    def test_load_processor_relative_path(self, tmp_path):
+        """Test loading processor config using relative path."""
+        import json
+        from .declarative import ProcessorConfigSpec
+
+        # Create nested directory structure
+        config_dir = tmp_path / "configs"
+        shared_dir = tmp_path / "shared"
+        config_dir.mkdir()
+        shared_dir.mkdir()
+
+        # Create shared processor file
+        processor_file = shared_dir / "processors.json"
+        processor_data = {
+            'custom': {'physical_cores': 56, 'threads_per_core': 2, 'power_idle_w': 110, 'power_max_w': 450},
+        }
+        with open(processor_file, 'w') as f:
+            json.dump(processor_data, f)
+
+        # Load using relative path from config_dir
+        spec = ProcessorConfigSpec.from_dict('../shared/processors.json', base_path=config_dir)
+        assert 'custom' in spec.processors
+        assert spec.processors['custom'].physical_cores == 56
+
+    def test_processor_file_key(self, tmp_path):
+        """Test using processor_file key in AnalysisConfig."""
+        import json
+        from .declarative import AnalysisConfig
+
+        # Create processor config file
+        processor_file = tmp_path / "processors.json"
+        processor_data = {
+            'smt': {'physical_cores': 48, 'threads_per_core': 2, 'power_idle_w': 100, 'power_max_w': 400},
+            'nosmt': {'physical_cores': 48, 'threads_per_core': 1, 'power_idle_w': 90, 'power_max_w': 340},
+        }
+        with open(processor_file, 'w') as f:
+            json.dump(processor_data, f)
+
+        # Create analysis config with processor_file
+        config_data = {
+            'name': 'test_analysis',
+            'processor_file': str(processor_file),
+            'scenarios': {
+                'baseline': {'processor': 'smt', 'oversub_ratio': 1.0},
+            },
+            'analysis': {'type': 'compare'},
+        }
+
+        config = AnalysisConfig.from_dict(config_data, base_path=tmp_path)
+        assert 'smt' in config.processor.processors
+        assert 'nosmt' in config.processor.processors
+        assert config.processor.source_file == str(processor_file)
+
+    def test_processor_string_in_processor_key(self, tmp_path):
+        """Test using string path directly in processor key."""
+        import json
+        from .declarative import AnalysisConfig
+
+        # Create processor config file
+        processor_file = tmp_path / "procs.json"
+        processor_data = {
+            'smt': {'physical_cores': 48, 'threads_per_core': 2, 'power_idle_w': 100, 'power_max_w': 400},
+        }
+        with open(processor_file, 'w') as f:
+            json.dump(processor_data, f)
+
+        # Create analysis config with processor as string path
+        config_data = {
+            'name': 'test_analysis',
+            'processor': str(processor_file),
+            'scenarios': {
+                'baseline': {'processor': 'smt', 'oversub_ratio': 1.0},
+            },
+            'analysis': {'type': 'compare'},
+        }
+
+        config = AnalysisConfig.from_dict(config_data, base_path=tmp_path)
+        assert 'smt' in config.processor.processors
+        assert config.processor.source_file == str(processor_file)
+
+    def test_missing_processor_file_raises_error(self, tmp_path):
+        """Test that missing processor file raises FileNotFoundError."""
+        from .declarative import ProcessorConfigSpec
+
+        with pytest.raises(FileNotFoundError) as exc_info:
+            ProcessorConfigSpec.from_dict('nonexistent.json', base_path=tmp_path)
+        assert 'not found' in str(exc_info.value).lower()
+
+    def test_full_analysis_with_remote_processor(self, tmp_path):
+        """Test running a full analysis with remotely loaded processor config."""
+        import json
+        from .declarative import run_analysis
+
+        # Create processor config file
+        processor_file = tmp_path / "processors.json"
+        processor_data = {
+            'smt': {'physical_cores': 48, 'threads_per_core': 2, 'power_idle_w': 100, 'power_max_w': 400},
+            'nosmt': {'physical_cores': 48, 'threads_per_core': 1, 'power_idle_w': 90, 'power_max_w': 340},
+        }
+        with open(processor_file, 'w') as f:
+            json.dump(processor_data, f)
+
+        # Create main config file that references processor file
+        config_file = tmp_path / "analysis.json"
+        config_data = {
+            'name': 'remote_processor_test',
+            'processor_file': 'processors.json',
+            'scenarios': {
+                'baseline': {'processor': 'smt', 'oversub_ratio': 1.0},
+                'oversub': {'processor': 'smt', 'oversub_ratio': 1.5},
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'baseline',
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+            'cost': {
+                'embodied_carbon_kg': 1000.0,
+                'server_cost_usd': 10000.0,
+                'carbon_intensity_g_kwh': 400.0,
+                'electricity_cost_usd_kwh': 0.10,
+                'lifetime_years': 5.0,
+            },
+        }
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        # Run the analysis
+        result = run_analysis(config_file)
+        assert result.analysis_type == 'compare'
+        assert 'baseline' in result.scenario_results
+        assert 'oversub' in result.scenario_results
+
+    def test_to_dict_with_source_file(self, tmp_path):
+        """Test that to_dict can optionally preserve source file reference."""
+        import json
+        from .declarative import ProcessorConfigSpec
+
+        # Create processor config file
+        processor_file = tmp_path / "processors.json"
+        processor_data = {
+            'smt': {'physical_cores': 48, 'threads_per_core': 2, 'power_idle_w': 100, 'power_max_w': 400},
+        }
+        with open(processor_file, 'w') as f:
+            json.dump(processor_data, f)
+
+        spec = ProcessorConfigSpec.from_dict(str(processor_file))
+
+        # Default to_dict returns inline specs
+        dict_inline = spec.to_dict(include_source=False)
+        assert isinstance(dict_inline, dict)
+        assert 'smt' in dict_inline
+
+        # With include_source=True, returns path if loaded from file
+        dict_source = spec.to_dict(include_source=True)
+        assert isinstance(dict_source, str)
+        assert dict_source == str(processor_file)

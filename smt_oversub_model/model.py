@@ -192,8 +192,22 @@ class OverssubModel:
         self.workload = workload
         self.cost = cost
     
-    def evaluate_scenario(self, scenario: ScenarioParams) -> ScenarioResult:
-        """Evaluate carbon and TCO for a given scenario."""
+    def evaluate_scenario(
+        self,
+        scenario: ScenarioParams,
+        cost_overrides: Optional[dict] = None,
+    ) -> ScenarioResult:
+        """Evaluate carbon and TCO for a given scenario.
+
+        Args:
+            scenario: The scenario parameters to evaluate
+            cost_overrides: Optional dict with 'embodied_carbon_kg' and/or
+                'server_cost_usd' to override the model's default cost params.
+                Useful for per-processor cost modeling.
+
+        Returns:
+            ScenarioResult with carbon and TCO metrics
+        """
         proc = scenario.processor
 
         # Apply vCPU demand multiplier (e.g., 0.7 means 30% less vCPU demand)
@@ -216,9 +230,18 @@ class OverssubModel:
         # Calculate power
         power_per_server = proc.power_curve.power_at_util(effective_util)
         
+        # Get cost values, allowing per-processor overrides
+        embodied_carbon_kg = self.cost.embodied_carbon_kg
+        server_cost_usd = self.cost.server_cost_usd
+        if cost_overrides:
+            if 'embodied_carbon_kg' in cost_overrides:
+                embodied_carbon_kg = cost_overrides['embodied_carbon_kg']
+            if 'server_cost_usd' in cost_overrides:
+                server_cost_usd = cost_overrides['server_cost_usd']
+        
         # Embodied carbon/cost (amortized over lifetime, but we report total)
-        embodied_carbon = num_servers * self.cost.embodied_carbon_kg
-        embodied_cost = num_servers * self.cost.server_cost_usd
+        embodied_carbon = num_servers * embodied_carbon_kg
+        embodied_cost = num_servers * server_cost_usd
         
         # Operational carbon/cost
         total_energy_kwh = (num_servers * power_per_server * 

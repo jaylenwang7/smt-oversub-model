@@ -406,11 +406,19 @@ class OutputWriter:
         except ImportError:
             return
 
-        # Build scenario list for plotting
+        # Get labels and show_plot_title from config
+        labels = {}
+        show_plot_title = True
+        if hasattr(result.config, 'analysis'):
+            labels = result.config.analysis.labels or {}
+            show_plot_title = result.config.analysis.show_plot_title
+
+        # Build scenario list for plotting with custom labels
         scenarios = []
         for name, data in result.scenario_results.items():
+            display_name = labels.get(name, name)  # Use custom label or fallback to key
             scenarios.append({
-                'name': name,
+                'name': display_name,
                 **data,
             })
 
@@ -424,6 +432,7 @@ class OutputWriter:
             save_path=str(save_path),
             show=False,
             title=f"Scenario Comparison: {result.config.name}",
+            show_plot_title=show_plot_title,
         )
 
     def _plot_breakeven(

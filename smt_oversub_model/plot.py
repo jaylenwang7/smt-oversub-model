@@ -132,6 +132,7 @@ def plot_scenarios(
     title: Optional[str] = None,
     colors: Optional[Dict[str, str]] = None,
     show_server_count: bool = True,
+    show_plot_title: bool = True,
 ) -> Optional[Any]:
     """
     Create professional stacked bar charts comparing arbitrary scenarios.
@@ -154,6 +155,7 @@ def plot_scenarios(
         title: Optional custom title
         colors: Optional dict with 'embodied' and 'operational' color overrides
         show_server_count: Whether to show server count under labels
+        show_plot_title: Whether to show the title (default True)
 
     Returns:
         matplotlib Figure object if matplotlib is available
@@ -298,13 +300,17 @@ def plot_scenarios(
         mpatches.Patch(color=colors.get('operational', COLORS['operational']), label='Operational (OpEx)'),
     ]
     fig.legend(handles=handles, loc='upper center', ncol=2,
-               bbox_to_anchor=(0.5, 0.02), frameon=False, fontsize=10)
+               bbox_to_anchor=(0.5, -0.02), frameon=False, fontsize=10)
 
-    # Title
-    if title:
+    # Title (only if show_plot_title is True)
+    if title and show_plot_title:
         fig.suptitle(title, fontsize=13, fontweight='bold', y=0.98, color='#333333')
 
-    plt.tight_layout(rect=[0, 0.06, 1, 0.94])
+    # Adjust layout based on whether title is shown
+    if show_plot_title and title:
+        plt.tight_layout(rect=[0, 0.05, 1, 0.94])
+    else:
+        plt.tight_layout(rect=[0, 0.05, 1, 1.0])
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
@@ -1109,15 +1115,36 @@ def plot_analysis_result(
         else:
             scenario_results = result.get('scenario_results', {})
 
-        scenarios = [{'name': k, **v} for k, v in scenario_results.items()]
+        # Get labels and show_plot_title from config
+        labels = {}
+        show_plot_title = True
+        if hasattr(result, 'config') and hasattr(result.config, 'analysis'):
+            labels = result.config.analysis.labels or {}
+            show_plot_title = result.config.analysis.show_plot_title
+        elif isinstance(result, dict) and 'config' in result:
+            analysis = result['config'].get('analysis', {})
+            labels = analysis.get('labels', {})
+            show_plot_title = analysis.get('show_plot_title', True)
+
+        # Apply custom labels if provided
+        scenarios = []
+        for k, v in scenario_results.items():
+            name = labels.get(k, k)  # Use custom label or fallback to key
+            scenarios.append({'name': name, **v})
 
         if scenarios:
+            # Remove title from kwargs if show_plot_title is False
+            plot_kwargs = kwargs.copy()
+            if 'title' not in plot_kwargs and not show_plot_title:
+                plot_kwargs['title'] = None
+            
             return plot_scenarios(
                 scenarios,
                 baseline_idx=0,
                 save_path=save_path,
                 show=show,
-                **kwargs,
+                show_plot_title=show_plot_title,
+                **plot_kwargs,
             )
 
     elif analysis_type == 'sweep':

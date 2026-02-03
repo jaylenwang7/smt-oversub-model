@@ -31,25 +31,11 @@
     "search_bounds": [0.5, 1.0]
   },
   "processor": {
-    "smt": {
-      "physical_cores": 48,
-      "threads_per_core": 2,
-      "power_idle_w": 300.0,
-      "power_max_w": 800.0,
-      "core_overhead": 4 // 10% core overhead
-    },
-    "nosmt": {
-      "physical_cores": 52, // 5% area decrease when not using SMT, so can fit 5% more cores
-      "threads_per_core": 1,
-      "power_idle_w": 300.0,
-      "power_max_w": 800.0,
-      "core_overhead": 5 // 10% core overhead
-    }
+    "smt": "../shared/processors.jsonc:smt",
+    "nosmt": "../shared/processors.jsonc:nosmt"
   },
   "cost": {
-    "embodied_carbon_kg": 4000,
-    "server_cost_usd": 15000,
-    "carbon_intensity_g_kwh": 200,
+    "carbon_intensity_g_kwh": 175,
     "electricity_cost_usd_kwh": 0.28,
     "lifetime_years": 6
   },

@@ -151,6 +151,103 @@ You can define processors with any name (not limited to "smt"/"nosmt"):
 }
 ```
 
+### Processor Config Loading
+
+Processor configurations support three loading modes: load all from file, inline definitions, or mixed mode.
+
+**Mode 1: Load all from external file**
+
+Load all processors from an external JSON file. Multiple analysis configs can share the same processor definitions.
+
+```json
+{
+  "name": "my_analysis",
+  "processor": "../shared/processors.jsonc",
+  "scenarios": { ... }
+}
+```
+
+Or use the `processor_file` key:
+```json
+{
+  "name": "my_analysis",
+  "processor_file": "../shared/processors.jsonc",
+  "scenarios": { ... }
+}
+```
+
+**Mode 2: Inline definitions**
+
+Define processors directly in the config (original behavior):
+
+```json
+{
+  "processor": {
+    "smt": {"physical_cores": 48, "threads_per_core": 2, "power_idle_w": 100, "power_max_w": 400},
+    "nosmt": {"physical_cores": 48, "threads_per_core": 1, "power_idle_w": 90, "power_max_w": 340}
+  }
+}
+```
+
+**Mode 3: Mixed mode (selective imports + custom definitions)**
+
+Mix inline definitions with selective imports from external files. Each processor can be:
+- An inline definition (object with processor fields)
+- A string reference: `"file:processor_name"`
+- An object reference: `{"file": "path", "name": "processor_name"}`
+
+```json
+{
+  "processor": {
+    // Import 'smt' from external file, rename to 'standard_smt'
+    "standard_smt": "../shared/processors.jsonc:smt",
+    
+    // Object reference format (equivalent)
+    "standard_nosmt": {"file": "../shared/processors.jsonc", "name": "nosmt"},
+    
+    // Custom inline definition
+    "custom_lowpower": {
+      "physical_cores": 32,
+      "threads_per_core": 1,
+      "power_idle_w": 40.0,
+      "power_max_w": 200.0,
+      "core_overhead": 2
+    }
+  }
+}
+```
+
+This allows you to:
+- Selectively import only the processors you need from a shared file
+- Rename imported processors to different local names
+- Mix shared processors with custom overrides
+- Use multiple external files in the same config
+
+**Shared processor file format** (`configs/shared/processors.jsonc`):
+```json
+{
+  "smt": {
+    "physical_cores": 48,
+    "threads_per_core": 2,
+    "power_idle_w": 50.0,
+    "power_max_w": 300.0,
+    "core_overhead": 4
+  },
+  "nosmt": {
+    "physical_cores": 52,
+    "threads_per_core": 1,
+    "power_idle_w": 50.0,
+    "power_max_w": 300.0,
+    "core_overhead": 5
+  }
+}
+```
+
+**Path resolution:**
+- Relative paths are resolved relative to the config file's directory
+- Absolute paths work as-is
+- Supports `.json` and `.jsonc` (with comments, requires `json5` package)
+
 ### CLI Usage
 
 ```bash
