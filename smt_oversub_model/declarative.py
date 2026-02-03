@@ -528,6 +528,7 @@ class AnalysisSpec:
     sweep_parameter_label: Optional[str] = None  # Display label for sweep parameter (e.g., "vCPU Demand Discount")
     show_plot_title: bool = True  # For line plots: show title (default True)
     x_axis_markers: Optional[List[float]] = None  # For line plots: draw vertical lines at these x-values and label intersections
+    separate_metric_plots: bool = False  # For compare_sweep: generate separate plots for carbon and TCO instead of combined
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AnalysisSpec':
@@ -549,6 +550,7 @@ class AnalysisSpec:
             sweep_parameter_label=data.get('sweep_parameter_label'),
             show_plot_title=data.get('show_plot_title', True),
             x_axis_markers=data.get('x_axis_markers'),
+            separate_metric_plots=data.get('separate_metric_plots', False),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -585,6 +587,8 @@ class AnalysisSpec:
             d['show_plot_title'] = False
         if self.x_axis_markers:
             d['x_axis_markers'] = self.x_axis_markers
+        if self.separate_metric_plots:
+            d['separate_metric_plots'] = True
         return d
 
 
@@ -600,6 +604,7 @@ class ProcessorSpec:
         core_overhead: Number of pCPUs reserved for host (not available for VMs)
         embodied_carbon_kg: Optional per-server embodied carbon (overrides cost.embodied_carbon_kg)
         server_cost_usd: Optional per-server cost (overrides cost.server_cost_usd)
+        power_curve: Optional per-processor power curve (overrides global power_curve)
     """
     physical_cores: int = 48
     threads_per_core: int = 1  # 1 = no SMT, 2 = SMT (hyperthreading)
@@ -609,9 +614,14 @@ class ProcessorSpec:
     # Optional cost overrides - if set, these override the values in CostSpec
     embodied_carbon_kg: Optional[float] = None
     server_cost_usd: Optional[float] = None
+    # Optional power curve override - if set, overrides the global power_curve
+    power_curve: Optional['PowerCurveSpec'] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ProcessorSpec':
+        power_curve = None
+        if 'power_curve' in data and data['power_curve'] is not None:
+            power_curve = PowerCurveSpec.from_dict(data['power_curve'])
         return cls(
             physical_cores=data.get('physical_cores', 48),
             threads_per_core=data.get('threads_per_core', 1),
@@ -620,6 +630,7 @@ class ProcessorSpec:
             core_overhead=data.get('core_overhead', 0),
             embodied_carbon_kg=data.get('embodied_carbon_kg'),
             server_cost_usd=data.get('server_cost_usd'),
+            power_curve=power_curve,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -635,6 +646,8 @@ class ProcessorSpec:
             d['embodied_carbon_kg'] = self.embodied_carbon_kg
         if self.server_cost_usd is not None:
             d['server_cost_usd'] = self.server_cost_usd
+        if self.power_curve is not None:
+            d['power_curve'] = self.power_curve.to_dict()
         return d
 
     @property
@@ -1664,7 +1677,11 @@ class DeclarativeAnalysisEngine:
         proc_spec = self._processor_config.get(proc_name)
 
         # Build ProcessorConfig from spec with overrides
-        power_fn = self._config.power_curve.to_callable()
+        # Use per-processor power curve if specified, otherwise fall back to global
+        if proc_spec.power_curve is not None:
+            power_fn = proc_spec.power_curve.to_callable()
+        else:
+            power_fn = self._config.power_curve.to_callable()
 
         physical_cores = overrides.get('physical_cores', proc_spec.physical_cores)
         threads_per_core = overrides.get('threads_per_core', proc_spec.threads_per_core)

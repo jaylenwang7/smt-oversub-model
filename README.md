@@ -80,7 +80,10 @@ For reproducible, shareable analyses, use JSON configuration files with the decl
 
 ```bash
 # Run analysis from config file
-python -m smt_oversub_model.declarative configs/vcpu_demand_breakeven.json
+python -m smt_oversub_model configs/vcpu_demand_breakeven.json
+
+# Run all configs in a directory
+python -m smt_oversub_model configs/nosmt_savings_sweep/
 ```
 
 Or programmatically:

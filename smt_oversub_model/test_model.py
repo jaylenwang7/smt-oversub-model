@@ -1328,3 +1328,230 @@ class TestRemoteProcessorConfig:
         dict_source = spec.to_dict(include_source=True)
         assert isinstance(dict_source, str)
         assert dict_source == str(processor_file)
+
+
+class TestPerProcessorPowerCurve:
+    """Tests for per-processor power curve configuration."""
+
+    def test_processor_spec_with_power_curve(self):
+        """ProcessorSpec should accept and store power curve."""
+        from .declarative import ProcessorSpec, PowerCurveSpec
+
+        spec = ProcessorSpec(
+            physical_cores=48,
+            threads_per_core=2,
+            power_idle_w=100.0,
+            power_max_w=400.0,
+            power_curve=PowerCurveSpec(type='linear'),
+        )
+        assert spec.power_curve is not None
+        assert spec.power_curve.type == 'linear'
+
+    def test_processor_spec_from_dict_with_power_curve(self):
+        """ProcessorSpec.from_dict should parse power_curve."""
+        from .declarative import ProcessorSpec
+
+        data = {
+            'physical_cores': 48,
+            'threads_per_core': 2,
+            'power_idle_w': 100.0,
+            'power_max_w': 400.0,
+            'power_curve': {'type': 'specpower'},
+        }
+        spec = ProcessorSpec.from_dict(data)
+        assert spec.power_curve is not None
+        assert spec.power_curve.type == 'specpower'
+
+    def test_processor_spec_to_dict_includes_power_curve(self):
+        """ProcessorSpec.to_dict should include power_curve if set."""
+        from .declarative import ProcessorSpec, PowerCurveSpec
+
+        spec = ProcessorSpec(
+            physical_cores=48,
+            threads_per_core=2,
+            power_idle_w=100.0,
+            power_max_w=400.0,
+            power_curve=PowerCurveSpec(type='power', exponent=0.8),
+        )
+        d = spec.to_dict()
+        assert 'power_curve' in d
+        assert d['power_curve']['type'] == 'power'
+        assert d['power_curve']['exponent'] == 0.8
+
+    def test_processor_spec_to_dict_excludes_power_curve_if_none(self):
+        """ProcessorSpec.to_dict should not include power_curve if None."""
+        from .declarative import ProcessorSpec
+
+        spec = ProcessorSpec(physical_cores=48, threads_per_core=2)
+        d = spec.to_dict()
+        assert 'power_curve' not in d
+
+    def test_per_processor_power_curve_used_in_analysis(self):
+        """Analysis engine should use per-processor power curve when specified."""
+        from .declarative import (
+            DeclarativeAnalysisEngine, AnalysisConfig,
+            ScenarioConfig, AnalysisSpec, ProcessorConfigSpec, ProcessorSpec,
+            WorkloadSpec, CostSpec, PowerCurveSpec
+        )
+
+        # Create config with different power curves per processor
+        config = AnalysisConfig(
+            name='test_per_proc_curve',
+            scenarios={
+                'linear': ScenarioConfig(processor='proc_linear', oversub_ratio=1.0),
+                'specpower': ScenarioConfig(processor='proc_specpower', oversub_ratio=1.0),
+            },
+            analysis=AnalysisSpec(
+                type='compare',
+                baseline='linear',
+                scenarios=['linear', 'specpower'],
+            ),
+            processor=ProcessorConfigSpec(processors={
+                'proc_linear': ProcessorSpec(
+                    physical_cores=48,
+                    threads_per_core=1,
+                    power_idle_w=100.0,
+                    power_max_w=400.0,
+                    power_curve=PowerCurveSpec(type='linear'),
+                ),
+                'proc_specpower': ProcessorSpec(
+                    physical_cores=48,
+                    threads_per_core=1,
+                    power_idle_w=100.0,
+                    power_max_w=400.0,
+                    power_curve=PowerCurveSpec(type='specpower'),
+                ),
+            }),
+            workload=WorkloadSpec(total_vcpus=10000, avg_util=0.5),
+            cost=CostSpec(
+                embodied_carbon_kg=1000.0,
+                server_cost_usd=10000.0,
+                carbon_intensity_g_kwh=400.0,
+                electricity_cost_usd_kwh=0.10,
+                lifetime_years=5.0,
+            ),
+            # Global power curve should be ignored since processors have their own
+            power_curve=PowerCurveSpec(type='polynomial'),
+        )
+
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        # Both scenarios should have run
+        assert 'linear' in result.scenario_results
+        assert 'specpower' in result.scenario_results
+
+        # At 50% utilization:
+        # - Linear: power = 100 + (400-100) * 0.5 = 250 W
+        # - Specpower: power = 100 + (400-100) * 0.5^0.9 = 100 + 300 * 0.536 = 260.7 W
+        # So specpower should use slightly more energy at same utilization
+        # Operational carbon is proportional to energy, so we can compare that
+        linear_carbon = result.scenario_results['linear']['operational_carbon_kg']
+        specpower_carbon = result.scenario_results['specpower']['operational_carbon_kg']
+        assert specpower_carbon > linear_carbon
+
+    def test_fallback_to_global_power_curve(self):
+        """Should fall back to global power curve if processor doesn't specify one."""
+        from .declarative import (
+            DeclarativeAnalysisEngine, AnalysisConfig,
+            ScenarioConfig, AnalysisSpec, ProcessorConfigSpec, ProcessorSpec,
+            WorkloadSpec, CostSpec, PowerCurveSpec
+        )
+
+        config = AnalysisConfig(
+            name='test_global_fallback',
+            scenarios={
+                'with_curve': ScenarioConfig(processor='proc_with_curve', oversub_ratio=1.0),
+                'without_curve': ScenarioConfig(processor='proc_without_curve', oversub_ratio=1.0),
+            },
+            analysis=AnalysisSpec(
+                type='compare',
+                baseline='with_curve',
+                scenarios=['with_curve', 'without_curve'],
+            ),
+            processor=ProcessorConfigSpec(processors={
+                'proc_with_curve': ProcessorSpec(
+                    physical_cores=48,
+                    threads_per_core=1,
+                    power_idle_w=100.0,
+                    power_max_w=400.0,
+                    power_curve=PowerCurveSpec(type='linear'),
+                ),
+                'proc_without_curve': ProcessorSpec(
+                    physical_cores=48,
+                    threads_per_core=1,
+                    power_idle_w=100.0,
+                    power_max_w=400.0,
+                    # No power_curve - should use global
+                ),
+            }),
+            workload=WorkloadSpec(total_vcpus=10000, avg_util=0.5),
+            cost=CostSpec(
+                embodied_carbon_kg=1000.0,
+                server_cost_usd=10000.0,
+                carbon_intensity_g_kwh=400.0,
+                electricity_cost_usd_kwh=0.10,
+                lifetime_years=5.0,
+            ),
+            # Global power curve (specpower) - used by proc_without_curve
+            power_curve=PowerCurveSpec(type='specpower'),
+        )
+
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        # with_curve uses linear (250W at 50% util)
+        # without_curve uses global specpower (260.7W at 50% util)
+        # Operational carbon is proportional to energy, so we can compare that
+        linear_carbon = result.scenario_results['with_curve']['operational_carbon_kg']
+        specpower_carbon = result.scenario_results['without_curve']['operational_carbon_kg']
+        assert specpower_carbon > linear_carbon
+
+    def test_per_processor_power_curve_from_json(self, tmp_path):
+        """Test per-processor power curve loaded from JSON config file."""
+        import json
+        from .declarative import run_analysis
+
+        config_file = tmp_path / "config.json"
+        config_data = {
+            'name': 'test_json_power_curve',
+            'processor': {
+                'smt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 2,
+                    'power_idle_w': 100.0,
+                    'power_max_w': 400.0,
+                    'power_curve': {'type': 'linear'},
+                },
+                'nosmt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 1,
+                    'power_idle_w': 100.0,
+                    'power_max_w': 400.0,
+                    'power_curve': {'type': 'specpower'},
+                },
+            },
+            'scenarios': {
+                'baseline': {'processor': 'smt', 'oversub_ratio': 1.0},
+                'target': {'processor': 'nosmt', 'oversub_ratio': 1.0},
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'baseline',
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+            'cost': {
+                'embodied_carbon_kg': 1000.0,
+                'server_cost_usd': 10000.0,
+                'carbon_intensity_g_kwh': 400.0,
+                'electricity_cost_usd_kwh': 0.10,
+                'lifetime_years': 5.0,
+            },
+        }
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        assert result.analysis_type == 'compare'
+        assert 'baseline' in result.scenario_results
+        assert 'target' in result.scenario_results

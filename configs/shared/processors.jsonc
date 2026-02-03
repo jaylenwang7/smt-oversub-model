@@ -20,5 +20,16 @@
     "core_overhead": 5, // 10% core overhead
     "embodied_carbon_kg": 570, // 10kg * 47 + 100 for rack/server
     "server_cost_usd": 3760 // 80usd * 47
+  },
+  "nosmt_linear": {
+    // Same as nosmt but with linear power curve
+    "physical_cores": 52,
+    "threads_per_core": 1,
+    "power_idle_w": 90.0,
+    "power_max_w": 600.0,
+    "core_overhead": 5,
+    "embodied_carbon_kg": 570,
+    "server_cost_usd": 3760,
+    "power_curve": {"type": "linear"}
   }
 }

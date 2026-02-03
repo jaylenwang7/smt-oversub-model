@@ -151,6 +151,40 @@ You can define processors with any name (not limited to "smt"/"nosmt"):
 }
 ```
 
+### Per-Processor Power Curves
+
+Each processor can optionally specify its own power curve, overriding the global `power_curve` setting. This allows modeling different processors with different power characteristics (e.g., efficiency cores vs performance cores).
+
+```json
+{
+  "processor": {
+    "efficiency": {
+      "physical_cores": 16,
+      "threads_per_core": 1,
+      "power_idle_w": 30,
+      "power_max_w": 100,
+      "power_curve": {"type": "linear"}
+    },
+    "performance": {
+      "physical_cores": 8,
+      "threads_per_core": 2,
+      "power_idle_w": 50,
+      "power_max_w": 250,
+      "power_curve": {"type": "specpower"}
+    }
+  },
+  "power_curve": {"type": "polynomial"}  // Global fallback for processors without power_curve
+}
+```
+
+**Power curve types:**
+- `"linear"`: P(u) = p_idle + (p_max - p_idle) * u
+- `"specpower"`: P(u) = p_idle + (p_max - p_idle) * u^0.9 (SPECpower-like)
+- `"power"`: P(u) = p_idle + (p_max - p_idle) * u^exponent (requires `"exponent"` field)
+- `"polynomial"`: Frequency-dependent polynomial fit (optional `"freq_mhz"` field)
+
+**Fallback behavior:** If a processor doesn't specify `power_curve`, the global `power_curve` setting is used. If no global power curve is specified, `"specpower"` is the default.
+
 ### Processor Config Loading
 
 Processor configurations support three loading modes: load all from file, inline definitions, or mixed mode.
@@ -251,7 +285,10 @@ This allows you to:
 ### CLI Usage
 
 ```bash
-python -m smt_oversub_model.declarative configs/vcpu_demand_breakeven.json
+python -m smt_oversub_model configs/vcpu_demand_breakeven.json
+
+# Run all configs in a directory
+python -m smt_oversub_model configs/nosmt_savings_sweep/
 ```
 
 ### Programmatic Usage
@@ -384,6 +421,7 @@ Output includes:
 - `sweep_scenario`: Single scenario to sweep (backward compatible)
 - `sweep_scenarios`: List of scenarios for multi-line comparison
 - `show_breakeven_marker`: Show/hide breakeven point markers on plot (default: true)
+- `separate_metric_plots`: Generate separate plots for carbon and TCO instead of a combined plot (default: false)
 
 **Math (Embodied Anchor)**:
 ```

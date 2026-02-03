@@ -898,14 +898,16 @@ def plot_compare_sweep(
                 y_values = [p.get(metric_key, 0) for p in compare_sweep_results]
 
             # Build label using display labels
+            # Use label_suffix (which has proper capitalization like ' TCO', ' Carbon')
+            metric_display = style['label_suffix'].strip()  # e.g., 'Carbon', 'TCO'
             if is_multi and len(metrics_to_plot) > 1:
                 plot_label = f"{scenario_label}{style['label_suffix']}"
             elif is_multi:
                 plot_label = scenario_label
             elif len(metrics_to_plot) > 1:
-                plot_label = metric_name.capitalize()
+                plot_label = metric_display
             else:
-                plot_label = f"{metric_name.capitalize()} %"
+                plot_label = f"{metric_display} %"
 
             # Adjust color shade for different metrics within same scenario
             if len(metrics_to_plot) > 1:

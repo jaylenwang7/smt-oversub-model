@@ -100,24 +100,39 @@ class ProcessorSpec:
         power_idle_w: Idle power consumption in watts
         power_max_w: Maximum power consumption in watts
         core_overhead: Number of pCPUs reserved for host (not available for VMs)
+        power_curve: Optional per-processor power curve (overrides global power_curve)
     """
     physical_cores: int = 48
     threads_per_core: int = 1  # 1 = no SMT, 2 = SMT (hyperthreading)
     power_idle_w: float = 100.0
     power_max_w: float = 400.0
     core_overhead: int = 0
+    power_curve: Optional[PowerCurveSpec] = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = {
+            "physical_cores": self.physical_cores,
+            "threads_per_core": self.threads_per_core,
+            "power_idle_w": self.power_idle_w,
+            "power_max_w": self.power_max_w,
+            "core_overhead": self.core_overhead,
+        }
+        if self.power_curve is not None:
+            d["power_curve"] = self.power_curve.to_dict()
+        return d
 
     @classmethod
     def from_dict(cls, data: dict) -> "ProcessorSpec":
+        power_curve = None
+        if "power_curve" in data and data["power_curve"] is not None:
+            power_curve = PowerCurveSpec.from_dict(data["power_curve"])
         return cls(
             physical_cores=data.get("physical_cores", 48),
             threads_per_core=data.get("threads_per_core", 1),
             power_idle_w=data.get("power_idle_w", 100.0),
             power_max_w=data.get("power_max_w", 400.0),
             core_overhead=data.get("core_overhead", 0),
+            power_curve=power_curve,
         )
 
     @property
@@ -401,6 +416,12 @@ def validate_config(config: ExperimentConfig) -> List[str]:
             errors.append(f"Processor '{name}' power_max_w must be positive")
         if proc.power_idle_w > proc.power_max_w:
             errors.append(f"Processor '{name}' power_idle_w must be <= power_max_w")
+        # Validate per-processor power curve if specified
+        if proc.power_curve is not None:
+            if proc.power_curve.type == "power" and proc.power_curve.exponent is None:
+                errors.append(f"Processor '{name}' power_curve type 'power' requires 'exponent' parameter")
+            if proc.power_curve.type not in ("linear", "power", "specpower", "polynomial"):
+                errors.append(f"Processor '{name}' has unknown power_curve type: {proc.power_curve.type}")
 
     if config.oversubscription.smt_ratio < 1.0:
         errors.append(f"smt_ratio must be >= 1.0, got {config.oversubscription.smt_ratio}")

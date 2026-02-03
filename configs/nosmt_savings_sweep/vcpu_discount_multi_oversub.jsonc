@@ -51,7 +51,7 @@
     "lifetime_years": 6
   },
   "power_curve": {
-    "type": "specpower"
+    "type": "polynomial"
   },
   "output_dir": "./results/nosmt_savings_sweep/vcpu_discount_multi_oversub"
 }

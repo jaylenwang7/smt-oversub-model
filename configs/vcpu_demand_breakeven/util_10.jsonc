@@ -42,7 +42,7 @@
     "lifetime_years": 6
   },
   "power_curve": {
-    "type": "specpower"
+    "type": "polynomial"
   },
   "output_dir": "./results/vcpu_demand_breakeven/util_10"
 }

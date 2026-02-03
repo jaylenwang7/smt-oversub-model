@@ -488,6 +488,8 @@ class OutputWriter:
         For multi-scenario sweeps, generates:
         - One combined plot with all lines
         - Individual plots for each scenario
+
+        When separate_metric_plots is True, generates separate carbon and TCO plots.
         """
         if not result.compare_sweep_results:
             return
@@ -501,13 +503,29 @@ class OutputWriter:
         first_point = result.compare_sweep_results[0]
         is_multi = 'scenarios' in first_point and len(first_point.get('scenarios', {})) > 1
 
-        # Generate combined plot
-        save_path = plots_dir / 'compare_sweep.png'
-        plot_compare_sweep(
-            result,
-            save_path=str(save_path),
-            show=False,
-        )
+        # Check if separate metric plots requested
+        separate_metrics = False
+        if hasattr(result.config, 'analysis') and result.config.analysis.separate_metric_plots:
+            separate_metrics = True
+
+        if separate_metrics:
+            # Generate separate plots for carbon and TCO
+            for metric, filename_suffix in [('carbon', 'carbon'), ('tco', 'TCO')]:
+                save_path = plots_dir / f'compare_sweep_{filename_suffix}.png'
+                plot_compare_sweep(
+                    result,
+                    save_path=str(save_path),
+                    show=False,
+                    metric=metric,
+                )
+        else:
+            # Generate combined plot
+            save_path = plots_dir / 'compare_sweep.png'
+            plot_compare_sweep(
+                result,
+                save_path=str(save_path),
+                show=False,
+            )
 
         # For multi-scenario, also generate individual plots
         if is_multi:
@@ -519,18 +537,31 @@ class OutputWriter:
             for scenario_name in scenario_names:
                 # Create safe filename
                 safe_name = scenario_name.replace(' ', '_').replace('/', '_').replace('=', '_')
-                save_path = plots_dir / f'compare_sweep_{safe_name}.png'
 
                 # Get display label for title
                 display_label = labels.get(scenario_name, scenario_name)
 
-                plot_compare_sweep(
-                    result,
-                    save_path=str(save_path),
-                    show=False,
-                    scenario_filter=[scenario_name],
-                    title=f"Compare Sweep: {display_label}",
-                )
+                if separate_metrics:
+                    # Generate separate plots for each metric
+                    for metric, filename_suffix in [('carbon', 'carbon'), ('tco', 'TCO')]:
+                        save_path = plots_dir / f'compare_sweep_{safe_name}_{filename_suffix}.png'
+                        plot_compare_sweep(
+                            result,
+                            save_path=str(save_path),
+                            show=False,
+                            scenario_filter=[scenario_name],
+                            title=f"Compare Sweep: {display_label}",
+                            metric=metric,
+                        )
+                else:
+                    save_path = plots_dir / f'compare_sweep_{safe_name}.png'
+                    plot_compare_sweep(
+                        result,
+                        save_path=str(save_path),
+                        show=False,
+                        scenario_filter=[scenario_name],
+                        title=f"Compare Sweep: {display_label}",
+                    )
 
 
 def save_result(result: 'AnalysisResult', output_dir: str) -> None:
