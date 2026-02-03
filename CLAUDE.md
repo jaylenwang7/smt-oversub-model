@@ -96,6 +96,7 @@ The declarative framework allows config-driven analyses with support for finding
 1. **`find_breakeven`**: Binary search to find parameter value matching reference
 2. **`compare`**: Compare multiple scenarios
 3. **`sweep`**: Run breakeven analysis across parameter sweep
+4. **`compare_sweep`**: Compare scenarios while sweeping a parameter, showing % change vs baseline at each sweep value. Useful for sensitivity analysis (e.g., "how do savings change as vCPU discount varies?")
 
 ### Example Config
 
@@ -175,13 +176,134 @@ print(result.summary)
 - Direct: `oversub_ratio`, `util_overhead`, `vcpu_demand_multiplier`
 - Nested: `processor.physical_cores`, `processor.power_curve.p_max`
 - Workload: `workload.avg_util`, `workload.total_vcpus`
-- Cost: `cost.embodied_carbon_kg`, `cost.carbon_intensity_g_kwh`
+- Cost (raw): `cost.embodied_carbon_kg`, `cost.carbon_intensity_g_kwh`, `cost.server_cost_usd`, `cost.electricity_cost_usd_kwh`, `cost.lifetime_years`
+- Cost (ratio): `cost.operational_carbon_fraction`, `cost.operational_cost_fraction`, `cost.total_carbon_kg`, `cost.total_cost_usd`
 
 ### Match Conditions
 
 - Simple: `"carbon"` or `"tco"` (match exactly)
 - Compound: `{"carbon": "match", "tco": "within_5%"}`
 - Comparison: `"<="`, `">="`
+
+### Ratio-Based Cost Specification
+
+Instead of specifying raw cost parameters, you can specify operational/embodied ratios and let the system derive the raw parameters. This enables intuitive ratio-based analysis (e.g., "75% operational carbon").
+
+**Two Modes:**
+- `raw` (default): Direct specification of all cost parameters
+- `ratio_based`: Specify ratios, system derives `carbon_intensity_g_kwh` and/or `electricity_cost_usd_kwh`
+
+**Two Anchor Types:**
+- **Embodied Anchor**: Specify per-server embodied values; system derives operational params
+- **Total Anchor**: Specify total carbon/cost budget; system derives both embodied and operational
+
+**Embodied Anchor Example** (75% operational carbon):
+```json
+{
+  "cost": {
+    "mode": "ratio_based",
+    "reference_scenario": "baseline",
+    "operational_carbon_fraction": 0.75,
+    "operational_cost_fraction": 0.6,
+    "embodied_carbon_kg": 2000.0,
+    "server_cost_usd": 10000.0,
+    "lifetime_years": 5.0
+  }
+}
+```
+
+**Total Anchor Example** (specify total budget):
+```json
+{
+  "cost": {
+    "mode": "ratio_based",
+    "reference_scenario": "baseline",
+    "operational_carbon_fraction": 0.75,
+    "operational_cost_fraction": 0.6,
+    "total_carbon_kg": 50000.0,
+    "total_cost_usd": 500000.0,
+    "lifetime_years": 5.0
+  }
+}
+```
+
+**Important Behavior**: Parameters are derived **once** from the reference scenario, then applied consistently to all scenarios. The reference scenario will achieve exactly the specified ratio; other scenarios may have different actual ratios due to different server counts and power consumption.
+
+**Sweep Over Ratio**:
+```json
+{
+  "analysis": {
+    "type": "sweep",
+    "sweep_parameter": "cost.operational_carbon_fraction",
+    "sweep_values": [0.25, 0.5, 0.75, 0.9]
+  }
+}
+```
+
+### Compare Sweep Analysis
+
+Compare a target scenario against a baseline while sweeping a parameter, showing % increase/decrease at each value:
+
+```json
+{
+  "name": "nosmt_vcpu_discount_savings",
+  "scenarios": {
+    "smt_baseline": {"processor": "smt", "oversub_ratio": 1.0},
+    "nosmt_no_oversub": {"processor": "nosmt", "oversub_ratio": 1.0, "vcpu_demand_multiplier": 1.0}
+  },
+  "analysis": {
+    "type": "compare_sweep",
+    "baseline": "smt_baseline",
+    "sweep_scenario": "nosmt_no_oversub",
+    "sweep_parameter": "vcpu_demand_multiplier",
+    "sweep_values": [0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    "show_breakeven_marker": true
+  }
+}
+```
+
+**Multi-Scenario Comparison** (multiple lines on same plot):
+
+```json
+{
+  "analysis": {
+    "type": "compare_sweep",
+    "baseline": "smt_baseline",
+    "sweep_scenarios": ["nosmt_no_oversub", "nosmt_oversub_1_5", "nosmt_oversub_2_0"],
+    "sweep_parameter": "vcpu_demand_multiplier",
+    "sweep_values": [0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    "show_breakeven_marker": true
+  }
+}
+```
+
+Output includes:
+- Table with % change vs baseline for carbon, TCO, and servers at each sweep value
+- Plot showing the % change curves across the sweep range
+- Breakeven points (where line crosses 0%) marked with diamond markers and labels
+- Negative % = savings, Positive % = increase vs baseline
+
+**Options:**
+- `sweep_scenario`: Single scenario to sweep (backward compatible)
+- `sweep_scenarios`: List of scenarios for multi-line comparison
+- `show_breakeven_marker`: Show/hide breakeven point markers on plot (default: true)
+
+**Math (Embodied Anchor)**:
+```
+Given: operational_carbon_fraction (f_op), embodied_carbon_kg, reference scenario
+1. embodied_total = num_servers × embodied_carbon_kg
+2. operational_total = embodied_total × f_op / (1 - f_op)
+3. carbon_intensity_g_kwh = operational_total × 1000 / energy_kwh
+```
+
+**Math (Total Anchor)**:
+```
+Given: operational_carbon_fraction (f_op), total_carbon_kg, reference scenario
+1. operational_total = total_carbon_kg × f_op
+2. embodied_total = total_carbon_kg × (1 - f_op)
+3. embodied_carbon_kg = embodied_total / num_servers
+4. carbon_intensity_g_kwh = operational_total × 1000 / energy_kwh
+```
 
 ## Example Notebooks
 

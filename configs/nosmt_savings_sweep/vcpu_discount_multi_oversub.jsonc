@@ -1,0 +1,71 @@
+{
+  "name": "nosmt_vcpu_discount_multi_oversub",
+  "description": "Compare no-SMT vs SMT baseline with multiple oversub ratios. Shows how vCPU demand discount affects savings at different no-SMT oversub levels.",
+  "scenarios": {
+    "smt_baseline": {
+      "processor": "smt",
+      "oversub_ratio": 1.0
+    },
+    "nosmt_no_oversub": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.0,
+      "vcpu_demand_multiplier": 1.0
+    },
+    "nosmt_oversub_1_5": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.5,
+      "vcpu_demand_multiplier": 1.0
+    },
+    "nosmt_oversub_2_0": {
+      "processor": "nosmt",
+      "oversub_ratio": 2.0,
+      "vcpu_demand_multiplier": 1.0
+    }
+  },
+  "workload": {
+    "total_vcpus": 10000,
+    "avg_util": 0.1
+  },
+  "analysis": {
+    "type": "compare_sweep",
+    "baseline": "smt_baseline",
+    "sweep_scenarios": ["nosmt_no_oversub", "nosmt_oversub_1_5", "nosmt_oversub_2_0"],
+    "sweep_parameter": "vcpu_demand_multiplier",
+    "sweep_parameter_label": "vCPU Demand Discount",
+    "sweep_values": [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0],
+    "show_breakeven_marker": true,
+    "labels": {
+      "smt_baseline": "SMT (R=1.0)",
+      "nosmt_no_oversub": "No-SMT (R=1.0)",
+      "nosmt_oversub_1_5": "No-SMT (R=1.5)",
+      "nosmt_oversub_2_0": "No-SMT (R=2.0)"
+    }
+  },
+  "processor": {
+    "smt": {
+      "physical_cores": 48,
+      "threads_per_core": 2,
+      "power_idle_w": 300.0,
+      "power_max_w": 800.0,
+      "core_overhead": 4
+    },
+    "nosmt": {
+      "physical_cores": 52,
+      "threads_per_core": 1,
+      "power_idle_w": 300.0,
+      "power_max_w": 800.0,
+      "core_overhead": 5
+    }
+  },
+  "cost": {
+    "embodied_carbon_kg": 4000,
+    "server_cost_usd": 15000,
+    "carbon_intensity_g_kwh": 200,
+    "electricity_cost_usd_kwh": 0.28,
+    "lifetime_years": 6
+  },
+  "power_curve": {
+    "type": "specpower"
+  },
+  "output_dir": "./results/nosmt_savings_sweep/vcpu_discount_multi_oversub"
+}

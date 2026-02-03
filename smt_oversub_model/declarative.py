@@ -37,6 +37,12 @@ from .analysis import ScenarioSpec, ScenarioBuilder, ProcessorDefaults, CostDefa
 from .config import make_power_curve_fn
 
 
+class CostMode(Enum):
+    """Mode for cost specification."""
+    RAW = "raw"  # Direct specification of all cost parameters
+    RATIO_BASED = "ratio_based"  # Specify ratios, derive raw parameters
+
+
 class ParameterPath:
     """
     Resolve dot-notation paths for nested parameter access.
@@ -505,7 +511,7 @@ class ScenarioConfig:
 @dataclass
 class AnalysisSpec:
     """Specification for the analysis to perform."""
-    type: str  # "find_breakeven", "compare", "sweep"
+    type: str  # "find_breakeven", "compare", "sweep", "compare_sweep"
     baseline: Optional[str] = None
     reference: Optional[str] = None
     target: Optional[str] = None
@@ -513,8 +519,15 @@ class AnalysisSpec:
     vary_parameter: Optional[str] = None
     match_metric: Optional[Union[str, Dict[str, str]]] = None
     search_bounds: Optional[List[float]] = None
-    sweep_parameter: Optional[str] = None  # For "sweep" type
+    sweep_parameter: Optional[str] = None  # For "sweep" and "compare_sweep" types
     sweep_values: Optional[List[float]] = None
+    sweep_scenario: Optional[str] = None  # For "compare_sweep": which scenario to apply sweep to
+    sweep_scenarios: Optional[List[str]] = None  # For "compare_sweep": multiple scenarios to sweep (multi-line)
+    show_breakeven_marker: bool = True  # For "compare_sweep": show breakeven point marker on plot
+    labels: Optional[Dict[str, str]] = None  # Display labels for scenarios (e.g., {"nosmt_r1": "No-SMT R=1.0"})
+    sweep_parameter_label: Optional[str] = None  # Display label for sweep parameter (e.g., "vCPU Demand Discount")
+    show_plot_title: bool = True  # For line plots: show title (default True)
+    x_axis_markers: Optional[List[float]] = None  # For line plots: draw vertical lines at these x-values and label intersections
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AnalysisSpec':
@@ -529,6 +542,13 @@ class AnalysisSpec:
             search_bounds=data.get('search_bounds'),
             sweep_parameter=data.get('sweep_parameter'),
             sweep_values=data.get('sweep_values'),
+            sweep_scenario=data.get('sweep_scenario'),
+            sweep_scenarios=data.get('sweep_scenarios'),
+            show_breakeven_marker=data.get('show_breakeven_marker', True),
+            labels=data.get('labels'),
+            sweep_parameter_label=data.get('sweep_parameter_label'),
+            show_plot_title=data.get('show_plot_title', True),
+            x_axis_markers=data.get('x_axis_markers'),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -551,6 +571,20 @@ class AnalysisSpec:
             d['sweep_parameter'] = self.sweep_parameter
         if self.sweep_values:
             d['sweep_values'] = self.sweep_values
+        if self.sweep_scenario:
+            d['sweep_scenario'] = self.sweep_scenario
+        if self.sweep_scenarios:
+            d['sweep_scenarios'] = self.sweep_scenarios
+        if not self.show_breakeven_marker:
+            d['show_breakeven_marker'] = False
+        if self.labels:
+            d['labels'] = self.labels
+        if self.sweep_parameter_label:
+            d['sweep_parameter_label'] = self.sweep_parameter_label
+        if not self.show_plot_title:
+            d['show_plot_title'] = False
+        if self.x_axis_markers:
+            d['x_axis_markers'] = self.x_axis_markers
         return d
 
 
@@ -656,25 +690,344 @@ class WorkloadSpec:
 
 @dataclass
 class CostSpec:
-    """Cost configuration."""
+    """Cost configuration.
+
+    Supports two modes:
+    - RAW: Direct specification of all cost parameters (default)
+    - RATIO_BASED: Specify operational/embodied ratios, derive raw parameters
+
+    For ratio-based mode:
+    - Specify `mode: "ratio_based"` and `reference_scenario`
+    - Provide `operational_carbon_fraction` and/or `operational_cost_fraction`
+    - Either provide `embodied_carbon_kg`/`server_cost_usd` (embodied anchor)
+      OR `total_carbon_kg`/`total_cost_usd` (total anchor)
+    - The system evaluates the reference scenario and derives the operational
+      parameters that achieve the target ratio
+    """
+    # Common parameters
     embodied_carbon_kg: float = 1000.0
     server_cost_usd: float = 10000.0
-    carbon_intensity_g_kwh: float = 400.0
-    electricity_cost_usd_kwh: float = 0.10
     lifetime_years: float = 5.0
+
+    # Raw mode parameters (optional in ratio mode)
+    carbon_intensity_g_kwh: Optional[float] = 400.0
+    electricity_cost_usd_kwh: Optional[float] = 0.10
+
+    # Ratio-based mode parameters
+    mode: CostMode = CostMode.RAW
+    reference_scenario: Optional[str] = None
+    operational_carbon_fraction: Optional[float] = None  # e.g., 0.75 = 75% operational
+    operational_cost_fraction: Optional[float] = None    # e.g., 0.6 = 60% operational
+
+    # Total anchor mode parameters (alternative to embodied anchor)
+    total_carbon_kg: Optional[float] = None
+    total_cost_usd: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'CostSpec':
+        # Parse mode
+        mode_str = data.get('mode', 'raw')
+        if mode_str == 'ratio_based':
+            mode = CostMode.RATIO_BASED
+        else:
+            mode = CostMode.RAW
+
         return cls(
             embodied_carbon_kg=data.get('embodied_carbon_kg', 1000.0),
             server_cost_usd=data.get('server_cost_usd', 10000.0),
-            carbon_intensity_g_kwh=data.get('carbon_intensity_g_kwh', 400.0),
-            electricity_cost_usd_kwh=data.get('electricity_cost_usd_kwh', 0.10),
+            carbon_intensity_g_kwh=data.get('carbon_intensity_g_kwh', 400.0 if mode == CostMode.RAW else None),
+            electricity_cost_usd_kwh=data.get('electricity_cost_usd_kwh', 0.10 if mode == CostMode.RAW else None),
             lifetime_years=data.get('lifetime_years', 5.0),
+            mode=mode,
+            reference_scenario=data.get('reference_scenario'),
+            operational_carbon_fraction=data.get('operational_carbon_fraction'),
+            operational_cost_fraction=data.get('operational_cost_fraction'),
+            total_carbon_kg=data.get('total_carbon_kg'),
+            total_cost_usd=data.get('total_cost_usd'),
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        d = {
+            'embodied_carbon_kg': self.embodied_carbon_kg,
+            'server_cost_usd': self.server_cost_usd,
+            'lifetime_years': self.lifetime_years,
+        }
+        if self.carbon_intensity_g_kwh is not None:
+            d['carbon_intensity_g_kwh'] = self.carbon_intensity_g_kwh
+        if self.electricity_cost_usd_kwh is not None:
+            d['electricity_cost_usd_kwh'] = self.electricity_cost_usd_kwh
+        if self.mode != CostMode.RAW:
+            d['mode'] = self.mode.value
+        if self.reference_scenario is not None:
+            d['reference_scenario'] = self.reference_scenario
+        if self.operational_carbon_fraction is not None:
+            d['operational_carbon_fraction'] = self.operational_carbon_fraction
+        if self.operational_cost_fraction is not None:
+            d['operational_cost_fraction'] = self.operational_cost_fraction
+        if self.total_carbon_kg is not None:
+            d['total_carbon_kg'] = self.total_carbon_kg
+        if self.total_cost_usd is not None:
+            d['total_cost_usd'] = self.total_cost_usd
+        return d
+
+    def is_ratio_based(self) -> bool:
+        """Check if this cost spec uses ratio-based mode."""
+        return self.mode == CostMode.RATIO_BASED
+
+    def uses_total_anchor(self) -> bool:
+        """Check if ratio mode uses total anchor (vs embodied anchor)."""
+        return self.total_carbon_kg is not None or self.total_cost_usd is not None
+
+    def validate_ratio_mode(self) -> None:
+        """Validate ratio-based mode configuration.
+
+        Raises:
+            ValueError: If configuration is invalid
+        """
+        if not self.is_ratio_based():
+            return
+
+        if not self.reference_scenario:
+            raise ValueError("ratio_based mode requires 'reference_scenario'")
+
+        has_carbon_ratio = self.operational_carbon_fraction is not None
+        has_cost_ratio = self.operational_cost_fraction is not None
+
+        if not has_carbon_ratio and not has_cost_ratio:
+            raise ValueError(
+                "ratio_based mode requires at least one of "
+                "'operational_carbon_fraction' or 'operational_cost_fraction'"
+            )
+
+        # Validate fraction ranges
+        if has_carbon_ratio:
+            if not 0 < self.operational_carbon_fraction < 1:
+                raise ValueError(
+                    f"operational_carbon_fraction must be in (0, 1), "
+                    f"got {self.operational_carbon_fraction}"
+                )
+
+        if has_cost_ratio:
+            if not 0 < self.operational_cost_fraction < 1:
+                raise ValueError(
+                    f"operational_cost_fraction must be in (0, 1), "
+                    f"got {self.operational_cost_fraction}"
+                )
+
+
+@dataclass
+class ReferenceScenarioResult:
+    """Result from evaluating a reference scenario for ratio resolution."""
+    num_servers: int
+    energy_kwh: float
+    embodied_carbon_kg: float
+    embodied_cost_usd: float
+
+
+class CostResolver:
+    """Resolves ratio-based cost specifications to raw parameters.
+
+    Given a reference scenario and target ratios, this class evaluates the
+    scenario to determine server count and energy consumption, then derives
+    the raw cost parameters (carbon_intensity_g_kwh, electricity_cost_usd_kwh)
+    that would achieve the target operational/embodied ratio.
+
+    Math (Embodied Anchor):
+        Given: operational_carbon_fraction (f_op), embodied_carbon_kg, reference scenario
+        1. embodied_total = num_servers × embodied_carbon_kg
+        2. operational_total = embodied_total × f_op / (1 - f_op)
+        3. carbon_intensity_g_kwh = operational_total × 1000 / energy_kwh
+
+    Math (Total Anchor):
+        Given: operational_carbon_fraction (f_op), total_carbon_kg, reference scenario
+        1. operational_total = total_carbon_kg × f_op
+        2. embodied_total = total_carbon_kg × (1 - f_op)
+        3. embodied_carbon_kg = embodied_total / num_servers
+        4. carbon_intensity_g_kwh = operational_total × 1000 / energy_kwh
+    """
+
+    def resolve(
+        self,
+        cost_spec: CostSpec,
+        ref_result: ReferenceScenarioResult,
+    ) -> CostSpec:
+        """Resolve ratio-based cost spec to raw parameters.
+
+        Args:
+            cost_spec: The ratio-based cost specification
+            ref_result: Result from evaluating the reference scenario
+
+        Returns:
+            A new CostSpec with derived raw parameters
+        """
+        cost_spec.validate_ratio_mode()
+
+        if cost_spec.uses_total_anchor():
+            return self._resolve_with_total_anchor(cost_spec, ref_result)
+        else:
+            return self._resolve_with_embodied_anchor(cost_spec, ref_result)
+
+    def _resolve_with_embodied_anchor(
+        self,
+        cost_spec: CostSpec,
+        ref_result: ReferenceScenarioResult,
+    ) -> CostSpec:
+        """Derive operational params from embodied anchor.
+
+        Uses the specified embodied_carbon_kg and server_cost_usd as anchors,
+        then derives carbon_intensity_g_kwh and electricity_cost_usd_kwh to
+        achieve the target operational fractions.
+        """
+        # Use existing values or defaults
+        carbon_intensity = cost_spec.carbon_intensity_g_kwh if cost_spec.carbon_intensity_g_kwh is not None else 400.0
+        electricity_cost = cost_spec.electricity_cost_usd_kwh if cost_spec.electricity_cost_usd_kwh is not None else 0.10
+
+        # Derive carbon intensity if carbon fraction specified
+        if cost_spec.operational_carbon_fraction is not None:
+            carbon_intensity = self._derive_carbon_intensity(
+                operational_fraction=cost_spec.operational_carbon_fraction,
+                embodied_carbon_kg=cost_spec.embodied_carbon_kg,
+                num_servers=ref_result.num_servers,
+                energy_kwh=ref_result.energy_kwh,
+            )
+
+        # Derive electricity cost if cost fraction specified
+        if cost_spec.operational_cost_fraction is not None:
+            electricity_cost = self._derive_electricity_cost(
+                operational_fraction=cost_spec.operational_cost_fraction,
+                server_cost_usd=cost_spec.server_cost_usd,
+                num_servers=ref_result.num_servers,
+                energy_kwh=ref_result.energy_kwh,
+            )
+
+        return CostSpec(
+            mode=CostMode.RAW,  # Mark as resolved
+            embodied_carbon_kg=cost_spec.embodied_carbon_kg,
+            server_cost_usd=cost_spec.server_cost_usd,
+            carbon_intensity_g_kwh=carbon_intensity,
+            electricity_cost_usd_kwh=electricity_cost,
+            lifetime_years=cost_spec.lifetime_years,
+            # Clear ratio fields
+            reference_scenario=None,
+            operational_carbon_fraction=None,
+            operational_cost_fraction=None,
+            total_carbon_kg=None,
+            total_cost_usd=None,
+        )
+
+    def _resolve_with_total_anchor(
+        self,
+        cost_spec: CostSpec,
+        ref_result: ReferenceScenarioResult,
+    ) -> CostSpec:
+        """Derive both embodied and operational params from total anchor.
+
+        Uses the specified total_carbon_kg and/or total_cost_usd as anchors,
+        then derives all parameters to achieve the target split.
+        """
+        # Start with existing values or defaults
+        embodied_carbon = cost_spec.embodied_carbon_kg
+        server_cost = cost_spec.server_cost_usd
+        carbon_intensity = cost_spec.carbon_intensity_g_kwh if cost_spec.carbon_intensity_g_kwh is not None else 400.0
+        electricity_cost = cost_spec.electricity_cost_usd_kwh if cost_spec.electricity_cost_usd_kwh is not None else 0.10
+
+        # Derive carbon parameters from total carbon anchor
+        if cost_spec.total_carbon_kg is not None and cost_spec.operational_carbon_fraction is not None:
+            f_op = cost_spec.operational_carbon_fraction
+            total = cost_spec.total_carbon_kg
+
+            operational_total = total * f_op
+            embodied_total = total * (1 - f_op)
+
+            embodied_carbon = embodied_total / ref_result.num_servers
+            carbon_intensity = self._operational_to_intensity(
+                operational_total, ref_result.energy_kwh
+            )
+
+        # Derive cost parameters from total cost anchor
+        if cost_spec.total_cost_usd is not None and cost_spec.operational_cost_fraction is not None:
+            f_op = cost_spec.operational_cost_fraction
+            total = cost_spec.total_cost_usd
+
+            operational_total = total * f_op
+            embodied_total = total * (1 - f_op)
+
+            server_cost = embodied_total / ref_result.num_servers
+            electricity_cost = self._operational_to_rate(
+                operational_total, ref_result.energy_kwh
+            )
+
+        return CostSpec(
+            mode=CostMode.RAW,  # Mark as resolved
+            embodied_carbon_kg=embodied_carbon,
+            server_cost_usd=server_cost,
+            carbon_intensity_g_kwh=carbon_intensity,
+            electricity_cost_usd_kwh=electricity_cost,
+            lifetime_years=cost_spec.lifetime_years,
+            # Clear ratio fields
+            reference_scenario=None,
+            operational_carbon_fraction=None,
+            operational_cost_fraction=None,
+            total_carbon_kg=None,
+            total_cost_usd=None,
+        )
+
+    def _derive_carbon_intensity(
+        self,
+        operational_fraction: float,
+        embodied_carbon_kg: float,
+        num_servers: int,
+        energy_kwh: float,
+    ) -> float:
+        """Derive carbon intensity to achieve target operational fraction.
+
+        Given:
+            f_op = operational / (operational + embodied)
+
+        Solve for operational:
+            operational = embodied * f_op / (1 - f_op)
+
+        Then:
+            carbon_intensity_g_kwh = operational * 1000 / energy_kwh
+        """
+        if energy_kwh <= 0:
+            raise ValueError("Cannot derive carbon intensity: energy_kwh must be positive")
+
+        embodied_total = num_servers * embodied_carbon_kg
+        operational_total = embodied_total * operational_fraction / (1 - operational_fraction)
+
+        return self._operational_to_intensity(operational_total, energy_kwh)
+
+    def _derive_electricity_cost(
+        self,
+        operational_fraction: float,
+        server_cost_usd: float,
+        num_servers: int,
+        energy_kwh: float,
+    ) -> float:
+        """Derive electricity cost to achieve target operational fraction.
+
+        Same math as carbon intensity but for costs.
+        """
+        if energy_kwh <= 0:
+            raise ValueError("Cannot derive electricity cost: energy_kwh must be positive")
+
+        embodied_total = num_servers * server_cost_usd
+        operational_total = embodied_total * operational_fraction / (1 - operational_fraction)
+
+        return self._operational_to_rate(operational_total, energy_kwh)
+
+    def _operational_to_intensity(self, operational_kg: float, energy_kwh: float) -> float:
+        """Convert operational carbon (kg) to intensity (g/kWh)."""
+        # operational_kg = energy_kwh * carbon_intensity_g_kwh / 1000
+        # => carbon_intensity_g_kwh = operational_kg * 1000 / energy_kwh
+        return operational_kg * 1000 / energy_kwh
+
+    def _operational_to_rate(self, operational_usd: float, energy_kwh: float) -> float:
+        """Convert operational cost (USD) to rate (USD/kWh)."""
+        # operational_usd = energy_kwh * electricity_cost_usd_kwh
+        # => electricity_cost_usd_kwh = operational_usd / energy_kwh
+        return operational_usd / energy_kwh
 
 
 @dataclass
@@ -772,6 +1125,7 @@ class AnalysisResult:
     comparisons: Dict[str, Dict[str, float]]
     breakeven: Optional[BreakevenResult] = None
     sweep_results: Optional[List[Dict[str, Any]]] = None
+    compare_sweep_results: Optional[List[Dict[str, Any]]] = None  # For compare_sweep analysis
     summary: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -796,6 +1150,8 @@ class AnalysisResult:
             }
         if self.sweep_results:
             result['sweep_results'] = self.sweep_results
+        if self.compare_sweep_results:
+            result['compare_sweep_results'] = self.compare_sweep_results
         return result
 
 
@@ -825,9 +1181,18 @@ class DeclarativeAnalysisEngine:
             AnalysisResult with all computed results
         """
         self._config = config
-        self._setup_builder()
+        # Save original cost spec for sweep operations that may need it
+        self._original_cost = copy.deepcopy(config.cost)
 
+        # Resolve ratio-based costs if needed (except for sweeps over ratio params)
         analysis_type = config.analysis.type
+        if analysis_type == 'sweep' and self._is_ratio_sweep_param(config.analysis.sweep_parameter):
+            # Don't resolve yet - sweep will handle resolution per iteration
+            self._setup_builder_for_ratio_sweep()
+        elif config.cost.is_ratio_based():
+            self._resolve_ratio_costs()
+        else:
+            self._setup_builder()
 
         if analysis_type == 'find_breakeven':
             return self._run_find_breakeven()
@@ -835,6 +1200,8 @@ class DeclarativeAnalysisEngine:
             return self._run_compare()
         elif analysis_type == 'sweep':
             return self._run_sweep()
+        elif analysis_type == 'compare_sweep':
+            return self._run_compare_sweep()
         else:
             raise ValueError(f"Unknown analysis type: {analysis_type}")
 
@@ -888,6 +1255,120 @@ class DeclarativeAnalysisEngine:
         )
         cost_params = self._builder.build_cost_params()
         self._model = OverssubModel(workload, cost_params)
+
+    def _resolve_ratio_costs(self):
+        """Resolve ratio-based cost specification to raw parameters.
+
+        This method:
+        1. Sets up a temporary builder with placeholder costs
+        2. Evaluates the reference scenario to get server count and energy
+        3. Uses CostResolver to derive the raw parameters
+        4. Replaces config.cost with the resolved CostSpec
+        5. Calls _setup_builder() with the resolved costs
+        """
+        cfg = self._config
+        cost = cfg.cost
+
+        cost.validate_ratio_mode()
+
+        ref_scenario_name = cost.reference_scenario
+        if ref_scenario_name not in cfg.scenarios:
+            raise ValueError(
+                f"reference_scenario '{ref_scenario_name}' not found in scenarios. "
+                f"Available: {list(cfg.scenarios.keys())}"
+            )
+
+        # Set up temporary builder with placeholder costs to evaluate reference
+        # We use raw defaults just to get server count and power consumption
+        self._setup_builder_with_placeholder_costs()
+
+        # Evaluate reference scenario to get energy and server count
+        ref_scenario_cfg = cfg.scenarios[ref_scenario_name]
+        ref_params = self._build_scenario_params(ref_scenario_cfg)
+        ref_result = self._model.evaluate_scenario(ref_params)
+
+        # Calculate energy consumption
+        energy_kwh = (
+            ref_result.num_servers *
+            ref_result.power_per_server_w *
+            cost.lifetime_years * 8760 / 1000
+        )
+
+        ref_scenario_result = ReferenceScenarioResult(
+            num_servers=ref_result.num_servers,
+            energy_kwh=energy_kwh,
+            embodied_carbon_kg=ref_result.embodied_carbon_kg,
+            embodied_cost_usd=ref_result.embodied_cost_usd,
+        )
+
+        # Resolve ratio-based costs to raw parameters
+        resolver = CostResolver()
+        resolved_cost = resolver.resolve(cost, ref_scenario_result)
+
+        # Replace config's cost with resolved version
+        self._config.cost = resolved_cost
+
+        # Re-setup builder with resolved costs
+        self._setup_builder()
+
+    def _setup_builder_with_placeholder_costs(self):
+        """Set up builder with placeholder costs for reference scenario evaluation.
+
+        Uses the embodied values from config but placeholder operational values,
+        since we only need server count and power for ratio resolution.
+        """
+        cfg = self._config
+        proc = cfg.processor
+        cost = cfg.cost
+
+        # Get processor specs (supporting arbitrary names)
+        smt_spec = proc.get("smt") if "smt" in proc.processors else None
+        nosmt_spec = proc.get("nosmt") if "nosmt" in proc.processors else None
+
+        # Build ProcessorDefaults from the processor specs
+        proc_defaults = ProcessorDefaults(
+            smt_physical_cores=smt_spec.physical_cores if smt_spec else 48,
+            smt_threads_per_core=smt_spec.threads_per_core if smt_spec else 2,
+            smt_power_idle_w=smt_spec.power_idle_w if smt_spec else 100.0,
+            smt_power_max_w=smt_spec.power_max_w if smt_spec else 400.0,
+            smt_core_overhead=smt_spec.core_overhead if smt_spec else 0,
+            nosmt_physical_cores=nosmt_spec.physical_cores if nosmt_spec else 48,
+            nosmt_threads_per_core=nosmt_spec.threads_per_core if nosmt_spec else 1,
+            nosmt_power_idle_w=nosmt_spec.power_idle_w if nosmt_spec else 90.0,
+            nosmt_power_max_w=nosmt_spec.power_max_w if nosmt_spec else 340.0,
+            nosmt_core_overhead=nosmt_spec.core_overhead if nosmt_spec else 0,
+        )
+
+        # Use placeholder operational values - we only need server count and power
+        cost_defaults = CostDefaults(
+            embodied_carbon_kg=cost.embodied_carbon_kg,
+            server_cost_usd=cost.server_cost_usd,
+            carbon_intensity_g_kwh=1.0,  # Placeholder
+            electricity_cost_usd_kwh=0.01,  # Placeholder
+            lifetime_years=cost.lifetime_years,
+        )
+
+        power_fn = cfg.power_curve.to_callable()
+        self._builder = ScenarioBuilder(proc_defaults, cost_defaults, power_fn)
+
+        # Store processor config for direct access
+        self._processor_config = proc
+
+        workload = self._builder.build_workload_params(
+            cfg.workload.total_vcpus,
+            cfg.workload.avg_util,
+        )
+        cost_params = self._builder.build_cost_params()
+        self._model = OverssubModel(workload, cost_params)
+
+    def _setup_builder_for_ratio_sweep(self):
+        """Set up builder with placeholder costs for ratio parameter sweeps.
+
+        Similar to _setup_builder_with_placeholder_costs, but used when
+        we're sweeping over ratio parameters and need the initial setup
+        before iterating.
+        """
+        self._setup_builder_with_placeholder_costs()
 
     def _build_scenario_spec(self, name: str, scenario_cfg: ScenarioConfig) -> ScenarioSpec:
         """Build a ScenarioSpec from config."""
@@ -1047,9 +1528,18 @@ class DeclarativeAnalysisEngine:
         sweep_results = []
 
         for value in sweep_values:
+            # Reset cost spec for each iteration when sweeping ratio params
+            if self._is_ratio_sweep_param(sweep_param):
+                self._config.cost = copy.deepcopy(self._original_cost)
+
             # Modify workload or cost based on sweep parameter
-            self._apply_sweep_value(param_path, value)
-            self._setup_builder()  # Rebuild with new values
+            requires_ratio_resolution = self._apply_sweep_value(param_path, value)
+
+            # Rebuild with new values, resolving ratios if needed
+            if requires_ratio_resolution and self._config.cost.is_ratio_based():
+                self._resolve_ratio_costs()
+            else:
+                self._setup_builder()
 
             # Run breakeven for this value
             _, baseline_result = self._evaluate_scenario(analysis.baseline)
@@ -1092,11 +1582,288 @@ class DeclarativeAnalysisEngine:
             summary=summary,
         )
 
-    def _apply_sweep_value(self, param_path: ParameterPath, value: float):
-        """Apply sweep parameter value to config."""
+    def _run_compare_sweep(self) -> AnalysisResult:
+        """Run comparison sweep: compare scenarios while sweeping a parameter.
+
+        This analysis type computes % difference from baseline at each sweep value,
+        without searching for breakeven. Useful for sensitivity analysis showing
+        how savings change across parameter ranges.
+
+        Supports multiple sweep scenarios for multi-line plots via sweep_scenarios.
+        """
+        analysis = self._config.analysis
+        sweep_param = analysis.sweep_parameter
+        sweep_values = analysis.sweep_values
+        baseline_name = analysis.baseline
+
+        # Support both single scenario (sweep_scenario) and multiple (sweep_scenarios)
+        if analysis.sweep_scenarios:
+            sweep_scenario_list = analysis.sweep_scenarios
+        elif analysis.sweep_scenario or analysis.target:
+            sweep_scenario_list = [analysis.sweep_scenario or analysis.target]
+        else:
+            raise ValueError("compare_sweep requires sweep_scenario, sweep_scenarios, or target")
+
+        if not sweep_param or not sweep_values:
+            raise ValueError("compare_sweep requires sweep_parameter and sweep_values")
+        if not baseline_name:
+            raise ValueError("compare_sweep requires baseline scenario")
+
+        # Results organized by scenario for multi-line support
+        compare_sweep_results = []
+
+        # Store original scenario configs
+        original_configs = {
+            name: copy.deepcopy(self._config.scenarios[name])
+            for name in sweep_scenario_list
+        }
+
+        for value in sweep_values:
+            # Reset all scenario configs and apply sweep value
+            for scenario_name in sweep_scenario_list:
+                self._config.scenarios[scenario_name] = copy.deepcopy(original_configs[scenario_name])
+                self._apply_scenario_sweep_value(scenario_name, sweep_param, value)
+
+            # Rebuild model
+            self._setup_builder()
+
+            # Evaluate baseline once
+            _, baseline_result = self._evaluate_scenario(baseline_name)
+            baseline_dict = asdict(baseline_result)
+
+            # Evaluate each sweep scenario
+            scenario_results = {}
+            for scenario_name in sweep_scenario_list:
+                _, sweep_result = self._evaluate_scenario(scenario_name)
+                sweep_dict = asdict(sweep_result)
+
+                # Compute % differences
+                carbon_diff_pct = self._pct_diff(
+                    sweep_dict.get('total_carbon_kg', 0),
+                    baseline_dict.get('total_carbon_kg', 1),
+                )
+                tco_diff_pct = self._pct_diff(
+                    sweep_dict.get('total_cost_usd', 0),
+                    baseline_dict.get('total_cost_usd', 1),
+                )
+                server_diff_pct = self._pct_diff(
+                    sweep_dict.get('num_servers', 0),
+                    baseline_dict.get('num_servers', 1),
+                )
+
+                scenario_results[scenario_name] = {
+                    'result': sweep_dict,
+                    'carbon_diff_pct': carbon_diff_pct,
+                    'tco_diff_pct': tco_diff_pct,
+                    'server_diff_pct': server_diff_pct,
+                    'carbon_diff_abs': sweep_dict.get('total_carbon_kg', 0) - baseline_dict.get('total_carbon_kg', 0),
+                    'tco_diff_abs': sweep_dict.get('total_cost_usd', 0) - baseline_dict.get('total_cost_usd', 0),
+                    'server_diff_abs': sweep_dict.get('num_servers', 0) - baseline_dict.get('num_servers', 0),
+                }
+
+            result_entry = {
+                'parameter_value': value,
+                'baseline': baseline_dict,
+                'scenarios': scenario_results,
+            }
+
+            # For backward compatibility with single-scenario case
+            if len(sweep_scenario_list) == 1:
+                single_name = sweep_scenario_list[0]
+                result_entry['sweep_scenario'] = scenario_results[single_name]['result']
+                result_entry['carbon_diff_pct'] = scenario_results[single_name]['carbon_diff_pct']
+                result_entry['tco_diff_pct'] = scenario_results[single_name]['tco_diff_pct']
+                result_entry['server_diff_pct'] = scenario_results[single_name]['server_diff_pct']
+                result_entry['carbon_diff_abs'] = scenario_results[single_name]['carbon_diff_abs']
+                result_entry['tco_diff_abs'] = scenario_results[single_name]['tco_diff_abs']
+                result_entry['server_diff_abs'] = scenario_results[single_name]['server_diff_abs']
+
+            compare_sweep_results.append(result_entry)
+
+        # Restore original scenario configs
+        for scenario_name, cfg in original_configs.items():
+            self._config.scenarios[scenario_name] = cfg
+
+        summary = self._build_compare_sweep_summary(
+            sweep_param, sweep_scenario_list, baseline_name, compare_sweep_results
+        )
+
+        return AnalysisResult(
+            config=self._config,
+            analysis_type='compare_sweep',
+            scenario_results={},
+            comparisons={},
+            compare_sweep_results=compare_sweep_results,
+            summary=summary,
+        )
+
+    def _apply_scenario_sweep_value(
+        self,
+        scenario_name: str,
+        param: str,
+        value: float,
+    ) -> None:
+        """Apply sweep value to a specific scenario's parameters.
+
+        Args:
+            scenario_name: Name of the scenario to modify
+            param: Parameter name (e.g., 'vcpu_demand_multiplier', 'oversub_ratio')
+            value: Value to set
+        """
+        scenario_cfg = self._config.scenarios[scenario_name]
+
+        # Handle scenario-level parameters
+        if param == 'vcpu_demand_multiplier':
+            scenario_cfg.vcpu_demand_multiplier = value
+        elif param == 'oversub_ratio':
+            scenario_cfg.oversub_ratio = value
+        elif param == 'util_overhead':
+            scenario_cfg.util_overhead = value
+        else:
+            # Try to apply as a workload or cost parameter
+            param_path = ParameterPath(param)
+            self._apply_sweep_value(param_path, value)
+
+    def _build_compare_sweep_summary(
+        self,
+        sweep_param: str,
+        sweep_scenarios: List[str],
+        baseline_name: str,
+        results: List[Dict[str, Any]],
+    ) -> str:
+        """Build summary for compare_sweep analysis."""
+        is_multi = len(sweep_scenarios) > 1
+        labels = self._config.analysis.labels or {}
+        param_label = self._config.analysis.sweep_parameter_label or sweep_param
+
+        def get_label(name: str) -> str:
+            return labels.get(name, name)
+
+        lines = [
+            f"# Compare Sweep Analysis: {self._config.name}",
+            "",
+            f"## Configuration",
+            f"- Baseline: {get_label(baseline_name)}",
+        ]
+
+        if is_multi:
+            scenario_labels = [get_label(s) for s in sweep_scenarios]
+            lines.append(f"- Sweep Scenarios: {', '.join(scenario_labels)}")
+        else:
+            lines.append(f"- Sweep Scenario: {get_label(sweep_scenarios[0])}")
+
+        lines.extend([
+            f"- Sweep Parameter: {param_label}",
+            "",
+        ])
+
+        # For multi-scenario, create a table per scenario
+        for scenario_name in sweep_scenarios:
+            scenario_label = get_label(scenario_name)
+            if is_multi:
+                lines.append(f"## Results for {scenario_label}: % Change vs Baseline")
+            else:
+                lines.append("## Results: % Change vs Baseline")
+            lines.append("")
+            lines.append("| {:<15} | {:>12} | {:>12} | {:>12} |".format(
+                param_label[:15], "Carbon %", "TCO %", "Servers %"
+            ))
+            lines.append("|{:-<17}|{:->14}|{:->14}|{:->14}|".format("", "", "", ""))
+
+            for r in results:
+                value = r['parameter_value']
+                if is_multi:
+                    scenario_data = r['scenarios'].get(scenario_name, {})
+                    carbon_pct = scenario_data.get('carbon_diff_pct', 0)
+                    tco_pct = scenario_data.get('tco_diff_pct', 0)
+                    server_pct = scenario_data.get('server_diff_pct', 0)
+                else:
+                    carbon_pct = r['carbon_diff_pct']
+                    tco_pct = r['tco_diff_pct']
+                    server_pct = r['server_diff_pct']
+                lines.append(
+                    "| {:<15.3f} | {:>+11.1f}% | {:>+11.1f}% | {:>+11.1f}% |".format(
+                        value, carbon_pct, tco_pct, server_pct
+                    )
+                )
+            lines.append("")
+
+        # Find and report breakeven points
+        lines.append("## Breakeven Points (where % change crosses 0)")
+        for scenario_name in sweep_scenarios:
+            scenario_label = get_label(scenario_name)
+            breakeven = self._find_breakeven_in_results(results, scenario_name, 'carbon_diff_pct', is_multi)
+            if breakeven is not None:
+                lines.append(f"- {scenario_label} Carbon breakeven: {param_label} = {breakeven:.3f}")
+            else:
+                lines.append(f"- {scenario_label} Carbon breakeven: not found in range")
+        lines.append("")
+
+        lines.extend([
+            "## Interpretation",
+            "- Negative % = savings vs baseline (good)",
+            "- Positive % = increase vs baseline (bad)",
+        ])
+
+        return "\n".join(lines)
+
+    def _find_breakeven_in_results(
+        self,
+        results: List[Dict[str, Any]],
+        scenario_name: str,
+        metric: str,
+        is_multi: bool,
+    ) -> Optional[float]:
+        """Find the breakeven point (where metric crosses 0) using linear interpolation."""
+        if len(results) < 2:
+            return None
+
+        for i in range(len(results) - 1):
+            if is_multi:
+                val1 = results[i]['scenarios'].get(scenario_name, {}).get(metric, 0)
+                val2 = results[i + 1]['scenarios'].get(scenario_name, {}).get(metric, 0)
+            else:
+                val1 = results[i].get(metric, 0)
+                val2 = results[i + 1].get(metric, 0)
+
+            x1 = results[i]['parameter_value']
+            x2 = results[i + 1]['parameter_value']
+
+            # Check if crosses zero
+            if (val1 <= 0 <= val2) or (val2 <= 0 <= val1):
+                # Linear interpolation to find x where y=0
+                if val2 == val1:
+                    return x1
+                t = -val1 / (val2 - val1)
+                return x1 + t * (x2 - x1)
+
+        return None
+
+    def _is_ratio_sweep_param(self, param: str) -> bool:
+        """Check if parameter is a ratio-based cost parameter."""
+        ratio_params = {
+            'cost.operational_carbon_fraction',
+            'cost.operational_cost_fraction',
+            'cost.total_carbon_kg',
+            'cost.total_cost_usd',
+        }
+        return param in ratio_params
+
+    def _apply_sweep_value(self, param_path: ParameterPath, value: float) -> bool:
+        """Apply sweep parameter value to config.
+
+        Args:
+            param_path: The parameter path to modify
+            value: The value to set
+
+        Returns:
+            True if the parameter requires ratio cost re-resolution
+        """
         # Handle different parameter targets
         first_part = param_path.parts[0]
         rest = '.'.join(param_path.parts[1:]) if len(param_path.parts) > 1 else None
+
+        requires_ratio_resolution = False
 
         if first_part == 'workload':
             if rest == 'avg_util':
@@ -1110,12 +1877,34 @@ class DeclarativeAnalysisEngine:
                 self._config.cost.carbon_intensity_g_kwh = value
             elif rest == 'lifetime_years':
                 self._config.cost.lifetime_years = value
+            elif rest == 'operational_carbon_fraction':
+                self._config.cost.operational_carbon_fraction = value
+                self._config.cost.mode = CostMode.RATIO_BASED
+                requires_ratio_resolution = True
+            elif rest == 'operational_cost_fraction':
+                self._config.cost.operational_cost_fraction = value
+                self._config.cost.mode = CostMode.RATIO_BASED
+                requires_ratio_resolution = True
+            elif rest == 'server_cost_usd':
+                self._config.cost.server_cost_usd = value
+            elif rest == 'electricity_cost_usd_kwh':
+                self._config.cost.electricity_cost_usd_kwh = value
+            elif rest == 'total_carbon_kg':
+                self._config.cost.total_carbon_kg = value
+                self._config.cost.mode = CostMode.RATIO_BASED
+                requires_ratio_resolution = True
+            elif rest == 'total_cost_usd':
+                self._config.cost.total_cost_usd = value
+                self._config.cost.mode = CostMode.RATIO_BASED
+                requires_ratio_resolution = True
         elif first_part in ('avg_util', 'total_vcpus'):
             # Direct workload params
             if first_part == 'avg_util':
                 self._config.workload.avg_util = value
             else:
                 self._config.workload.total_vcpus = int(value)
+
+        return requires_ratio_resolution
 
     def _compute_comparisons(
         self,

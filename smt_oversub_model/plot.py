@@ -92,6 +92,37 @@ def _format_diff(value: float, baseline: float, is_carbon: bool = False) -> Tupl
     return (f"{sign}{pct:.1f}%", color)
 
 
+def _format_parameter_label(param_name: str) -> str:
+    """
+    Format parameter name for display, handling special cases like vCPU.
+    
+    Args:
+        param_name: Raw parameter name (e.g., 'vcpu_demand_multiplier')
+    
+    Returns:
+        Formatted label with proper capitalization
+    """
+    # Replace underscores and dots with spaces
+    formatted = param_name.replace('_', ' ').replace('.', ' ')
+    
+    # Split into words
+    words = formatted.split()
+    
+    # Handle special cases
+    result_words = []
+    for word in words:
+        word_lower = word.lower()
+        if word_lower == 'vcpu':
+            result_words.append('vCPU')
+        elif word_lower == 'vcpus':
+            result_words.append('vCPUs')
+        else:
+            # Title case for other words
+            result_words.append(word.capitalize())
+    
+    return ' '.join(result_words)
+
+
 def plot_scenarios(
     scenarios: List[Dict[str, Any]],
     baseline_idx: int = 0,
@@ -476,7 +507,7 @@ def plot_sweep_breakeven(
     ax.axhline(1.0, color=COLORS['neutral'], linestyle=':', alpha=0.7, linewidth=1.5,
                label='No oversubscription (R=1.0)')
 
-    ax.set_xlabel(param_name.replace('_', ' ').title(), fontsize=11)
+    ax.set_xlabel(_format_parameter_label(param_name), fontsize=11)
     ax.set_ylabel(f'Breakeven Oversubscription Ratio ({metric.upper()})', fontsize=11)
 
     ax.legend(loc='best', frameon=True, fontsize=9)
@@ -645,6 +676,375 @@ def plot_breakeven_search(
     return fig
 
 
+def _find_breakeven_point(x_values: List[float], y_values: List[float]) -> Optional[float]:
+    """Find where y crosses 0 using linear interpolation."""
+    for i in range(len(x_values) - 1):
+        y1, y2 = y_values[i], y_values[i + 1]
+        x1, x2 = x_values[i], x_values[i + 1]
+
+        if (y1 <= 0 <= y2) or (y2 <= 0 <= y1):
+            if y2 == y1:
+                return x1
+            t = -y1 / (y2 - y1)
+            return x1 + t * (x2 - x1)
+    return None
+
+
+def _interpolate_y_at_x(x_values: List[float], y_values: List[float], target_x: float) -> Optional[float]:
+    """Interpolate y-value at a given x position using linear interpolation.
+    
+    Args:
+        x_values: List of x coordinates (must be sorted)
+        y_values: List of corresponding y coordinates
+        target_x: The x position to interpolate at
+    
+    Returns:
+        Interpolated y-value, or None if target_x is outside the range
+    """
+    if not x_values or not y_values or len(x_values) != len(y_values):
+        return None
+    
+    # Check if target_x is within range
+    if target_x < min(x_values) or target_x > max(x_values):
+        return None
+    
+    # Find the two points to interpolate between
+    for i in range(len(x_values) - 1):
+        x1, x2 = x_values[i], x_values[i + 1]
+        y1, y2 = y_values[i], y_values[i + 1]
+        
+        if x1 <= target_x <= x2:
+            # Linear interpolation
+            if x2 == x1:
+                return y1
+            t = (target_x - x1) / (x2 - x1)
+            return y1 + t * (y2 - y1)
+    
+    # If exact match
+    if target_x in x_values:
+        idx = x_values.index(target_x)
+        return y_values[idx]
+    
+    return None
+
+
+def plot_compare_sweep(
+    result,
+    save_path: Optional[Union[str, Path]] = None,
+    figsize: Tuple[float, float] = (10, 6),
+    show: bool = True,
+    title: Optional[str] = None,
+    show_breakeven_marker: Optional[bool] = None,
+    metric: str = 'carbon',
+    scenario_filter: Optional[List[str]] = None,
+    show_plot_title: Optional[bool] = None,
+    x_axis_markers: Optional[List[float]] = None,
+) -> Optional[Any]:
+    """
+    Plot compare_sweep results showing % difference vs sweep parameter.
+
+    Creates a line plot with the sweep parameter on the x-axis and % change
+    from baseline on the y-axis. Supports single and multi-scenario sweeps.
+
+    Args:
+        result: AnalysisResult with compare_sweep_results, or dict
+        save_path: Optional path to save the figure
+        figsize: Figure size (width, height) in inches
+        show: Whether to display the plot (default True)
+        title: Optional custom title
+        show_breakeven_marker: Whether to show breakeven markers (default from config or True)
+        metric: Which metric to plot: 'carbon', 'tco', 'servers', or 'all' (default 'carbon')
+        scenario_filter: Optional list of scenario names to include (for individual plots)
+        show_plot_title: Whether to show the title (default from config or True)
+        x_axis_markers: List of x-values to draw vertical lines and label intersections (default from config or None)
+
+    Returns:
+        matplotlib Figure object if matplotlib is available
+    """
+    _check_matplotlib()
+
+    # Extract compare_sweep results
+    if hasattr(result, 'compare_sweep_results'):
+        compare_sweep_results = result.compare_sweep_results
+    elif isinstance(result, dict):
+        compare_sweep_results = result.get('compare_sweep_results', [])
+    else:
+        raise ValueError("Expected result with compare_sweep_results")
+
+    if not compare_sweep_results:
+        return None
+
+    # Get config options
+    if show_breakeven_marker is None:
+        if hasattr(result, 'config') and hasattr(result.config, 'analysis'):
+            show_breakeven_marker = result.config.analysis.show_breakeven_marker
+        elif isinstance(result, dict) and 'config' in result:
+            analysis = result['config'].get('analysis', {})
+            show_breakeven_marker = analysis.get('show_breakeven_marker', True)
+        else:
+            show_breakeven_marker = True
+
+    if show_plot_title is None:
+        if hasattr(result, 'config') and hasattr(result.config, 'analysis'):
+            show_plot_title = result.config.analysis.show_plot_title
+        elif isinstance(result, dict) and 'config' in result:
+            analysis = result['config'].get('analysis', {})
+            show_plot_title = analysis.get('show_plot_title', True)
+        else:
+            show_plot_title = True
+
+    if x_axis_markers is None:
+        if hasattr(result, 'config') and hasattr(result.config, 'analysis'):
+            x_axis_markers = result.config.analysis.x_axis_markers
+        elif isinstance(result, dict) and 'config' in result:
+            analysis = result['config'].get('analysis', {})
+            x_axis_markers = analysis.get('x_axis_markers')
+
+    # Get labels from config
+    labels = {}
+    param_label = None
+    if hasattr(result, 'config') and hasattr(result.config, 'analysis'):
+        labels = result.config.analysis.labels or {}
+        param_label = result.config.analysis.sweep_parameter_label
+    elif isinstance(result, dict) and 'config' in result:
+        analysis = result['config'].get('analysis', {})
+        labels = analysis.get('labels', {})
+        param_label = analysis.get('sweep_parameter_label')
+
+    def get_label(name: str) -> str:
+        return labels.get(name, name)
+
+    # Check if multi-scenario
+    first_point = compare_sweep_results[0]
+    is_multi = 'scenarios' in first_point and len(first_point.get('scenarios', {})) > 1
+
+    # Get scenario names
+    if is_multi:
+        scenario_names = list(first_point['scenarios'].keys())
+    else:
+        scenario_names = ['default']
+
+    # Apply filter if provided
+    if scenario_filter:
+        scenario_names = [s for s in scenario_names if s in scenario_filter]
+        if not scenario_names:
+            return None
+
+    # Get parameter name from config
+    param_name = 'Parameter'
+    if hasattr(result, 'config') and hasattr(result.config, 'analysis'):
+        param_name = result.config.analysis.sweep_parameter or 'Parameter'
+    elif isinstance(result, dict) and 'config' in result:
+        analysis = result['config'].get('analysis', {})
+        param_name = analysis.get('sweep_parameter', 'Parameter')
+
+    # Format parameter name for display
+    if param_label:
+        # Use custom label if provided
+        display_param_name = param_label
+    else:
+        # Auto-format with proper vCPU capitalization
+        display_param_name = _format_parameter_label(param_name)
+
+    # Extract data
+    param_values = [p.get('parameter_value', 0) if isinstance(p, dict) else getattr(p, 'parameter_value', 0)
+                    for p in compare_sweep_results]
+
+    # Color palette for multiple scenarios
+    scenario_colors = ['#1a5276', '#e74c3c', '#27ae60', '#8e44ad', '#f39c12', '#16a085']
+    metric_styles = {
+        'carbon': {'marker': 'o', 'label_suffix': ' Carbon'},
+        'tco': {'marker': 's', 'label_suffix': ' TCO'},
+        'servers': {'marker': '^', 'label_suffix': ' Servers'},
+    }
+
+    # Set up professional style
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.size': 10,
+    })
+
+    fig, ax = plt.subplots(figsize=figsize)
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('white')
+
+    # Determine which metrics to plot
+    if metric == 'all':
+        metrics_to_plot = ['carbon', 'tco', 'servers']
+    else:
+        metrics_to_plot = [metric]
+
+    breakeven_points = []  # Collect for annotation
+
+    for scenario_idx, scenario_name in enumerate(scenario_names):
+        base_color = scenario_colors[scenario_idx % len(scenario_colors)]
+        scenario_label = get_label(scenario_name)
+
+        for metric_name in metrics_to_plot:
+            metric_key = f'{metric_name}_diff_pct'
+            style = metric_styles[metric_name]
+
+            # Extract values for this scenario and metric
+            if is_multi:
+                y_values = [p['scenarios'].get(scenario_name, {}).get(metric_key, 0)
+                           for p in compare_sweep_results]
+            else:
+                y_values = [p.get(metric_key, 0) for p in compare_sweep_results]
+
+            # Build label using display labels
+            if is_multi and len(metrics_to_plot) > 1:
+                plot_label = f"{scenario_label}{style['label_suffix']}"
+            elif is_multi:
+                plot_label = scenario_label
+            elif len(metrics_to_plot) > 1:
+                plot_label = metric_name.capitalize()
+            else:
+                plot_label = f"{metric_name.capitalize()} %"
+
+            # Adjust color shade for different metrics within same scenario
+            if len(metrics_to_plot) > 1:
+                metric_idx = metrics_to_plot.index(metric_name)
+                # Lighten color for subsequent metrics
+                color = _adjust_color_brightness(base_color, 1.0 - metric_idx * 0.2)
+            else:
+                color = base_color
+
+            # Plot line
+            line, = ax.plot(param_values, y_values, f"{style['marker']}-",
+                           linewidth=2, markersize=8, color=color, label=plot_label)
+
+            # Find and mark breakeven point
+            if show_breakeven_marker:
+                breakeven_x = _find_breakeven_point(param_values, y_values)
+                if breakeven_x is not None:
+                    # Interpolate y value (should be ~0)
+                    ax.plot(breakeven_x, 0, 'D', markersize=12, color=color,
+                           markeredgecolor='white', markeredgewidth=2, zorder=10)
+                    breakeven_points.append((breakeven_x, scenario_label, metric_name, color))
+
+    # Reference line at 0%
+    ax.axhline(0, color='black', linestyle='-', alpha=0.3, linewidth=1.5,
+               label='Baseline (0%)')
+
+    # Shade regions
+    y_min, y_max = ax.get_ylim()
+    ax.axhspan(y_min, 0, alpha=0.1, color=COLORS['positive'], label='_nolegend_')
+    ax.axhspan(0, y_max, alpha=0.1, color=COLORS['negative'], label='_nolegend_')
+
+    # Add annotations for savings/cost regions
+    ax.text(0.02, 0.02, 'Savings', transform=ax.transAxes, fontsize=9,
+            color=COLORS['positive'], fontweight='bold', alpha=0.7)
+    ax.text(0.02, 0.98, 'Increase', transform=ax.transAxes, fontsize=9,
+            color=COLORS['negative'], fontweight='bold', alpha=0.7, va='top')
+
+    # Add breakeven labels
+    if show_breakeven_marker and breakeven_points:
+        # Offset labels to avoid overlap
+        for i, (bx, slabel, mname, color) in enumerate(breakeven_points):
+            y_offset = 5 + (i % 3) * 15  # Stagger labels
+            if is_multi or len(scenario_names) > 1:
+                label_text = f"{slabel}: {bx:.3f}"
+            else:
+                label_text = f"Breakeven: {bx:.3f}"
+            ax.annotate(label_text, xy=(bx, 0), xytext=(0, y_offset),
+                       textcoords='offset points', ha='center', va='bottom',
+                       fontsize=9, fontweight='bold', color=color,
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                                edgecolor=color, alpha=0.9))
+
+    ax.set_xlabel(display_param_name, fontsize=11)
+    ax.set_ylabel('Change vs Baseline (%)', fontsize=11)
+    
+    # Draw x-axis markers if specified
+    if x_axis_markers:
+        for marker_x in x_axis_markers:
+            # Draw vertical line
+            ax.axvline(marker_x, color='gray', linestyle='--', alpha=0.5, linewidth=1.5, zorder=1)
+            
+            # Find and label intersection points for each scenario
+            for scenario_idx, scenario_name in enumerate(scenario_names):
+                base_color = scenario_colors[scenario_idx % len(scenario_colors)]
+                
+                for metric_name in metrics_to_plot:
+                    metric_key = f'{metric_name}_diff_pct'
+                    
+                    # Extract values for this scenario and metric
+                    if is_multi:
+                        y_values = [p['scenarios'].get(scenario_name, {}).get(metric_key, 0)
+                                   for p in compare_sweep_results]
+                    else:
+                        y_values = [p.get(metric_key, 0) for p in compare_sweep_results]
+                    
+                    # Interpolate y-value at marker_x
+                    y_at_marker = _interpolate_y_at_x(param_values, y_values, marker_x)
+                    if y_at_marker is not None:
+                        # Determine color shade
+                        if len(metrics_to_plot) > 1:
+                            metric_idx = metrics_to_plot.index(metric_name)
+                            color = _adjust_color_brightness(base_color, 1.0 - metric_idx * 0.2)
+                        else:
+                            color = base_color
+                        
+                        # Plot marker point
+                        ax.plot(marker_x, y_at_marker, 'o', markersize=8, color=color,
+                               markeredgecolor='white', markeredgewidth=1.5, zorder=10)
+                        
+                        # Add label with y-value
+                        label_text = f"{y_at_marker:.1f}%"
+                        ax.annotate(label_text, xy=(marker_x, y_at_marker), 
+                                   xytext=(5, 5), textcoords='offset points',
+                                   fontsize=8, color=color, fontweight='bold',
+                                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                                           edgecolor=color, alpha=0.8))
+    
+    ax.legend(loc='best', frameon=True, fontsize=9)
+    ax.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    # Set title only if show_plot_title is True
+    if show_plot_title:
+        if title is None:
+            config_name = None
+            if hasattr(result, 'config') and hasattr(result.config, 'name'):
+                config_name = result.config.name
+            elif isinstance(result, dict) and 'config' in result:
+                config_name = result['config'].get('name')
+            title = f"Compare Sweep: {config_name}" if config_name else "Compare Sweep Analysis"
+        
+        ax.set_title(title, fontsize=13, fontweight='bold', color='#333333')
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+
+    if show:
+        plt.show()
+
+    return fig
+
+
+def _adjust_color_brightness(hex_color: str, factor: float) -> str:
+    """Adjust color brightness. Factor > 1 lightens, < 1 darkens."""
+    hex_color = hex_color.lstrip('#')
+    r, g, b = int(hex_color[:2], 16), int(hex_color[2:4], 16), int(hex_color[4:], 16)
+
+    if factor > 1:
+        # Lighten
+        r = int(r + (255 - r) * (factor - 1))
+        g = int(g + (255 - g) * (factor - 1))
+        b = int(b + (255 - b) * (factor - 1))
+    else:
+        # Darken
+        r = int(r * factor)
+        g = int(g * factor)
+        b = int(b * factor)
+
+    r, g, b = min(255, max(0, r)), min(255, max(0, g)), min(255, max(0, b))
+    return f'#{r:02x}{g:02x}{b:02x}'
+
+
 def plot_analysis_result(
     result,
     save_path: Optional[Union[str, Path]] = None,
@@ -658,6 +1058,7 @@ def plot_analysis_result(
     - find_breakeven: plots scenario comparison and optionally breakeven search
     - compare: plots scenario comparison
     - sweep: plots sweep results
+    - compare_sweep: plots % difference vs sweep parameter
 
     Args:
         result: AnalysisResult from DeclarativeAnalysisEngine, or dict
@@ -722,6 +1123,9 @@ def plot_analysis_result(
     elif analysis_type == 'sweep':
         return plot_sweep_analysis(result, save_path=save_path, show=show, **kwargs)
 
+    elif analysis_type == 'compare_sweep':
+        return plot_compare_sweep(result, save_path=save_path, show=show, **kwargs)
+
     return None
 
 
@@ -780,6 +1184,9 @@ def plot_sweep_analysis(
     elif isinstance(result, dict) and 'config' in result:
         analysis = result['config'].get('analysis', {})
         param_name = analysis.get('sweep_parameter', 'Parameter')
+    
+    # Format parameter label
+    display_param_name = _format_parameter_label(param_name)
 
     # Set up professional style
     plt.rcParams.update({
@@ -818,7 +1225,7 @@ def plot_sweep_analysis(
     ax.axhline(1.0, color=COLORS['neutral'], linestyle=':', alpha=0.7, linewidth=1.5,
                label='No oversubscription (R=1.0)')
 
-    ax.set_xlabel(param_name.replace('_', ' ').replace('.', ' ').title(), fontsize=11)
+    ax.set_xlabel(display_param_name, fontsize=11)
     ax.set_ylabel('Breakeven Value', fontsize=11)
     ax.legend(loc='best', frameon=True, fontsize=9)
     ax.grid(True, linestyle='-', alpha=0.2, color='#cccccc')

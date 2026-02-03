@@ -392,6 +392,8 @@ class OutputWriter:
             self._plot_comparison(result, plots_dir)
         elif result.analysis_type == 'sweep':
             self._plot_sweep(result, plots_dir)
+        elif result.analysis_type == 'compare_sweep':
+            self._plot_compare_sweep(result, plots_dir)
 
     def _plot_comparison(
         self,
@@ -466,6 +468,60 @@ class OutputWriter:
             save_path=str(save_path),
             show=False,
         )
+
+    def _plot_compare_sweep(
+        self,
+        result: 'AnalysisResult',
+        plots_dir: Path,
+    ) -> None:
+        """Generate compare_sweep results plot(s).
+
+        For multi-scenario sweeps, generates:
+        - One combined plot with all lines
+        - Individual plots for each scenario
+        """
+        if not result.compare_sweep_results:
+            return
+
+        try:
+            from .plot import plot_compare_sweep
+        except ImportError:
+            return
+
+        # Check if multi-scenario
+        first_point = result.compare_sweep_results[0]
+        is_multi = 'scenarios' in first_point and len(first_point.get('scenarios', {})) > 1
+
+        # Generate combined plot
+        save_path = plots_dir / 'compare_sweep.png'
+        plot_compare_sweep(
+            result,
+            save_path=str(save_path),
+            show=False,
+        )
+
+        # For multi-scenario, also generate individual plots
+        if is_multi:
+            scenario_names = list(first_point['scenarios'].keys())
+            labels = {}
+            if hasattr(result.config, 'analysis') and result.config.analysis.labels:
+                labels = result.config.analysis.labels
+
+            for scenario_name in scenario_names:
+                # Create safe filename
+                safe_name = scenario_name.replace(' ', '_').replace('/', '_').replace('=', '_')
+                save_path = plots_dir / f'compare_sweep_{safe_name}.png'
+
+                # Get display label for title
+                display_label = labels.get(scenario_name, scenario_name)
+
+                plot_compare_sweep(
+                    result,
+                    save_path=str(save_path),
+                    show=False,
+                    scenario_filter=[scenario_name],
+                    title=f"Compare Sweep: {display_label}",
+                )
 
 
 def save_result(result: 'AnalysisResult', output_dir: str) -> None:

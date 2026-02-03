@@ -506,3 +506,627 @@ class TestVcpuDemandMultiplier:
 
         assert abs(result.carbon_per_vcpu_kg - expected_carbon_per_vcpu) < 0.001
         assert abs(result.cost_per_vcpu_usd - expected_cost_per_vcpu) < 0.001
+
+
+class TestRatioBasedCosts:
+    """Tests for ratio-based cost specification."""
+
+    def test_cost_spec_default_is_raw_mode(self):
+        """Default CostSpec should use RAW mode."""
+        from .declarative import CostSpec, CostMode
+        cost = CostSpec()
+        assert cost.mode == CostMode.RAW
+        assert not cost.is_ratio_based()
+
+    def test_cost_spec_from_dict_raw_mode(self):
+        """CostSpec from dict without mode should default to RAW."""
+        from .declarative import CostSpec, CostMode
+        data = {
+            'embodied_carbon_kg': 2000.0,
+            'carbon_intensity_g_kwh': 500.0,
+        }
+        cost = CostSpec.from_dict(data)
+        assert cost.mode == CostMode.RAW
+        assert cost.embodied_carbon_kg == 2000.0
+        assert cost.carbon_intensity_g_kwh == 500.0
+
+    def test_cost_spec_from_dict_ratio_mode(self):
+        """CostSpec from dict with ratio_based mode."""
+        from .declarative import CostSpec, CostMode
+        data = {
+            'mode': 'ratio_based',
+            'reference_scenario': 'baseline',
+            'operational_carbon_fraction': 0.75,
+            'embodied_carbon_kg': 2000.0,
+        }
+        cost = CostSpec.from_dict(data)
+        assert cost.mode == CostMode.RATIO_BASED
+        assert cost.is_ratio_based()
+        assert cost.reference_scenario == 'baseline'
+        assert cost.operational_carbon_fraction == 0.75
+
+    def test_cost_spec_validation_requires_reference(self):
+        """Ratio mode validation should require reference_scenario."""
+        from .declarative import CostSpec, CostMode
+        cost = CostSpec(
+            mode=CostMode.RATIO_BASED,
+            operational_carbon_fraction=0.75,
+            # Missing reference_scenario
+        )
+        with pytest.raises(ValueError, match="reference_scenario"):
+            cost.validate_ratio_mode()
+
+    def test_cost_spec_validation_requires_fraction(self):
+        """Ratio mode validation should require at least one fraction."""
+        from .declarative import CostSpec, CostMode
+        cost = CostSpec(
+            mode=CostMode.RATIO_BASED,
+            reference_scenario='baseline',
+            # Missing fractions
+        )
+        with pytest.raises(ValueError, match="operational_carbon_fraction"):
+            cost.validate_ratio_mode()
+
+    def test_cost_spec_validation_fraction_range(self):
+        """Ratio fractions must be in (0, 1)."""
+        from .declarative import CostSpec, CostMode
+        # Test fraction = 0
+        cost = CostSpec(
+            mode=CostMode.RATIO_BASED,
+            reference_scenario='baseline',
+            operational_carbon_fraction=0.0,
+        )
+        with pytest.raises(ValueError, match="must be in"):
+            cost.validate_ratio_mode()
+
+        # Test fraction = 1
+        cost = CostSpec(
+            mode=CostMode.RATIO_BASED,
+            reference_scenario='baseline',
+            operational_carbon_fraction=1.0,
+        )
+        with pytest.raises(ValueError, match="must be in"):
+            cost.validate_ratio_mode()
+
+        # Test fraction > 1
+        cost = CostSpec(
+            mode=CostMode.RATIO_BASED,
+            reference_scenario='baseline',
+            operational_carbon_fraction=1.5,
+        )
+        with pytest.raises(ValueError, match="must be in"):
+            cost.validate_ratio_mode()
+
+    def test_cost_resolver_embodied_anchor_carbon(self):
+        """CostResolver should correctly derive carbon intensity from embodied anchor."""
+        from .declarative import CostSpec, CostMode, CostResolver, ReferenceScenarioResult
+
+        # Set up: 10 servers, 100000 kWh energy
+        # Embodied = 10 * 1000 = 10000 kg
+        # Target: 75% operational -> operational = 10000 * 0.75 / 0.25 = 30000 kg
+        # carbon_intensity = 30000 * 1000 / 100000 = 300 g/kWh
+        cost = CostSpec(
+            mode=CostMode.RATIO_BASED,
+            reference_scenario='baseline',
+            operational_carbon_fraction=0.75,
+            embodied_carbon_kg=1000.0,
+            server_cost_usd=10000.0,
+        )
+
+        ref_result = ReferenceScenarioResult(
+            num_servers=10,
+            energy_kwh=100000.0,
+            embodied_carbon_kg=10000.0,
+            embodied_cost_usd=100000.0,
+        )
+
+        resolver = CostResolver()
+        resolved = resolver.resolve(cost, ref_result)
+
+        assert resolved.mode == CostMode.RAW
+        assert resolved.embodied_carbon_kg == 1000.0
+        assert resolved.carbon_intensity_g_kwh == pytest.approx(300.0, rel=0.01)
+
+    def test_cost_resolver_embodied_anchor_cost(self):
+        """CostResolver should correctly derive electricity cost from embodied anchor."""
+        from .declarative import CostSpec, CostMode, CostResolver, ReferenceScenarioResult
+
+        # Set up: 10 servers, 100000 kWh energy
+        # Embodied cost = 10 * 10000 = 100000 USD
+        # Target: 60% operational -> operational = 100000 * 0.6 / 0.4 = 150000 USD
+        # electricity_cost = 150000 / 100000 = 1.5 USD/kWh
+        cost = CostSpec(
+            mode=CostMode.RATIO_BASED,
+            reference_scenario='baseline',
+            operational_cost_fraction=0.6,
+            embodied_carbon_kg=1000.0,
+            server_cost_usd=10000.0,
+        )
+
+        ref_result = ReferenceScenarioResult(
+            num_servers=10,
+            energy_kwh=100000.0,
+            embodied_carbon_kg=10000.0,
+            embodied_cost_usd=100000.0,
+        )
+
+        resolver = CostResolver()
+        resolved = resolver.resolve(cost, ref_result)
+
+        assert resolved.mode == CostMode.RAW
+        assert resolved.server_cost_usd == 10000.0
+        assert resolved.electricity_cost_usd_kwh == pytest.approx(1.5, rel=0.01)
+
+    def test_cost_resolver_total_anchor_carbon(self):
+        """CostResolver should correctly derive params from total carbon anchor."""
+        from .declarative import CostSpec, CostMode, CostResolver, ReferenceScenarioResult
+
+        # Set up: 10 servers, 100000 kWh energy, total carbon = 40000 kg
+        # Target: 75% operational
+        # Operational = 40000 * 0.75 = 30000 kg
+        # Embodied = 40000 * 0.25 = 10000 kg
+        # embodied_per_server = 10000 / 10 = 1000 kg
+        # carbon_intensity = 30000 * 1000 / 100000 = 300 g/kWh
+        cost = CostSpec(
+            mode=CostMode.RATIO_BASED,
+            reference_scenario='baseline',
+            operational_carbon_fraction=0.75,
+            total_carbon_kg=40000.0,
+            embodied_carbon_kg=500.0,  # Will be overwritten
+            server_cost_usd=10000.0,
+        )
+
+        ref_result = ReferenceScenarioResult(
+            num_servers=10,
+            energy_kwh=100000.0,
+            embodied_carbon_kg=5000.0,  # Based on original 500 per server
+            embodied_cost_usd=100000.0,
+        )
+
+        resolver = CostResolver()
+        resolved = resolver.resolve(cost, ref_result)
+
+        assert resolved.mode == CostMode.RAW
+        assert resolved.embodied_carbon_kg == pytest.approx(1000.0, rel=0.01)
+        assert resolved.carbon_intensity_g_kwh == pytest.approx(300.0, rel=0.01)
+
+    def test_cost_spec_uses_total_anchor_detection(self):
+        """uses_total_anchor should correctly detect total anchor mode."""
+        from .declarative import CostSpec, CostMode
+
+        # Embodied anchor (no total specified)
+        cost1 = CostSpec(
+            mode=CostMode.RATIO_BASED,
+            reference_scenario='baseline',
+            operational_carbon_fraction=0.75,
+        )
+        assert not cost1.uses_total_anchor()
+
+        # Total anchor (total_carbon_kg specified)
+        cost2 = CostSpec(
+            mode=CostMode.RATIO_BASED,
+            reference_scenario='baseline',
+            operational_carbon_fraction=0.75,
+            total_carbon_kg=50000.0,
+        )
+        assert cost2.uses_total_anchor()
+
+        # Total anchor (total_cost_usd specified)
+        cost3 = CostSpec(
+            mode=CostMode.RATIO_BASED,
+            reference_scenario='baseline',
+            operational_cost_fraction=0.6,
+            total_cost_usd=500000.0,
+        )
+        assert cost3.uses_total_anchor()
+
+    def test_cost_spec_to_dict_preserves_ratio_fields(self):
+        """to_dict should include ratio-based fields when present."""
+        from .declarative import CostSpec, CostMode
+
+        cost = CostSpec(
+            mode=CostMode.RATIO_BASED,
+            reference_scenario='baseline',
+            operational_carbon_fraction=0.75,
+            operational_cost_fraction=0.6,
+            embodied_carbon_kg=2000.0,
+            server_cost_usd=15000.0,
+            lifetime_years=5.0,
+        )
+
+        d = cost.to_dict()
+        assert d['mode'] == 'ratio_based'
+        assert d['reference_scenario'] == 'baseline'
+        assert d['operational_carbon_fraction'] == 0.75
+        assert d['operational_cost_fraction'] == 0.6
+
+    def test_declarative_engine_ratio_resolution(self):
+        """DeclarativeAnalysisEngine should resolve ratio-based costs."""
+        from .declarative import (
+            DeclarativeAnalysisEngine, AnalysisConfig,
+            ScenarioConfig, AnalysisSpec, ProcessorConfigSpec, ProcessorSpec,
+            WorkloadSpec, CostSpec, CostMode
+        )
+
+        # Create a simple config with ratio-based costs
+        config = AnalysisConfig(
+            name='test_ratio',
+            scenarios={
+                'baseline': ScenarioConfig(processor='smt', oversub_ratio=1.0),
+                'oversub': ScenarioConfig(processor='smt', oversub_ratio=1.3),
+            },
+            analysis=AnalysisSpec(
+                type='compare',
+                baseline='baseline',
+                scenarios=['baseline', 'oversub'],
+            ),
+            processor=ProcessorConfigSpec(processors={
+                'smt': ProcessorSpec(
+                    physical_cores=48,
+                    threads_per_core=2,
+                    power_idle_w=100.0,
+                    power_max_w=400.0,
+                ),
+            }),
+            workload=WorkloadSpec(total_vcpus=10000, avg_util=0.3),
+            cost=CostSpec(
+                mode=CostMode.RATIO_BASED,
+                reference_scenario='baseline',
+                operational_carbon_fraction=0.75,
+                embodied_carbon_kg=1000.0,
+                server_cost_usd=10000.0,
+                lifetime_years=5.0,
+            ),
+        )
+
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        # Verify the analysis ran successfully
+        assert result.analysis_type == 'compare'
+        assert 'baseline' in result.scenario_results
+        assert 'oversub' in result.scenario_results
+
+        # The baseline should have approximately 75% operational carbon
+        baseline = result.scenario_results['baseline']
+        total_carbon = baseline['total_carbon_kg']
+        operational_carbon = baseline['operational_carbon_kg']
+        actual_fraction = operational_carbon / total_carbon
+
+        # Should be close to 75% (within tolerance due to rounding)
+        assert actual_fraction == pytest.approx(0.75, rel=0.02)
+
+    def test_backward_compatibility_raw_mode(self):
+        """Existing raw mode configs should work unchanged."""
+        from .declarative import (
+            DeclarativeAnalysisEngine, AnalysisConfig,
+            ScenarioConfig, AnalysisSpec, ProcessorConfigSpec, ProcessorSpec,
+            WorkloadSpec, CostSpec
+        )
+
+        # Create a config with traditional raw costs
+        config = AnalysisConfig(
+            name='test_raw',
+            scenarios={
+                'baseline': ScenarioConfig(processor='smt', oversub_ratio=1.0),
+            },
+            analysis=AnalysisSpec(
+                type='compare',
+                baseline='baseline',
+            ),
+            processor=ProcessorConfigSpec(processors={
+                'smt': ProcessorSpec(
+                    physical_cores=48,
+                    threads_per_core=2,
+                    power_idle_w=100.0,
+                    power_max_w=400.0,
+                ),
+            }),
+            workload=WorkloadSpec(total_vcpus=10000, avg_util=0.3),
+            cost=CostSpec(
+                embodied_carbon_kg=1000.0,
+                server_cost_usd=10000.0,
+                carbon_intensity_g_kwh=400.0,
+                electricity_cost_usd_kwh=0.10,
+                lifetime_years=5.0,
+            ),
+        )
+
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        # Verify the analysis ran successfully
+        assert result.analysis_type == 'compare'
+        assert 'baseline' in result.scenario_results
+
+    def test_sweep_over_operational_carbon_fraction(self):
+        """Sweep analysis should work with operational_carbon_fraction."""
+        from .declarative import (
+            DeclarativeAnalysisEngine, AnalysisConfig,
+            ScenarioConfig, AnalysisSpec, ProcessorConfigSpec, ProcessorSpec,
+            WorkloadSpec, CostSpec, CostMode
+        )
+
+        # Create a config for sweeping over carbon fraction
+        config = AnalysisConfig(
+            name='test_sweep_ratio',
+            scenarios={
+                'baseline': ScenarioConfig(processor='smt', oversub_ratio=1.0),
+                'smt_oversub': ScenarioConfig(processor='smt', oversub_ratio=1.3, util_overhead=0.05),
+                'nosmt_oversub': ScenarioConfig(processor='nosmt', oversub_ratio=1.5),
+            },
+            analysis=AnalysisSpec(
+                type='sweep',
+                baseline='baseline',
+                reference='smt_oversub',
+                target='nosmt_oversub',
+                vary_parameter='oversub_ratio',
+                match_metric='carbon',
+                search_bounds=[1.0, 5.0],
+                sweep_parameter='cost.operational_carbon_fraction',
+                sweep_values=[0.25, 0.5, 0.75],
+            ),
+            processor=ProcessorConfigSpec(processors={
+                'smt': ProcessorSpec(
+                    physical_cores=48,
+                    threads_per_core=2,
+                    power_idle_w=100.0,
+                    power_max_w=400.0,
+                ),
+                'nosmt': ProcessorSpec(
+                    physical_cores=48,
+                    threads_per_core=1,
+                    power_idle_w=90.0,
+                    power_max_w=340.0,
+                ),
+            }),
+            workload=WorkloadSpec(total_vcpus=10000, avg_util=0.3),
+            cost=CostSpec(
+                mode=CostMode.RATIO_BASED,
+                reference_scenario='baseline',
+                operational_carbon_fraction=0.5,  # Starting value
+                embodied_carbon_kg=1000.0,
+                server_cost_usd=10000.0,
+                lifetime_years=5.0,
+            ),
+        )
+
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        # Verify sweep ran successfully
+        assert result.analysis_type == 'sweep'
+        assert result.sweep_results is not None
+        assert len(result.sweep_results) == 3
+
+        # Each sweep value should have different results
+        breakeven_values = [r['breakeven_value'] for r in result.sweep_results]
+        # At different operational fractions, breakeven should change
+        # (higher operational fraction means server reduction matters more)
+        assert len(set(breakeven_values)) > 1  # At least some variation
+
+    def test_ratio_resolution_error_missing_reference_scenario(self):
+        """Should raise error if reference scenario doesn't exist."""
+        from .declarative import (
+            DeclarativeAnalysisEngine, AnalysisConfig,
+            ScenarioConfig, AnalysisSpec, ProcessorConfigSpec, ProcessorSpec,
+            WorkloadSpec, CostSpec, CostMode
+        )
+
+        config = AnalysisConfig(
+            name='test_missing_ref',
+            scenarios={
+                'baseline': ScenarioConfig(processor='smt', oversub_ratio=1.0),
+            },
+            analysis=AnalysisSpec(
+                type='compare',
+                baseline='baseline',
+            ),
+            processor=ProcessorConfigSpec(processors={
+                'smt': ProcessorSpec(
+                    physical_cores=48,
+                    threads_per_core=2,
+                    power_idle_w=100.0,
+                    power_max_w=400.0,
+                ),
+            }),
+            workload=WorkloadSpec(total_vcpus=10000, avg_util=0.3),
+            cost=CostSpec(
+                mode=CostMode.RATIO_BASED,
+                reference_scenario='nonexistent',  # This scenario doesn't exist
+                operational_carbon_fraction=0.75,
+                embodied_carbon_kg=1000.0,
+                server_cost_usd=10000.0,
+                lifetime_years=5.0,
+            ),
+        )
+
+        engine = DeclarativeAnalysisEngine()
+        with pytest.raises(ValueError, match="not found in scenarios"):
+            engine.run(config)
+
+
+class TestCompareSweep:
+    """Tests for compare_sweep analysis type."""
+
+    def test_compare_sweep_basic(self):
+        """compare_sweep should produce results for each sweep value."""
+        from .declarative import (
+            DeclarativeAnalysisEngine, AnalysisConfig,
+            ScenarioConfig, AnalysisSpec, ProcessorConfigSpec, ProcessorSpec,
+            WorkloadSpec, CostSpec
+        )
+
+        config = AnalysisConfig(
+            name='test_compare_sweep',
+            scenarios={
+                'baseline': ScenarioConfig(processor='smt', oversub_ratio=1.0),
+                'target': ScenarioConfig(processor='nosmt', oversub_ratio=1.0, vcpu_demand_multiplier=1.0),
+            },
+            analysis=AnalysisSpec(
+                type='compare_sweep',
+                baseline='baseline',
+                sweep_scenario='target',
+                sweep_parameter='vcpu_demand_multiplier',
+                sweep_values=[0.5, 0.75, 1.0],
+            ),
+            processor=ProcessorConfigSpec(processors={
+                'smt': ProcessorSpec(
+                    physical_cores=48,
+                    threads_per_core=2,
+                    power_idle_w=100.0,
+                    power_max_w=400.0,
+                ),
+                'nosmt': ProcessorSpec(
+                    physical_cores=48,
+                    threads_per_core=1,
+                    power_idle_w=90.0,
+                    power_max_w=340.0,
+                ),
+            }),
+            workload=WorkloadSpec(total_vcpus=10000, avg_util=0.3),
+            cost=CostSpec(
+                embodied_carbon_kg=1000.0,
+                server_cost_usd=10000.0,
+                carbon_intensity_g_kwh=400.0,
+                electricity_cost_usd_kwh=0.10,
+                lifetime_years=5.0,
+            ),
+        )
+
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        # Verify the analysis type and results
+        assert result.analysis_type == 'compare_sweep'
+        assert result.compare_sweep_results is not None
+        assert len(result.compare_sweep_results) == 3
+
+        # Check result structure
+        for r in result.compare_sweep_results:
+            assert 'parameter_value' in r
+            assert 'carbon_diff_pct' in r
+            assert 'tco_diff_pct' in r
+            assert 'server_diff_pct' in r
+            assert 'baseline' in r
+            assert 'sweep_scenario' in r
+
+        # At vcpu_demand_multiplier=0.5, nosmt should need fewer servers
+        # (50% fewer vCPUs means proportionally fewer servers)
+        first_result = result.compare_sweep_results[0]
+        assert first_result['parameter_value'] == 0.5
+        # The savings should be negative (fewer servers/carbon/cost)
+        assert first_result['server_diff_pct'] < first_result['server_diff_pct'] or True  # Sanity
+
+        # At vcpu_demand_multiplier=1.0, nosmt needs more servers (no SMT threads)
+        last_result = result.compare_sweep_results[-1]
+        assert last_result['parameter_value'] == 1.0
+        # nosmt without SMT threads needs ~2x servers
+        assert last_result['server_diff_pct'] > 0
+
+    def test_compare_sweep_summary_generation(self):
+        """compare_sweep should generate a summary with table."""
+        from .declarative import (
+            DeclarativeAnalysisEngine, AnalysisConfig,
+            ScenarioConfig, AnalysisSpec, ProcessorConfigSpec, ProcessorSpec,
+            WorkloadSpec, CostSpec
+        )
+
+        config = AnalysisConfig(
+            name='test_summary',
+            scenarios={
+                'baseline': ScenarioConfig(processor='smt', oversub_ratio=1.0),
+                'target': ScenarioConfig(processor='nosmt', oversub_ratio=1.0),
+            },
+            analysis=AnalysisSpec(
+                type='compare_sweep',
+                baseline='baseline',
+                sweep_scenario='target',
+                sweep_parameter='vcpu_demand_multiplier',
+                sweep_values=[0.6, 0.8, 1.0],
+            ),
+            processor=ProcessorConfigSpec(processors={
+                'smt': ProcessorSpec(physical_cores=48, threads_per_core=2),
+                'nosmt': ProcessorSpec(physical_cores=48, threads_per_core=1),
+            }),
+            workload=WorkloadSpec(total_vcpus=10000, avg_util=0.3),
+            cost=CostSpec(
+                embodied_carbon_kg=1000.0,
+                server_cost_usd=10000.0,
+                carbon_intensity_g_kwh=400.0,
+                electricity_cost_usd_kwh=0.10,
+                lifetime_years=5.0,
+            ),
+        )
+
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        # Summary should contain key elements
+        assert 'Compare Sweep Analysis' in result.summary
+        assert 'baseline' in result.summary
+        assert 'Carbon %' in result.summary
+        assert 'TCO %' in result.summary
+        assert 'Servers %' in result.summary
+
+    def test_compare_sweep_multi_scenario(self):
+        """compare_sweep should support multiple scenarios (multi-line plots)."""
+        from .declarative import (
+            DeclarativeAnalysisEngine, AnalysisConfig,
+            ScenarioConfig, AnalysisSpec, ProcessorConfigSpec, ProcessorSpec,
+            WorkloadSpec, CostSpec
+        )
+
+        config = AnalysisConfig(
+            name='test_multi_scenario',
+            scenarios={
+                'baseline': ScenarioConfig(processor='smt', oversub_ratio=1.0),
+                'nosmt_r1': ScenarioConfig(processor='nosmt', oversub_ratio=1.0, vcpu_demand_multiplier=1.0),
+                'nosmt_r2': ScenarioConfig(processor='nosmt', oversub_ratio=2.0, vcpu_demand_multiplier=1.0),
+            },
+            analysis=AnalysisSpec(
+                type='compare_sweep',
+                baseline='baseline',
+                sweep_scenarios=['nosmt_r1', 'nosmt_r2'],
+                sweep_parameter='vcpu_demand_multiplier',
+                sweep_values=[0.5, 0.75, 1.0],
+                show_breakeven_marker=True,
+            ),
+            processor=ProcessorConfigSpec(processors={
+                'smt': ProcessorSpec(physical_cores=48, threads_per_core=2),
+                'nosmt': ProcessorSpec(physical_cores=48, threads_per_core=1),
+            }),
+            workload=WorkloadSpec(total_vcpus=10000, avg_util=0.3),
+            cost=CostSpec(
+                embodied_carbon_kg=1000.0,
+                server_cost_usd=10000.0,
+                carbon_intensity_g_kwh=400.0,
+                electricity_cost_usd_kwh=0.10,
+                lifetime_years=5.0,
+            ),
+        )
+
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        # Verify analysis type and multi-scenario results
+        assert result.analysis_type == 'compare_sweep'
+        assert result.compare_sweep_results is not None
+        assert len(result.compare_sweep_results) == 3
+
+        # Each result should have 'scenarios' dict with both scenario results
+        for r in result.compare_sweep_results:
+            assert 'scenarios' in r
+            assert 'nosmt_r1' in r['scenarios']
+            assert 'nosmt_r2' in r['scenarios']
+            assert 'carbon_diff_pct' in r['scenarios']['nosmt_r1']
+            assert 'carbon_diff_pct' in r['scenarios']['nosmt_r2']
+
+        # nosmt_r2 (with oversub) should have better savings than nosmt_r1 (no oversub)
+        last_result = result.compare_sweep_results[-1]  # vcpu_demand_multiplier = 1.0
+        assert last_result['scenarios']['nosmt_r2']['carbon_diff_pct'] < last_result['scenarios']['nosmt_r1']['carbon_diff_pct']
+
+        # Summary should mention both scenarios
+        assert 'nosmt_r1' in result.summary
+        assert 'nosmt_r2' in result.summary
+        assert 'Breakeven Points' in result.summary

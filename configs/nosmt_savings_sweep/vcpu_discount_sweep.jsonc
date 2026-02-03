@@ -1,0 +1,53 @@
+{
+  "name": "nosmt_vcpu_discount_savings",
+  "description": "Compare no-SMT (no oversub) vs SMT (no oversub) baseline while sweeping vCPU demand discount factors for no-SMT. Shows % savings/increase relative to SMT baseline.",
+  "scenarios": {
+    "smt_baseline": {
+      "processor": "smt",
+      "oversub_ratio": 1.0
+    },
+    "nosmt_no_oversub": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.0,
+      "vcpu_demand_multiplier": 1.0
+    }
+  },
+  "workload": {
+    "total_vcpus": 10000,
+    "avg_util": 0.1
+  },
+  "analysis": {
+    "type": "compare_sweep",
+    "baseline": "smt_baseline",
+    "sweep_scenario": "nosmt_no_oversub",
+    "sweep_parameter": "vcpu_demand_multiplier",
+    "sweep_values": [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0]
+  },
+  "processor": {
+    "smt": {
+      "physical_cores": 48,
+      "threads_per_core": 2,
+      "power_idle_w": 300.0,
+      "power_max_w": 800.0,
+      "core_overhead": 4 // 10% core overhead
+    },
+    "nosmt": {
+      "physical_cores": 52, // 5% area decrease when not using SMT, so can fit 5% more cores
+      "threads_per_core": 1,
+      "power_idle_w": 300.0,
+      "power_max_w": 800.0,
+      "core_overhead": 5 // 10% core overhead
+    }
+  },
+  "cost": {
+    "embodied_carbon_kg": 4000,
+    "server_cost_usd": 15000,
+    "carbon_intensity_g_kwh": 200,
+    "electricity_cost_usd_kwh": 0.28,
+    "lifetime_years": 6
+  },
+  "power_curve": {
+    "type": "specpower"
+  },
+  "output_dir": "./results/nosmt_savings_sweep/vcpu_discount"
+}
