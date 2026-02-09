@@ -32,6 +32,7 @@ except ImportError:
 from .model import (
     OverssubModel, PowerCurve, ProcessorConfig,
     ScenarioParams, WorkloadParams, CostParams, ScenarioResult,
+    ComponentBreakdown, EmbodiedBreakdown,
 )
 from .analysis import ScenarioSpec, ScenarioBuilder, ProcessorDefaults, CostDefaults
 from .config import make_power_curve_fn
@@ -617,6 +618,54 @@ class AnalysisSpec:
 
 
 @dataclass
+class EmbodiedComponentSpec:
+    """Config-level specification for per-core/per-server embodied carbon or cost.
+
+    Used in processor specs and global cost specs to define structured
+    cost/carbon breakdowns that scale with core count.
+
+    Example JSON:
+        {
+            "per_core": {"cpu_die": 10.0, "dram": 2.0},
+            "per_server": {"chassis": 100.0, "network": 50.0}
+        }
+
+    Result: total_per_server = (10.0 + 2.0) * hw_threads + (100.0 + 50.0)
+    """
+    per_core: Dict[str, float] = field(default_factory=dict)
+    per_server: Dict[str, float] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'EmbodiedComponentSpec':
+        return cls(
+            per_core=dict(data.get('per_core', {})),
+            per_server=dict(data.get('per_server', {})),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = {}
+        if self.per_core:
+            d['per_core'] = dict(self.per_core)
+        if self.per_server:
+            d['per_server'] = dict(self.per_server)
+        return d
+
+    def resolve_total(self, physical_cores: int, threads_per_core: int) -> float:
+        """Compute flat per-server value from components."""
+        hw_threads = physical_cores * threads_per_core
+        return sum(self.per_core.values()) * hw_threads + sum(self.per_server.values())
+
+    def to_component_breakdown(self, physical_cores: int, threads_per_core: int) -> ComponentBreakdown:
+        """Convert to a resolved ComponentBreakdown for use in model evaluation."""
+        return ComponentBreakdown(
+            per_core=dict(self.per_core),
+            per_server=dict(self.per_server),
+            physical_cores=physical_cores,
+            threads_per_core=threads_per_core,
+        )
+
+
+@dataclass
 class ProcessorSpec:
     """Processor configuration with explicit SMT thread count.
 
@@ -638,6 +687,9 @@ class ProcessorSpec:
     # Optional cost overrides - if set, these override the values in CostSpec
     embodied_carbon_kg: Optional[float] = None
     server_cost_usd: Optional[float] = None
+    # Optional structured cost/carbon breakdowns (take priority over flat values)
+    embodied_carbon: Optional[EmbodiedComponentSpec] = None
+    server_cost: Optional[EmbodiedComponentSpec] = None
     # Optional power curve override - if set, overrides the global power_curve
     power_curve: Optional['PowerCurveSpec'] = None
 
@@ -646,6 +698,16 @@ class ProcessorSpec:
         power_curve = None
         if 'power_curve' in data and data['power_curve'] is not None:
             power_curve = PowerCurveSpec.from_dict(data['power_curve'])
+
+        # Parse structured embodied carbon/cost
+        embodied_carbon = None
+        if 'embodied_carbon' in data and isinstance(data['embodied_carbon'], dict):
+            embodied_carbon = EmbodiedComponentSpec.from_dict(data['embodied_carbon'])
+
+        server_cost = None
+        if 'server_cost' in data and isinstance(data['server_cost'], dict):
+            server_cost = EmbodiedComponentSpec.from_dict(data['server_cost'])
+
         return cls(
             physical_cores=data.get('physical_cores', 48),
             threads_per_core=data.get('threads_per_core', 1),
@@ -654,6 +716,8 @@ class ProcessorSpec:
             core_overhead=data.get('core_overhead', 0),
             embodied_carbon_kg=data.get('embodied_carbon_kg'),
             server_cost_usd=data.get('server_cost_usd'),
+            embodied_carbon=embodied_carbon,
+            server_cost=server_cost,
             power_curve=power_curve,
         )
 
@@ -666,9 +730,14 @@ class ProcessorSpec:
             'core_overhead': self.core_overhead,
         }
         # Only include optional fields if set
-        if self.embodied_carbon_kg is not None:
+        # Structured format takes priority in serialization
+        if self.embodied_carbon is not None:
+            d['embodied_carbon'] = self.embodied_carbon.to_dict()
+        elif self.embodied_carbon_kg is not None:
             d['embodied_carbon_kg'] = self.embodied_carbon_kg
-        if self.server_cost_usd is not None:
+        if self.server_cost is not None:
+            d['server_cost'] = self.server_cost.to_dict()
+        elif self.server_cost_usd is not None:
             d['server_cost_usd'] = self.server_cost_usd
         if self.power_curve is not None:
             d['power_curve'] = self.power_curve.to_dict()
@@ -840,7 +909,8 @@ class ProcessorConfigSpec:
         if not isinstance(spec_data, dict):
             return False
         # Check for at least one processor field
-        processor_fields = {'physical_cores', 'threads_per_core', 'power_idle_w', 'power_max_w', 'core_overhead'}
+        processor_fields = {'physical_cores', 'threads_per_core', 'power_idle_w', 'power_max_w',
+                            'core_overhead', 'embodied_carbon', 'server_cost'}
         return bool(processor_fields & set(spec_data.keys()))
 
     @classmethod
@@ -1016,6 +1086,10 @@ class CostSpec:
     total_carbon_kg: Optional[float] = None
     total_cost_usd: Optional[float] = None
 
+    # Optional structured cost/carbon breakdowns (global level, resolved per-processor)
+    embodied_carbon: Optional[EmbodiedComponentSpec] = None
+    server_cost: Optional[EmbodiedComponentSpec] = None
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'CostSpec':
         # Parse mode
@@ -1024,6 +1098,15 @@ class CostSpec:
             mode = CostMode.RATIO_BASED
         else:
             mode = CostMode.RAW
+
+        # Parse structured embodied carbon/cost
+        embodied_carbon = None
+        if 'embodied_carbon' in data and isinstance(data['embodied_carbon'], dict):
+            embodied_carbon = EmbodiedComponentSpec.from_dict(data['embodied_carbon'])
+
+        server_cost = None
+        if 'server_cost' in data and isinstance(data['server_cost'], dict):
+            server_cost = EmbodiedComponentSpec.from_dict(data['server_cost'])
 
         return cls(
             embodied_carbon_kg=data.get('embodied_carbon_kg', 1000.0),
@@ -1037,6 +1120,8 @@ class CostSpec:
             operational_cost_fraction=data.get('operational_cost_fraction'),
             total_carbon_kg=data.get('total_carbon_kg'),
             total_cost_usd=data.get('total_cost_usd'),
+            embodied_carbon=embodied_carbon,
+            server_cost=server_cost,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1061,6 +1146,10 @@ class CostSpec:
             d['total_carbon_kg'] = self.total_carbon_kg
         if self.total_cost_usd is not None:
             d['total_cost_usd'] = self.total_cost_usd
+        if self.embodied_carbon is not None:
+            d['embodied_carbon'] = self.embodied_carbon.to_dict()
+        if self.server_cost is not None:
+            d['server_cost'] = self.server_cost.to_dict()
         return d
 
     def is_ratio_based(self) -> bool:
@@ -1762,18 +1851,50 @@ class DeclarativeAnalysisEngine:
         )
 
     def _evaluate_scenario(self, name: str) -> Tuple[ScenarioParams, ScenarioResult]:
-        """Evaluate a scenario by name and return params and result."""
+        """Evaluate a scenario by name and return params and result.
+
+        Resolves embodied carbon and server cost using priority chain:
+        1. Processor-level structured (embodied_carbon: {per_core, per_server})
+        2. Processor-level flat (embodied_carbon_kg)
+        3. Global cost structured (cost.embodied_carbon: {...})
+        4. Global cost flat (cost.embodied_carbon_kg) - already in model defaults
+        """
         scenario_cfg = self._config.scenarios[name]
         params = self._build_scenario_params(scenario_cfg)
 
-        # Check for processor-specific cost overrides
         proc_name = scenario_cfg.processor
         proc_spec = self._processor_config.get(proc_name)
+        phys = params.processor.physical_cores
+        tpc = params.processor.threads_per_core
         cost_overrides = {}
-        if proc_spec.embodied_carbon_kg is not None:
+
+        # Resolve embodied carbon: structured > flat > global structured > global flat
+        carbon_breakdown = None
+        if proc_spec.embodied_carbon is not None:
+            cost_overrides['embodied_carbon_kg'] = proc_spec.embodied_carbon.resolve_total(phys, tpc)
+            carbon_breakdown = proc_spec.embodied_carbon.to_component_breakdown(phys, tpc)
+        elif proc_spec.embodied_carbon_kg is not None:
             cost_overrides['embodied_carbon_kg'] = proc_spec.embodied_carbon_kg
-        if proc_spec.server_cost_usd is not None:
+        elif self._config.cost.embodied_carbon is not None:
+            cost_overrides['embodied_carbon_kg'] = self._config.cost.embodied_carbon.resolve_total(phys, tpc)
+            carbon_breakdown = self._config.cost.embodied_carbon.to_component_breakdown(phys, tpc)
+
+        # Resolve server cost: structured > flat > global structured > global flat
+        cost_breakdown = None
+        if proc_spec.server_cost is not None:
+            cost_overrides['server_cost_usd'] = proc_spec.server_cost.resolve_total(phys, tpc)
+            cost_breakdown = proc_spec.server_cost.to_component_breakdown(phys, tpc)
+        elif proc_spec.server_cost_usd is not None:
             cost_overrides['server_cost_usd'] = proc_spec.server_cost_usd
+        elif self._config.cost.server_cost is not None:
+            cost_overrides['server_cost_usd'] = self._config.cost.server_cost.resolve_total(phys, tpc)
+            cost_breakdown = self._config.cost.server_cost.to_component_breakdown(phys, tpc)
+
+        # Attach breakdown metadata if available
+        if carbon_breakdown is not None:
+            cost_overrides['carbon_breakdown'] = carbon_breakdown
+        if cost_breakdown is not None:
+            cost_overrides['cost_breakdown'] = cost_breakdown
 
         result = self._model.evaluate_scenario(params, cost_overrides if cost_overrides else None)
         return params, result

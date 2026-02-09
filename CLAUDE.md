@@ -185,6 +185,60 @@ Each processor can optionally specify its own power curve, overriding the global
 
 **Fallback behavior:** If a processor doesn't specify `power_curve`, the global `power_curve` setting is used. If no global power curve is specified, `"specpower"` is the default.
 
+### Per-Core/Per-Server Embodied Carbon & Cost Breakdown
+
+Embodied carbon and server cost can be specified as structured breakdowns with per-core (scaling with HW threads) and per-server (flat) components. This replaces or supplements the flat `embodied_carbon_kg` and `server_cost_usd` values.
+
+**Structured format in processor spec:**
+```json
+{
+  "smt": {
+    "physical_cores": 48,
+    "threads_per_core": 2,
+    "embodied_carbon": {
+      "per_core": { "cpu_die": 10.0 },
+      "per_server": { "chassis": 20.0 }
+    },
+    "server_cost": {
+      "per_core": { "cpu": 73.0 },
+      "per_server": { "base": 32.0 }
+    }
+  }
+}
+```
+Result: `embodied_carbon_kg = 10.0 * 96 + 20.0 = 980 per server` (96 = 48 cores * 2 threads)
+
+**Flat format still works (backward compatible):**
+```json
+{ "embodied_carbon_kg": 980, "server_cost_usd": 7040 }
+```
+
+**Global cost section also supports structured format:**
+```json
+{
+  "cost": {
+    "embodied_carbon": {
+      "per_core": { "cpu_die": 10.0 },
+      "per_server": { "chassis": 100.0 }
+    }
+  }
+}
+```
+Global structured values are resolved per-processor using that processor's core count.
+
+**Priority chain** (highest to lowest):
+1. Processor-level structured (`embodied_carbon: {per_core, per_server}`)
+2. Processor-level flat (`embodied_carbon_kg: 980`)
+3. Global cost structured (`cost.embodied_carbon: {...}`)
+4. Global cost flat (`cost.embodied_carbon_kg: 1000`)
+
+**Sub-component tracking:** When structured format is used, the `ScenarioResult` includes an `embodied_breakdown` field with fleet-level component totals. The comparison output (`comparison.txt`) shows per-core vs per-server contributions.
+
+**Key classes:**
+- `ComponentBreakdown` (model.py): Per-core/per-server breakdown with `resolve()` method
+- `EmbodiedBreakdown` (model.py): Fleet-level carbon and cost breakdowns
+- `EmbodiedComponentSpec` (declarative.py): Config-level spec with `resolve_total()` and `to_component_breakdown()`
+
 ### Processor Config Loading
 
 Processor configurations support three loading modes: load all from file, inline definitions, or mixed mode.

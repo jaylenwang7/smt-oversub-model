@@ -46,5 +46,5 @@
   "power_curve": {
     "type": "polynomial"
   },
-  "output_dir": "./results/util_oversub_comparison/util_20pct_linear"
+  "output_dir": "./results/util_oversub_comparison/linear/util_20pct_linear"
 }

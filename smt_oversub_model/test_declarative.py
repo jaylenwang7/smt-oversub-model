@@ -538,3 +538,355 @@ class TestIntegration:
         assert result.breakeven is not None
         # The search should complete (may or may not achieve breakeven)
         assert result.breakeven.iterations > 0
+
+
+class TestEmbodiedComponentSpec:
+    """Tests for EmbodiedComponentSpec and structured embodied carbon/cost."""
+
+    def test_from_dict(self):
+        """EmbodiedComponentSpec.from_dict should parse per_core and per_server."""
+        from .declarative import EmbodiedComponentSpec
+
+        data = {
+            'per_core': {'cpu_die': 10.0, 'dram': 2.0},
+            'per_server': {'chassis': 100.0},
+        }
+        spec = EmbodiedComponentSpec.from_dict(data)
+        assert spec.per_core == {'cpu_die': 10.0, 'dram': 2.0}
+        assert spec.per_server == {'chassis': 100.0}
+
+    def test_resolve_total(self):
+        """resolve_total should compute flat per-server value."""
+        from .declarative import EmbodiedComponentSpec
+
+        spec = EmbodiedComponentSpec(
+            per_core={'cpu_die': 10.0},
+            per_server={'chassis': 20.0},
+        )
+        # 48 cores * 2 threads = 96 hw threads
+        # 10 * 96 + 20 = 980
+        assert spec.resolve_total(48, 2) == 980.0
+
+    def test_resolve_total_nosmt(self):
+        """resolve_total with threads_per_core=1."""
+        from .declarative import EmbodiedComponentSpec
+
+        spec = EmbodiedComponentSpec(
+            per_core={'cpu_die': 10.0},
+            per_server={'chassis': 50.0},
+        )
+        # 52 cores * 1 thread = 52 hw threads
+        # 10 * 52 + 50 = 570
+        assert spec.resolve_total(52, 1) == 570.0
+
+    def test_to_component_breakdown(self):
+        """to_component_breakdown should produce a resolved ComponentBreakdown."""
+        from .declarative import EmbodiedComponentSpec
+
+        spec = EmbodiedComponentSpec(
+            per_core={'cpu_die': 10.0},
+            per_server={'chassis': 20.0},
+        )
+        bd = spec.to_component_breakdown(48, 2)
+        assert bd.physical_cores == 48
+        assert bd.threads_per_core == 2
+        assert bd.total_per_server == 980.0
+
+    def test_to_dict(self):
+        """to_dict should serialize correctly."""
+        from .declarative import EmbodiedComponentSpec
+
+        spec = EmbodiedComponentSpec(
+            per_core={'cpu_die': 10.0},
+            per_server={'chassis': 20.0},
+        )
+        d = spec.to_dict()
+        assert d == {'per_core': {'cpu_die': 10.0}, 'per_server': {'chassis': 20.0}}
+
+    def test_empty_spec(self):
+        """Empty spec should resolve to 0."""
+        from .declarative import EmbodiedComponentSpec
+
+        spec = EmbodiedComponentSpec()
+        assert spec.resolve_total(48, 2) == 0.0
+
+
+class TestProcessorSpecStructured:
+    """Tests for ProcessorSpec with structured embodied_carbon/server_cost."""
+
+    def test_from_dict_with_structured_carbon(self):
+        """ProcessorSpec should parse structured embodied_carbon."""
+        from .declarative import ProcessorSpec
+
+        data = {
+            'physical_cores': 48,
+            'threads_per_core': 2,
+            'power_idle_w': 90.0,
+            'power_max_w': 600.0,
+            'embodied_carbon': {
+                'per_core': {'cpu_die': 10.0},
+                'per_server': {'chassis': 20.0},
+            },
+        }
+        spec = ProcessorSpec.from_dict(data)
+        assert spec.embodied_carbon is not None
+        assert spec.embodied_carbon.per_core == {'cpu_die': 10.0}
+        assert spec.embodied_carbon_kg is None  # flat not set
+
+    def test_from_dict_with_flat_carbon(self):
+        """ProcessorSpec should still work with flat embodied_carbon_kg."""
+        from .declarative import ProcessorSpec
+
+        data = {
+            'physical_cores': 48,
+            'threads_per_core': 2,
+            'power_idle_w': 90.0,
+            'power_max_w': 600.0,
+            'embodied_carbon_kg': 980.0,
+        }
+        spec = ProcessorSpec.from_dict(data)
+        assert spec.embodied_carbon is None
+        assert spec.embodied_carbon_kg == 980.0
+
+    def test_to_dict_structured_over_flat(self):
+        """to_dict should prefer structured format over flat when both set."""
+        from .declarative import ProcessorSpec, EmbodiedComponentSpec
+
+        spec = ProcessorSpec(
+            physical_cores=48,
+            threads_per_core=2,
+            embodied_carbon_kg=980.0,  # flat
+            embodied_carbon=EmbodiedComponentSpec(
+                per_core={'cpu_die': 10.0},
+                per_server={'chassis': 20.0},
+            ),
+        )
+        d = spec.to_dict()
+        assert 'embodied_carbon' in d
+        assert 'embodied_carbon_kg' not in d
+
+    def test_from_dict_with_structured_cost(self):
+        """ProcessorSpec should parse structured server_cost."""
+        from .declarative import ProcessorSpec
+
+        data = {
+            'physical_cores': 48,
+            'threads_per_core': 2,
+            'power_idle_w': 90.0,
+            'power_max_w': 600.0,
+            'server_cost': {
+                'per_core': {'cpu': 73.0},
+                'per_server': {'base': 32.0},
+            },
+        }
+        spec = ProcessorSpec.from_dict(data)
+        assert spec.server_cost is not None
+        assert spec.server_cost.per_core == {'cpu': 73.0}
+        assert spec.server_cost_usd is None
+
+
+class TestPriorityChain:
+    """Tests for structured cost resolution priority chain."""
+
+    def _make_config(self, proc_kwargs=None, cost_kwargs=None):
+        """Helper to make a minimal AnalysisConfig."""
+        from .declarative import (
+            AnalysisConfig, ScenarioConfig, AnalysisSpec,
+            ProcessorConfigSpec, ProcessorSpec, WorkloadSpec, CostSpec,
+            EmbodiedComponentSpec,
+        )
+
+        proc_kw = {
+            'physical_cores': 48,
+            'threads_per_core': 2,
+            'power_idle_w': 100.0,
+            'power_max_w': 400.0,
+        }
+        if proc_kwargs:
+            proc_kw.update(proc_kwargs)
+
+        cost_kw = {
+            'embodied_carbon_kg': 1000.0,
+            'server_cost_usd': 10000.0,
+            'carbon_intensity_g_kwh': 400.0,
+            'electricity_cost_usd_kwh': 0.10,
+            'lifetime_years': 5.0,
+        }
+        if cost_kwargs:
+            cost_kw.update(cost_kwargs)
+
+        return AnalysisConfig(
+            name='test_priority',
+            scenarios={
+                'baseline': ScenarioConfig(processor='smt', oversub_ratio=1.0),
+            },
+            analysis=AnalysisSpec(type='compare', baseline='baseline'),
+            processor=ProcessorConfigSpec(processors={
+                'smt': ProcessorSpec(**proc_kw),
+            }),
+            workload=WorkloadSpec(total_vcpus=10000, avg_util=0.3),
+            cost=CostSpec(**cost_kw),
+        )
+
+    def test_processor_structured_takes_priority(self):
+        """Processor-level structured should override everything."""
+        from .declarative import DeclarativeAnalysisEngine, EmbodiedComponentSpec
+
+        config = self._make_config(
+            proc_kwargs={
+                'embodied_carbon': EmbodiedComponentSpec(
+                    per_core={'cpu_die': 5.0},
+                    per_server={'chassis': 10.0},
+                ),
+                'embodied_carbon_kg': 9999.0,  # should be ignored
+            },
+        )
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        baseline = result.scenario_results['baseline']
+        # 5 * 96 + 10 = 490 per server
+        expected_per_server = 490.0
+        assert baseline['embodied_carbon_kg'] == baseline['num_servers'] * expected_per_server
+
+    def test_processor_flat_takes_priority_over_global(self):
+        """Processor-level flat should override global cost."""
+        from .declarative import DeclarativeAnalysisEngine
+
+        config = self._make_config(
+            proc_kwargs={'embodied_carbon_kg': 500.0},
+            cost_kwargs={'embodied_carbon_kg': 9999.0},
+        )
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        baseline = result.scenario_results['baseline']
+        assert baseline['embodied_carbon_kg'] == baseline['num_servers'] * 500.0
+
+    def test_global_structured_used_when_no_processor_override(self):
+        """Global cost structured should be used when processor has no override."""
+        from .declarative import DeclarativeAnalysisEngine, EmbodiedComponentSpec, CostSpec
+
+        config = self._make_config(
+            cost_kwargs={
+                'embodied_carbon': EmbodiedComponentSpec(
+                    per_core={'cpu_die': 8.0},
+                    per_server={'chassis': 32.0},
+                ),
+            },
+        )
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        baseline = result.scenario_results['baseline']
+        # 8 * 96 + 32 = 800 per server
+        expected_per_server = 800.0
+        assert baseline['embodied_carbon_kg'] == baseline['num_servers'] * expected_per_server
+
+    def test_global_flat_is_default(self):
+        """Global flat cost should be the default when nothing overrides it."""
+        from .declarative import DeclarativeAnalysisEngine
+
+        config = self._make_config()  # no processor overrides, no structured
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        baseline = result.scenario_results['baseline']
+        # Default: 1000 per server
+        assert baseline['embodied_carbon_kg'] == baseline['num_servers'] * 1000.0
+
+    def test_breakdown_attached_when_structured(self):
+        """Result should have embodied_breakdown when structured format is used."""
+        from .declarative import DeclarativeAnalysisEngine, EmbodiedComponentSpec
+
+        config = self._make_config(
+            proc_kwargs={
+                'embodied_carbon': EmbodiedComponentSpec(
+                    per_core={'cpu_die': 10.0},
+                    per_server={'chassis': 20.0},
+                ),
+            },
+        )
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        baseline = result.scenario_results['baseline']
+        assert baseline.get('embodied_breakdown') is not None
+        assert baseline['embodied_breakdown']['carbon'] is not None
+
+
+class TestStructuredEndToEnd:
+    """End-to-end tests with structured embodied carbon configs."""
+
+    def test_structured_config_from_json(self, tmp_path):
+        """Test a full analysis config with structured embodied carbon from JSON."""
+        config_data = {
+            'name': 'structured_test',
+            'processor': {
+                'smt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 2,
+                    'power_idle_w': 100.0,
+                    'power_max_w': 400.0,
+                    'embodied_carbon': {
+                        'per_core': {'cpu_die': 10.0},
+                        'per_server': {'chassis': 20.0},
+                    },
+                    'server_cost': {
+                        'per_core': {'cpu': 73.0},
+                        'per_server': {'base': 32.0},
+                    },
+                },
+                'nosmt': {
+                    'physical_cores': 52,
+                    'threads_per_core': 1,
+                    'power_idle_w': 90.0,
+                    'power_max_w': 340.0,
+                    'embodied_carbon': {
+                        'per_core': {'cpu_die': 10.0},
+                        'per_server': {'chassis': 50.0},
+                    },
+                    'server_cost': {
+                        'per_core': {'cpu': 72.0},
+                        'per_server': {'base': 16.0},
+                    },
+                },
+            },
+            'scenarios': {
+                'baseline': {'processor': 'smt', 'oversub_ratio': 1.0},
+                'nosmt_r1': {'processor': 'nosmt', 'oversub_ratio': 1.0},
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'baseline',
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+            'cost': {
+                'embodied_carbon_kg': 9999.0,  # should be overridden by processor
+                'server_cost_usd': 9999.0,
+                'carbon_intensity_g_kwh': 400.0,
+                'electricity_cost_usd_kwh': 0.10,
+                'lifetime_years': 5.0,
+            },
+        }
+
+        config_file = tmp_path / 'config.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        assert result.analysis_type == 'compare'
+
+        # SMT: 10*96+20 = 980 per server
+        smt = result.scenario_results['baseline']
+        assert smt['embodied_carbon_kg'] == smt['num_servers'] * 980.0
+
+        # noSMT: 10*52+50 = 570 per server
+        nosmt = result.scenario_results['nosmt_r1']
+        assert nosmt['embodied_carbon_kg'] == nosmt['num_servers'] * 570.0
+
+        # SMT cost: 73*96+32 = 7040 per server
+        assert smt['embodied_cost_usd'] == smt['num_servers'] * 7040.0
+
+        # noSMT cost: 72*52+16 = 3760 per server
+        assert nosmt['embodied_cost_usd'] == nosmt['num_servers'] * 3760.0

@@ -1,3 +1,4 @@
+// Some numbers from /Users/jaylenw/Code/frugal-model/2026_analysis.py
 {
   // Shared processor configurations
   // Use by referencing: "smt": "configs/shared/processors.jsonc:smt"
@@ -8,8 +9,24 @@
     "power_idle_w": 90.0,
     "power_max_w": 600.0,
     "core_overhead": 4, // 10% core overhead
-    "embodied_carbon_kg": 980, // 10kg * 88 + 100 for rack/server
-    "server_cost_usd": 7040 // 80usd * 88
+    // Structured embodied carbon: 10kg/thread * 96 threads + 20kg chassis = 980 total
+    "embodied_carbon": {
+      "per_core": {
+        "cpu_die": 10.0
+      },
+      "per_server": {
+        "chassis": 20.0
+      }
+    },
+    // Structured server cost: $73/thread * 96 threads + $32 base = $7040 total
+    "server_cost": {
+      "per_core": {
+        "cpu": 73.0
+      },
+      "per_server": {
+        "base": 32.0 
+      }
+    }
   },
   "nosmt": {
     // 5% area decrease when not using SMT, so can fit 5% more cores
@@ -18,8 +35,24 @@
     "power_idle_w": 90.0,
     "power_max_w": 600.0,
     "core_overhead": 5, // 10% core overhead
-    "embodied_carbon_kg": 570, // 10kg * 47 + 100 for rack/server
-    "server_cost_usd": 3760 // 80usd * 47
+    // Structured embodied carbon: 10kg/thread * 52 threads + 50kg chassis = 570 total
+    "embodied_carbon": {
+      "per_core": {
+        "cpu_die":10.0
+      },
+      "per_server": {
+        "chassis": 50.0
+      }
+    },
+    // Structured server cost: $72/thread * 52 threads + $16 base = $3760 total
+    "server_cost": {
+      "per_core": {
+        "cpu": 72.0
+      },
+      "per_server": {
+        "base": 16.0
+      }
+    }
   },
   "nosmt_linear": {
     // Same as nosmt but with linear power curve
@@ -28,8 +61,24 @@
     "power_idle_w": 90.0,
     "power_max_w": 600.0,
     "core_overhead": 5,
-    "embodied_carbon_kg": 570,
-    "server_cost_usd": 3760,
+    // Structured embodied carbon: 10kg/thread * 52 threads + 50kg chassis = 570 total
+    "embodied_carbon": {
+      "per_core": {
+        "cpu_die": 10.0
+      },
+      "per_server": {
+        "chassis": 50.0
+      }
+    },
+    // Structured server cost: $72/thread * 52 threads + $16 base = $3760 total
+    "server_cost": {
+      "per_core": {
+        "cpu": 72.0
+      },
+      "per_server": {
+        "base": 16.0
+      }
+    },
     "power_curve": {"type": "linear"}
   }
 }

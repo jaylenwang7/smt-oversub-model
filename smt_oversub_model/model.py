@@ -10,7 +10,7 @@ the carbon/TCO savings of SMT with oversubscription (relative to SMT baseline).
 """
 
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional
 import math
 
 
@@ -161,6 +161,76 @@ class CostParams:
 
 
 @dataclass
+class ComponentBreakdown:
+    """Breakdown of per-core and per-server cost/carbon components.
+
+    Per-core components scale with total HW threads (physical_cores * threads_per_core).
+    Per-server components are flat per server.
+    """
+    per_core: Dict[str, float] = field(default_factory=dict)
+    per_server: Dict[str, float] = field(default_factory=dict)
+    physical_cores: int = 0
+    threads_per_core: int = 1
+
+    @property
+    def total_hw_threads(self) -> int:
+        return self.physical_cores * self.threads_per_core
+
+    @property
+    def per_core_total_per_server(self) -> float:
+        return sum(self.per_core.values()) * self.total_hw_threads
+
+    @property
+    def per_server_total(self) -> float:
+        return sum(self.per_server.values())
+
+    @property
+    def total_per_server(self) -> float:
+        return self.per_core_total_per_server + self.per_server_total
+
+    def resolve(self, physical_cores: int, threads_per_core: int) -> 'ComponentBreakdown':
+        """Return a new breakdown with core counts set for computing totals."""
+        return ComponentBreakdown(
+            per_core=dict(self.per_core),
+            per_server=dict(self.per_server),
+            physical_cores=physical_cores,
+            threads_per_core=threads_per_core,
+        )
+
+
+@dataclass
+class EmbodiedBreakdown:
+    """Fleet-level embodied carbon and cost breakdown."""
+    carbon: Optional[ComponentBreakdown] = None
+    cost: Optional[ComponentBreakdown] = None
+    num_servers: int = 0
+
+    @property
+    def carbon_fleet_components(self) -> Dict[str, float]:
+        """Component name -> fleet total carbon (kg)."""
+        if not self.carbon:
+            return {}
+        result = {}
+        for name, val in self.carbon.per_core.items():
+            result[f"per_core.{name}"] = val * self.carbon.total_hw_threads * self.num_servers
+        for name, val in self.carbon.per_server.items():
+            result[f"per_server.{name}"] = val * self.num_servers
+        return result
+
+    @property
+    def cost_fleet_components(self) -> Dict[str, float]:
+        """Component name -> fleet total cost (USD)."""
+        if not self.cost:
+            return {}
+        result = {}
+        for name, val in self.cost.per_core.items():
+            result[f"per_core.{name}"] = val * self.cost.total_hw_threads * self.num_servers
+        for name, val in self.cost.per_server.items():
+            result[f"per_server.{name}"] = val * self.num_servers
+        return result
+
+
+@dataclass
 class ScenarioResult:
     """Results from evaluating a scenario."""
     num_servers: int
@@ -181,6 +251,9 @@ class ScenarioResult:
     # Derived metrics
     carbon_per_vcpu_kg: float
     cost_per_vcpu_usd: float
+
+    # Optional breakdown
+    embodied_breakdown: Optional[EmbodiedBreakdown] = None
 
 
 class OverssubModel:
@@ -233,25 +306,35 @@ class OverssubModel:
         # Get cost values, allowing per-processor overrides
         embodied_carbon_kg = self.cost.embodied_carbon_kg
         server_cost_usd = self.cost.server_cost_usd
+        embodied_breakdown = None
         if cost_overrides:
             if 'embodied_carbon_kg' in cost_overrides:
                 embodied_carbon_kg = cost_overrides['embodied_carbon_kg']
             if 'server_cost_usd' in cost_overrides:
                 server_cost_usd = cost_overrides['server_cost_usd']
-        
+            # Build breakdown if component data is provided
+            carbon_bd = cost_overrides.get('carbon_breakdown')
+            cost_bd = cost_overrides.get('cost_breakdown')
+            if carbon_bd or cost_bd:
+                embodied_breakdown = EmbodiedBreakdown(
+                    carbon=carbon_bd,
+                    cost=cost_bd,
+                    num_servers=num_servers,
+                )
+
         # Embodied carbon/cost (amortized over lifetime, but we report total)
         embodied_carbon = num_servers * embodied_carbon_kg
         embodied_cost = num_servers * server_cost_usd
-        
+
         # Operational carbon/cost
-        total_energy_kwh = (num_servers * power_per_server * 
+        total_energy_kwh = (num_servers * power_per_server *
                            self.cost.lifetime_hours / 1000)
         operational_carbon = total_energy_kwh * self.cost.carbon_intensity_g_kwh / 1000
         operational_cost = total_energy_kwh * self.cost.electricity_cost_usd_kwh
-        
+
         total_carbon = embodied_carbon + operational_carbon
         total_cost = embodied_cost + operational_cost
-        
+
         return ScenarioResult(
             num_servers=num_servers,
             avg_util_per_server=avg_util,
@@ -265,6 +348,7 @@ class OverssubModel:
             total_cost_usd=total_cost,
             carbon_per_vcpu_kg=total_carbon / self.workload.total_vcpus,
             cost_per_vcpu_usd=total_cost / self.workload.total_vcpus,
+            embodied_breakdown=embodied_breakdown,
         )
     
     def find_breakeven_oversub(

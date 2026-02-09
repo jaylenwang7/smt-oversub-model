@@ -156,6 +156,19 @@ class OutputWriter:
                 'total_cost_usd': scenario.get('total_cost_usd', 0),
             }
 
+            # Extract breakdown data if present
+            breakdown = scenario.get('embodied_breakdown')
+            if breakdown:
+                row['has_breakdown'] = True
+                carbon_bd = breakdown.get('carbon')
+                cost_bd = breakdown.get('cost')
+                if carbon_bd:
+                    row['carbon_breakdown'] = carbon_bd
+                if cost_bd:
+                    row['cost_breakdown'] = cost_bd
+            else:
+                row['has_breakdown'] = False
+
             # Calculate savings vs baseline (negative = reduction/savings)
             if name != baseline_name:
                 base_total_carbon = baseline.get('total_carbon_kg', 1)
@@ -327,7 +340,70 @@ class OutputWriter:
                     row += f"{val:>+{col_width-1}.1f}%"
             lines.append(row)
 
-        lines.append("")
+        # Section 4: Embodied Breakdown (if any scenario has breakdown data)
+        has_breakdown = any(d.get('has_breakdown', False) for d in data)
+        if has_breakdown:
+            lines.append("")
+            lines.append("-" * 80)
+            lines.append("EMBODIED BREAKDOWN (per-core vs per-server)")
+            lines.append("-" * 80)
+            lines.append("")
+
+            for d in data:
+                name = d['scenario']
+                lines.append(f"  {name}:")
+
+                carbon_bd = d.get('carbon_breakdown')
+                if carbon_bd:
+                    per_core = carbon_bd.get('per_core', {})
+                    per_server = carbon_bd.get('per_server', {})
+                    phys = carbon_bd.get('physical_cores', 0)
+                    tpc = carbon_bd.get('threads_per_core', 1)
+                    hw_threads = phys * tpc
+                    servers = d.get('servers', 0)
+
+                    lines.append(f"    Embodied Carbon:")
+                    per_core_total = 0.0
+                    for comp, val in per_core.items():
+                        comp_fleet = val * hw_threads * servers
+                        per_core_total += val * hw_threads
+                        lines.append(f"      per_core.{comp}: {val:.1f}/thread x {hw_threads} threads x {servers} servers = {comp_fleet:,.0f} kg")
+                    per_server_total = 0.0
+                    for comp, val in per_server.items():
+                        comp_fleet = val * servers
+                        per_server_total += val
+                        lines.append(f"      per_server.{comp}: {val:.1f}/server x {servers} servers = {comp_fleet:,.0f} kg")
+                    total_per_srv = per_core_total + per_server_total
+                    lines.append(f"      Total per server: {total_per_srv:,.0f} kg ({per_core_total:,.0f} per-core + {per_server_total:,.0f} per-server)")
+
+                cost_bd = d.get('cost_breakdown')
+                if cost_bd:
+                    per_core = cost_bd.get('per_core', {})
+                    per_server = cost_bd.get('per_server', {})
+                    phys = cost_bd.get('physical_cores', 0)
+                    tpc = cost_bd.get('threads_per_core', 1)
+                    hw_threads = phys * tpc
+                    servers = d.get('servers', 0)
+
+                    lines.append(f"    Server Cost:")
+                    per_core_total = 0.0
+                    for comp, val in per_core.items():
+                        comp_fleet = val * hw_threads * servers
+                        per_core_total += val * hw_threads
+                        lines.append(f"      per_core.{comp}: ${val:.1f}/thread x {hw_threads} threads x {servers} servers = ${comp_fleet:,.0f}")
+                    per_server_total = 0.0
+                    for comp, val in per_server.items():
+                        comp_fleet = val * servers
+                        per_server_total += val
+                        lines.append(f"      per_server.{comp}: ${val:.1f}/server x {servers} servers = ${comp_fleet:,.0f}")
+                    total_per_srv = per_core_total + per_server_total
+                    lines.append(f"      Total per server: ${total_per_srv:,.0f} (${per_core_total:,.0f} per-core + ${per_server_total:,.0f} per-server)")
+
+                if not carbon_bd and not cost_bd:
+                    lines.append("    (no breakdown data)")
+
+                lines.append("")
+
         lines.append("=" * 80)
         lines.append("")
 
