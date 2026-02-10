@@ -671,7 +671,8 @@ class PowerComponentSpec:
     """Config-level specification for a single power component.
 
     Each component has idle/max power and an optional power curve.
-    Default curve is linear.
+    If not specified, the global power curve is used (when building from config);
+    if no global is provided, defaults to polynomial.
 
     Example JSON:
         {"idle_w": 23, "max_w": 153, "power_curve": {"type": "specpower"}}
@@ -697,12 +698,20 @@ class PowerComponentSpec:
             d['power_curve'] = self.power_curve.to_dict()
         return d
 
-    def to_power_component_curve(self) -> PowerComponentCurve:
-        """Convert to a PowerComponentCurve for use in model evaluation."""
+    def to_power_component_curve(
+        self,
+        default_curve_spec: Optional['PowerCurveSpec'] = None,
+    ) -> PowerComponentCurve:
+        """Convert to a PowerComponentCurve for use in model evaluation.
+
+        Fallback order: component power_curve -> default_curve_spec (global) -> polynomial.
+        """
         if self.power_curve is not None:
             curve_fn = self.power_curve.to_callable()
+        elif default_curve_spec is not None:
+            curve_fn = default_curve_spec.to_callable()
         else:
-            curve_fn = lambda u: u  # linear default
+            curve_fn = PowerCurveSpec(type='polynomial').to_callable()
         return PowerComponentCurve(
             idle_w=self.idle_w,
             max_w=self.max_w,
@@ -1892,10 +1901,12 @@ class DeclarativeAnalysisEngine:
         core_overhead = overrides.get('core_overhead', proc_spec.core_overhead)
 
         # Build power components and composite curve if power_breakdown is present
+        # Components without a power_curve use the global power curve; if no global, default to polynomial
         power_components = None
         if proc_spec.power_breakdown:
+            global_curve = self._config.power_curve
             power_components = {
-                name: comp.to_power_component_curve()
+                name: comp.to_power_component_curve(default_curve_spec=global_curve)
                 for name, comp in proc_spec.power_breakdown.items()
             }
             power_curve = build_composite_power_curve(power_components)

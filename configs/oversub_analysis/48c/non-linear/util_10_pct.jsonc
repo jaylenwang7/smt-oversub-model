@@ -27,7 +27,7 @@
     "show_breakeven_marker": true,
     "separate_metric_plots": true,
     "show_plot_title": false,
-    "x_axis_markers": [0.7, 0.8, 0.9],
+    "x_axis_markers": [0.65, 0.75, 0.85],
     "x_axis_marker_labels": ["low", "geomean", "high"],
     "labels": {
       "smt_oversub": "SMT (R=2.0, 50% oversub)",

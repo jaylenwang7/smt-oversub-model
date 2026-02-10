@@ -21,6 +21,7 @@ from .declarative import (
     DeclarativeAnalysisEngine,
     run_analysis,
     PowerComponentSpec,
+    PowerCurveSpec,
     ProcessorSpec,
 )
 from .model import (
@@ -932,6 +933,28 @@ class TestPowerComponentSpec:
         assert curve.max_w == 153
         assert curve.power_at_util(0.0) == 23.0
         assert curve.power_at_util(1.0) == 153.0
+
+    def test_to_power_component_curve_uses_default_when_no_component_curve(self):
+        """Component without power_curve uses default_curve_spec (global), else polynomial."""
+        spec = PowerComponentSpec.from_dict({'idle_w': 0, 'max_w': 100})
+        assert spec.power_curve is None
+
+        # With default_curve_spec=linear, power at 0.5 util is 50
+        curve_linear = spec.to_power_component_curve(
+            default_curve_spec=PowerCurveSpec(type='linear')
+        )
+        assert curve_linear.power_at_util(0.5) == 50.0
+
+        # With no default, falls back to polynomial (not linear)
+        curve_poly = spec.to_power_component_curve()
+        power_at_half = curve_poly.power_at_util(0.5)
+        assert power_at_half != 50.0  # polynomial shape differs from linear
+
+        # With default_curve_spec=polynomial, same as no default
+        curve_poly2 = spec.to_power_component_curve(
+            default_curve_spec=PowerCurveSpec(type='polynomial')
+        )
+        assert curve_poly2.power_at_util(0.5) == power_at_half
 
 
 class TestProcessorSpecPowerBreakdown:

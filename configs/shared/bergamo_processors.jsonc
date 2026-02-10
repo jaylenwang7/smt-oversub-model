@@ -39,7 +39,7 @@
     // NIC 102W TDP: idle = 102×0.30×1.05 = 32W, max = 102×1.05 = 107W
     // Chassis (DC-SCM 35W + Fan 75W) = 110W TDP: idle = (35+75×0.30)×1.05 = 60W, max = 110×1.05 = 116W
     "power_breakdown": {
-      "cpu":     {"idle_w": 126, "max_w": 420, "power_curve": {"type": "specpower"}},
+      "cpu":     {"idle_w": 126, "max_w": 420},
       "memory":  {"idle_w": 39,  "max_w": 131},
       "ssd":     {"idle_w": 18,  "max_w": 89},
       "nic":     {"idle_w": 32,  "max_w": 107},
@@ -93,7 +93,7 @@
     // Per-component power: CPU same as SMT, memory/SSD halved (6 DIMMs, 2.5 SSDs).
     // Same chassis since same physical server (C2195 1U).
     "power_breakdown": {
-      "cpu":     {"idle_w": 126, "max_w": 420, "power_curve": {"type": "specpower"}},
+      "cpu":     {"idle_w": 126, "max_w": 420},
       "memory":  {"idle_w": 20,  "max_w": 66},
       "ssd":     {"idle_w": 9,   "max_w": 45},
       "nic":     {"idle_w": 32,  "max_w": 107},
@@ -137,8 +137,13 @@
     "physical_cores": 128,
     "threads_per_core": 1,
     "core_overhead": 13,
-    "power_idle_w": 247.0,
-    "power_max_w": 754.0,
+    "power_breakdown": {
+      "cpu":     {"idle_w": 126, "max_w": 420, "power_curve": {"type": "linear"}},
+      "memory":  {"idle_w": 20,  "max_w": 66},
+      "ssd":     {"idle_w": 9,   "max_w": 45},
+      "nic":     {"idle_w": 32,  "max_w": 107},
+      "chassis": {"idle_w": 60,  "max_w": 116}
+    },
     "embodied_carbon": {
       "per_core": {
         "memory": 4.41,
@@ -162,8 +167,7 @@
         "server": 1505.0,
         "rack": 510.0
       }
-    },
-    "power_curve": {"type": "linear"}
+    }
   },
 
   "bergamo_nosmt_5pct_area": {
@@ -174,7 +178,7 @@
     "threads_per_core": 1,
     "core_overhead": 13,
     "power_breakdown": {
-      "cpu":     {"idle_w": 126, "max_w": 420, "power_curve": {"type": "specpower"}},
+      "cpu":     {"idle_w": 126, "max_w": 420},
       "memory":  {"idle_w": 20,  "max_w": 66},
       "ssd":     {"idle_w": 9,   "max_w": 45},
       "nic":     {"idle_w": 32,  "max_w": 107},
@@ -214,8 +218,13 @@
     "physical_cores": 128,
     "threads_per_core": 1,
     "core_overhead": 13,
-    "power_idle_w": 247.0,
-    "power_max_w": 754.0,
+    "power_breakdown": {
+      "cpu":     {"idle_w": 126, "max_w": 420, "power_curve": {"type": "linear"}},
+      "memory":  {"idle_w": 20,  "max_w": 66},
+      "ssd":     {"idle_w": 9,   "max_w": 45},
+      "nic":     {"idle_w": 32,  "max_w": 107},
+      "chassis": {"idle_w": 60,  "max_w": 116}
+    },
     "embodied_carbon": {
       "per_core": {
         "memory": 4.41,
@@ -240,7 +249,6 @@
         "server": 1505.0,
         "rack": 510.0
       }
-    },
-    "power_curve": {"type": "linear"}
+    }
   }
 }

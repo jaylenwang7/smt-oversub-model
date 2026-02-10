@@ -1,21 +1,21 @@
 {
-  "name": "util_20pct_smt_vs_nosmt_oversub",
-  "description": "At 20% utilization: Compare SMT (R=1.3) vs No-SMT (R=2.0) while sweeping vCPU demand discount for No-SMT",
+  "name": "util_10pct_smt_vs_nosmt_linear_oversub",
+  "description": "At 10% utilization: Compare SMT (R=2.0) vs No-SMT Linear (R=2.0) while sweeping vCPU demand discount for No-SMT",
   "scenarios": {
     "smt_oversub": {
       "processor": "smt",
-      "oversub_ratio": 1.3,
+      "oversub_ratio": 2.34,
       "util_overhead": 0.05
     },
     "nosmt_oversub": {
-      "processor": "nosmt",
-      "oversub_ratio": 2.0,
+      "processor": "nosmt_linear",
+      "oversub_ratio": 3.0,
       "vcpu_demand_multiplier": 1.0
     }
   },
   "workload": {
     "total_vcpus": 10000,
-    "avg_util": 0.2
+    "avg_util": 0.1
   },
   "analysis": {
     "type": "compare_sweep",
@@ -30,13 +30,13 @@
     "x_axis_markers": [0.65, 0.75, 0.85],
     "x_axis_marker_labels": ["low", "geomean", "high"],
     "labels": {
-      "smt_oversub": "SMT (R=1.3, 25% oversub)",
-      "nosmt_oversub": "No-SMT (R=2.0, 50% oversub)"
+      "smt_oversub": "SMT (R=2.34, 57.7% oversub)",
+      "nosmt_oversub": "No-SMT Linear (R=3.0, 66.7% oversub)"
     }
   },
   "processor": {
-    "smt": "configs/shared/processors.jsonc:smt",
-    "nosmt": "configs/shared/processors.jsonc:nosmt"
+    "smt": "configs/shared/bergamo_processors.jsonc:bergamo_smt",
+    "nosmt_linear": "configs/shared/bergamo_processors.jsonc:bergamo_nosmt_linear"
   },
   "cost": {
     "carbon_intensity_g_kwh": 175,
@@ -46,5 +46,5 @@
   "power_curve": {
     "type": "polynomial"
   },
-  "output_dir": "./results/util_oversub_comparison/util_20pct"
+  "output_dir": "./results/oversub_analysis/bergamo/linear/util_10pct_linear"
 }
