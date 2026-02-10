@@ -33,6 +33,7 @@ from .model import (
     OverssubModel, PowerCurve, ProcessorConfig,
     ScenarioParams, WorkloadParams, CostParams, ScenarioResult,
     ComponentBreakdown, EmbodiedBreakdown,
+    PowerComponentCurve, build_composite_power_curve,
 )
 from .analysis import ScenarioSpec, ScenarioBuilder, ProcessorDefaults, CostDefaults
 from .config import make_power_curve_fn
@@ -666,6 +667,50 @@ class EmbodiedComponentSpec:
 
 
 @dataclass
+class PowerComponentSpec:
+    """Config-level specification for a single power component.
+
+    Each component has idle/max power and an optional power curve.
+    Default curve is linear.
+
+    Example JSON:
+        {"idle_w": 23, "max_w": 153, "power_curve": {"type": "specpower"}}
+    """
+    idle_w: float
+    max_w: float
+    power_curve: Optional['PowerCurveSpec'] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'PowerComponentSpec':
+        power_curve = None
+        if 'power_curve' in data and data['power_curve'] is not None:
+            power_curve = PowerCurveSpec.from_dict(data['power_curve'])
+        return cls(
+            idle_w=data['idle_w'],
+            max_w=data['max_w'],
+            power_curve=power_curve,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = {'idle_w': self.idle_w, 'max_w': self.max_w}
+        if self.power_curve is not None:
+            d['power_curve'] = self.power_curve.to_dict()
+        return d
+
+    def to_power_component_curve(self) -> PowerComponentCurve:
+        """Convert to a PowerComponentCurve for use in model evaluation."""
+        if self.power_curve is not None:
+            curve_fn = self.power_curve.to_callable()
+        else:
+            curve_fn = lambda u: u  # linear default
+        return PowerComponentCurve(
+            idle_w=self.idle_w,
+            max_w=self.max_w,
+            curve_fn=curve_fn,
+        )
+
+
+@dataclass
 class ProcessorSpec:
     """Processor configuration with explicit SMT thread count.
 
@@ -692,6 +737,8 @@ class ProcessorSpec:
     server_cost: Optional[EmbodiedComponentSpec] = None
     # Optional power curve override - if set, overrides the global power_curve
     power_curve: Optional['PowerCurveSpec'] = None
+    # Optional per-component power breakdown - when present, overrides power_idle_w/power_max_w
+    power_breakdown: Optional[Dict[str, PowerComponentSpec]] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ProcessorSpec':
@@ -708,6 +755,14 @@ class ProcessorSpec:
         if 'server_cost' in data and isinstance(data['server_cost'], dict):
             server_cost = EmbodiedComponentSpec.from_dict(data['server_cost'])
 
+        # Parse power breakdown
+        power_breakdown = None
+        if 'power_breakdown' in data and isinstance(data['power_breakdown'], dict):
+            power_breakdown = {
+                name: PowerComponentSpec.from_dict(comp)
+                for name, comp in data['power_breakdown'].items()
+            }
+
         return cls(
             physical_cores=data.get('physical_cores', 48),
             threads_per_core=data.get('threads_per_core', 1),
@@ -719,6 +774,7 @@ class ProcessorSpec:
             embodied_carbon=embodied_carbon,
             server_cost=server_cost,
             power_curve=power_curve,
+            power_breakdown=power_breakdown,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -741,6 +797,11 @@ class ProcessorSpec:
             d['server_cost_usd'] = self.server_cost_usd
         if self.power_curve is not None:
             d['power_curve'] = self.power_curve.to_dict()
+        if self.power_breakdown is not None:
+            d['power_breakdown'] = {
+                name: comp.to_dict()
+                for name, comp in self.power_breakdown.items()
+            }
         return d
 
     @property
@@ -910,7 +971,7 @@ class ProcessorConfigSpec:
             return False
         # Check for at least one processor field
         processor_fields = {'physical_cores', 'threads_per_core', 'power_idle_w', 'power_max_w',
-                            'core_overhead', 'embodied_carbon', 'server_cost'}
+                            'core_overhead', 'embodied_carbon', 'server_cost', 'power_breakdown'}
         return bool(processor_fields & set(spec_data.keys()))
 
     @classmethod
@@ -1830,17 +1891,27 @@ class DeclarativeAnalysisEngine:
         power_max = overrides.get('power_max_w', proc_spec.power_max_w)
         core_overhead = overrides.get('core_overhead', proc_spec.core_overhead)
 
-        power_curve = PowerCurve(
-            p_idle=power_idle,
-            p_max=power_max,
-            curve_fn=power_fn,
-        )
+        # Build power components and composite curve if power_breakdown is present
+        power_components = None
+        if proc_spec.power_breakdown:
+            power_components = {
+                name: comp.to_power_component_curve()
+                for name, comp in proc_spec.power_breakdown.items()
+            }
+            power_curve = build_composite_power_curve(power_components)
+        else:
+            power_curve = PowerCurve(
+                p_idle=power_idle,
+                p_max=power_max,
+                curve_fn=power_fn,
+            )
 
         processor = ProcessorConfig(
             physical_cores=physical_cores,
             threads_per_core=threads_per_core,
             power_curve=power_curve,
             core_overhead=core_overhead,
+            power_components=power_components,
         )
 
         return ScenarioParams(

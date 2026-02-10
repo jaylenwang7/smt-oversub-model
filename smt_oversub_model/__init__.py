@@ -29,6 +29,9 @@ CLI usage:
 
 from .model import (
     PowerCurve,
+    PowerComponentCurve,
+    PowerBreakdown,
+    build_composite_power_curve,
     ProcessorConfig,
     ScenarioParams,
     WorkloadParams,
@@ -90,6 +93,7 @@ from .declarative import (
     GeneralizedBreakevenFinder,
     BreakevenResult,
     EmbodiedComponentSpec,
+    PowerComponentSpec,
     ScenarioConfig,
     AnalysisSpec,
     AnalysisConfig,
@@ -133,6 +137,9 @@ except ImportError:
 __all__ = [
     # Core model
     'PowerCurve',
+    'PowerComponentCurve',
+    'PowerBreakdown',
+    'build_composite_power_curve',
     'ProcessorConfig',
     'ScenarioParams',
     'WorkloadParams',
@@ -182,6 +189,7 @@ __all__ = [
     'GeneralizedBreakevenFinder',
     'BreakevenResult',
     'EmbodiedComponentSpec',
+    'PowerComponentSpec',
     'ScenarioConfig',
     'AnalysisSpec',
     'AnalysisConfig',

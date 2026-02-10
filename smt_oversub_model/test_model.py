@@ -10,6 +10,7 @@ from .model import (
     PowerCurve, ProcessorConfig, ScenarioParams,
     WorkloadParams, CostParams, OverssubModel, ScenarioResult,
     ComponentBreakdown, EmbodiedBreakdown,
+    PowerComponentCurve, PowerBreakdown, build_composite_power_curve,
 )
 from .sweep import ParameterSweeper, create_default_sweeper
 
@@ -1663,3 +1664,87 @@ class TestComponentBreakdown:
         model = OverssubModel(workload, cost)
         result = model.evaluate_scenario(ScenarioParams(proc, 1.0))
         assert result.embodied_carbon_kg == result.num_servers * cost.embodied_carbon_kg
+
+
+class TestPowerBreakdown:
+    """Tests for per-component power breakdown feature."""
+
+    def test_power_component_curve_at_idle(self):
+        """PowerComponentCurve at util=0 should return idle power."""
+        comp = PowerComponentCurve(idle_w=23, max_w=153)
+        assert comp.power_at_util(0.0) == 23.0
+
+    def test_power_component_curve_at_max(self):
+        """PowerComponentCurve at util=1 should return max power."""
+        comp = PowerComponentCurve(idle_w=23, max_w=153)
+        assert comp.power_at_util(1.0) == 153.0
+
+    def test_power_component_curve_with_custom_fn(self):
+        """PowerComponentCurve with specpower-like curve."""
+        comp = PowerComponentCurve(idle_w=23, max_w=153, curve_fn=lambda u: u**0.9)
+        power = comp.power_at_util(0.5)
+        expected = 23 + (153 - 23) * (0.5**0.9)
+        assert abs(power - expected) < 0.01
+
+    def test_build_composite_matches_sum(self):
+        """Composite curve power should equal sum of component powers at any util."""
+        components = {
+            'cpu': PowerComponentCurve(idle_w=23, max_w=153, curve_fn=lambda u: u**0.9),
+            'memory': PowerComponentCurve(idle_w=56, max_w=74),
+            'ssd': PowerComponentCurve(idle_w=25, max_w=50),
+        }
+        composite = build_composite_power_curve(components)
+
+        for util in [0.0, 0.25, 0.5, 0.75, 1.0]:
+            expected_sum = sum(c.power_at_util(util) for c in components.values())
+            actual = composite.power_at_util(util)
+            assert abs(actual - expected_sum) < 0.01, (
+                f"At util={util}: composite={actual:.2f}, sum={expected_sum:.2f}"
+            )
+
+    def test_composite_idle_max_equal_sums(self):
+        """Composite p_idle and p_max should be sums of component idles and maxes."""
+        components = {
+            'cpu': PowerComponentCurve(idle_w=23, max_w=153),
+            'memory': PowerComponentCurve(idle_w=56, max_w=74),
+            'ssd': PowerComponentCurve(idle_w=25, max_w=50),
+        }
+        composite = build_composite_power_curve(components)
+        assert composite.p_idle == 23 + 56 + 25
+        assert composite.p_max == 153 + 74 + 50
+
+    def test_evaluate_scenario_populates_power_breakdown(self):
+        """When power_components is set, evaluate_scenario should populate power_breakdown."""
+        components = {
+            'cpu': PowerComponentCurve(idle_w=23, max_w=153, curve_fn=lambda u: u**0.9),
+            'memory': PowerComponentCurve(idle_w=56, max_w=74),
+        }
+        composite = build_composite_power_curve(components)
+        proc = ProcessorConfig(
+            physical_cores=48, threads_per_core=2,
+            power_curve=composite, power_components=components,
+        )
+        workload = WorkloadParams(total_vcpus=1000, avg_util=0.3)
+        cost = CostParams(1000, 15000, 400, 0.10, 4 * 8760)
+        model = OverssubModel(workload, cost)
+        result = model.evaluate_scenario(ScenarioParams(proc, 1.0))
+
+        assert result.power_breakdown is not None
+        assert 'cpu' in result.power_breakdown.component_power_w
+        assert 'memory' in result.power_breakdown.component_power_w
+        # Total should match sum of components
+        total = sum(result.power_breakdown.component_power_w.values())
+        assert abs(result.power_breakdown.total_power_w - total) < 0.01
+
+    def test_evaluate_scenario_no_breakdown_without_components(self):
+        """Without power_components, power_breakdown should be None."""
+        proc = ProcessorConfig(
+            physical_cores=48, threads_per_core=2,
+            power_curve=PowerCurve(p_idle=100, p_max=300),
+        )
+        workload = WorkloadParams(total_vcpus=1000, avg_util=0.3)
+        cost = CostParams(1000, 15000, 400, 0.10, 4 * 8760)
+        model = OverssubModel(workload, cost)
+        result = model.evaluate_scenario(ScenarioParams(proc, 1.0))
+
+        assert result.power_breakdown is None

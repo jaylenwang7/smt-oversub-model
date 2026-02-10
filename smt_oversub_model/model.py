@@ -27,6 +27,34 @@ def _polynomial_power_raw(cpu_util_pct: float, freq_mhz: float) -> float:
     Returns:
         Power consumption in watts (raw, unnormalized)
     """
+    # This function estimates CPU/system power draw (in watts) as a weighted combination
+    # of constant, linear, quadratic, cubic, and cross terms in utilization and frequency,
+    # fit to resemble actual server rack power curves (e.g., those in SPECpower measurements).
+    #
+    # In words:
+    #   "Start from a fixed base power, add terms that scale linearly, quadratically, and cubicly
+    #    with CPU utilization (%), frequency, and their combinations. Adjust for nonlinear interactions
+    #    between utilization and frequency, all fitted to empirical power data."
+    #
+    # The equation computed (with cpu = utilization percent [0-100], freq = MHz) is:
+    #
+    #    power = (
+    #        225
+    #        + 2.14 * cpu
+    #        - 0.0166 * freq
+    #        - 0.0248 * cpu**2
+    #        + 0.000784 * cpu * freq
+    #        + 7.31e-08 * freq**2
+    #        + 0.000136 * cpu**3
+    #        - 1.22e-05 * cpu**2 * freq
+    #        + 4.08e-07 * cpu * freq**2
+    #        + 8e-10 * freq**3
+    #    )
+    #
+    # where:
+    #   - cpu: CPU utilization percentage (0-100)
+    #   - freq: CPU frequency in MHz
+    # The output is not yet normalized; it is the modeled absolute platform power estimate in watts.
     cpu = cpu_util_pct
     freq = freq_mhz
 
@@ -108,12 +136,78 @@ class PowerCurve:
 
 
 @dataclass
+class PowerComponentCurve:
+    """Power model for a single server component (CPU, memory, SSD, etc.).
+
+    Each component has its own idle/max power and optional curve shape.
+    Default curve is linear.
+    """
+    idle_w: float
+    max_w: float
+    curve_fn: Callable[[float], float] = field(default_factory=lambda: lambda u: u)
+
+    def power_at_util(self, util: float) -> float:
+        """Return power (Watts) at given utilization [0, 1]."""
+        util = max(0.0, min(1.0, util))
+        return self.idle_w + (self.max_w - self.idle_w) * self.curve_fn(util)
+
+
+@dataclass
+class PowerBreakdown:
+    """Result-side per-component power breakdown at a specific utilization.
+
+    Stores the computed watts for each component at the scenario's effective
+    utilization, plus the total.
+    """
+    component_power_w: Dict[str, float]
+    total_power_w: float
+
+
+def build_composite_power_curve(
+    components: Dict[str, PowerComponentCurve],
+) -> PowerCurve:
+    """Create a composite PowerCurve from per-component power models.
+
+    The composite curve sums individual component powers at each utilization.
+    The returned PowerCurve has p_idle = sum of component idles,
+    p_max = sum of component maxes, and a curve_fn that correctly maps
+    the normalized utilization to the sum of individual component behaviors.
+
+    Args:
+        components: Dict of component name -> PowerComponentCurve
+
+    Returns:
+        A PowerCurve whose power_at_util(u) equals the sum of all
+        component power_at_util(u) values.
+    """
+    total_idle = sum(c.idle_w for c in components.values())
+    total_max = sum(c.max_w for c in components.values())
+    power_range = total_max - total_idle
+
+    # Capture components dict in closure
+    comps = dict(components)
+
+    def composite_curve_fn(util: float) -> float:
+        if power_range <= 0:
+            return util
+        total_power = sum(c.power_at_util(util) for c in comps.values())
+        return (total_power - total_idle) / power_range
+
+    return PowerCurve(
+        p_idle=total_idle,
+        p_max=total_max,
+        curve_fn=composite_curve_fn,
+    )
+
+
+@dataclass
 class ProcessorConfig:
     """Configuration for a processor type (SMT or non-SMT)."""
     physical_cores: int
     threads_per_core: int  # 2 for SMT, 1 for non-SMT
     power_curve: PowerCurve
     core_overhead: int = 0  # pCPUs reserved for host (not oversubscribable)
+    power_components: Optional[Dict[str, PowerComponentCurve]] = None
 
     @property
     def pcpus(self) -> int:
@@ -252,8 +346,9 @@ class ScenarioResult:
     carbon_per_vcpu_kg: float
     cost_per_vcpu_usd: float
 
-    # Optional breakdown
+    # Optional breakdowns
     embodied_breakdown: Optional[EmbodiedBreakdown] = None
+    power_breakdown: Optional[PowerBreakdown] = None
 
 
 class OverssubModel:
@@ -300,9 +395,19 @@ class OverssubModel:
         # Apply utilization overhead
         effective_util = min(1.0, avg_util + scenario.util_overhead)
         
-        # Calculate power
+        # Calculate power (with optional per-component breakdown)
         power_per_server = proc.power_curve.power_at_util(effective_util)
-        
+        power_breakdown = None
+        if proc.power_components:
+            component_power = {
+                name: comp.power_at_util(effective_util)
+                for name, comp in proc.power_components.items()
+            }
+            power_breakdown = PowerBreakdown(
+                component_power_w=component_power,
+                total_power_w=sum(component_power.values()),
+            )
+
         # Get cost values, allowing per-processor overrides
         embodied_carbon_kg = self.cost.embodied_carbon_kg
         server_cost_usd = self.cost.server_cost_usd
@@ -349,6 +454,7 @@ class OverssubModel:
             carbon_per_vcpu_kg=total_carbon / self.workload.total_vcpus,
             cost_per_vcpu_usd=total_cost / self.workload.total_vcpus,
             embodied_breakdown=embodied_breakdown,
+            power_breakdown=power_breakdown,
         )
     
     def find_breakeven_oversub(

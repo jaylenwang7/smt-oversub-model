@@ -20,6 +20,8 @@ from .declarative import (
     ScenarioConfig,
     DeclarativeAnalysisEngine,
     run_analysis,
+    PowerComponentSpec,
+    ProcessorSpec,
 )
 from .model import (
     PowerCurve, ProcessorConfig, ScenarioParams,
@@ -890,3 +892,187 @@ class TestStructuredEndToEnd:
 
         # noSMT cost: 72*52+16 = 3760 per server
         assert nosmt['embodied_cost_usd'] == nosmt['num_servers'] * 3760.0
+
+
+class TestPowerComponentSpec:
+    """Tests for PowerComponentSpec config parsing."""
+
+    def test_from_dict_basic(self):
+        """Parse a basic power component spec."""
+        data = {'idle_w': 23, 'max_w': 153}
+        spec = PowerComponentSpec.from_dict(data)
+        assert spec.idle_w == 23
+        assert spec.max_w == 153
+        assert spec.power_curve is None
+
+    def test_from_dict_with_power_curve(self):
+        """Parse a power component spec with power curve."""
+        data = {'idle_w': 23, 'max_w': 153, 'power_curve': {'type': 'specpower'}}
+        spec = PowerComponentSpec.from_dict(data)
+        assert spec.idle_w == 23
+        assert spec.max_w == 153
+        assert spec.power_curve is not None
+        assert spec.power_curve.type == 'specpower'
+
+    def test_to_dict_roundtrip(self):
+        """to_dict should produce equivalent dict."""
+        data = {'idle_w': 23, 'max_w': 153, 'power_curve': {'type': 'specpower'}}
+        spec = PowerComponentSpec.from_dict(data)
+        result = spec.to_dict()
+        assert result['idle_w'] == 23
+        assert result['max_w'] == 153
+        assert result['power_curve'] == {'type': 'specpower'}
+
+    def test_to_power_component_curve(self):
+        """Convert spec to model-level PowerComponentCurve."""
+        data = {'idle_w': 23, 'max_w': 153, 'power_curve': {'type': 'specpower'}}
+        spec = PowerComponentSpec.from_dict(data)
+        curve = spec.to_power_component_curve()
+        assert curve.idle_w == 23
+        assert curve.max_w == 153
+        assert curve.power_at_util(0.0) == 23.0
+        assert curve.power_at_util(1.0) == 153.0
+
+
+class TestProcessorSpecPowerBreakdown:
+    """Tests for ProcessorSpec with power_breakdown."""
+
+    def test_from_dict_with_power_breakdown(self):
+        """Parse processor spec with power_breakdown."""
+        data = {
+            'physical_cores': 80,
+            'threads_per_core': 2,
+            'power_idle_w': 150,
+            'power_max_w': 440,
+            'power_breakdown': {
+                'cpu': {'idle_w': 23, 'max_w': 153, 'power_curve': {'type': 'specpower'}},
+                'memory': {'idle_w': 56, 'max_w': 74},
+            },
+        }
+        spec = ProcessorSpec.from_dict(data)
+        assert spec.power_breakdown is not None
+        assert len(spec.power_breakdown) == 2
+        assert 'cpu' in spec.power_breakdown
+        assert spec.power_breakdown['cpu'].idle_w == 23
+        assert spec.power_breakdown['memory'].max_w == 74
+
+    def test_to_dict_with_power_breakdown(self):
+        """to_dict should include power_breakdown."""
+        data = {
+            'physical_cores': 80,
+            'threads_per_core': 2,
+            'power_idle_w': 150,
+            'power_max_w': 440,
+            'power_breakdown': {
+                'cpu': {'idle_w': 23, 'max_w': 153},
+                'memory': {'idle_w': 56, 'max_w': 74},
+            },
+        }
+        spec = ProcessorSpec.from_dict(data)
+        result = spec.to_dict()
+        assert 'power_breakdown' in result
+        assert result['power_breakdown']['cpu'] == {'idle_w': 23, 'max_w': 153}
+        assert result['power_breakdown']['memory'] == {'idle_w': 56, 'max_w': 74}
+
+    def test_from_dict_without_power_breakdown(self):
+        """Processor without power_breakdown should have None."""
+        data = {'physical_cores': 48, 'threads_per_core': 1, 'power_idle_w': 100, 'power_max_w': 300}
+        spec = ProcessorSpec.from_dict(data)
+        assert spec.power_breakdown is None
+
+
+class TestPowerBreakdownEndToEnd:
+    """End-to-end tests for power breakdown through declarative analysis."""
+
+    def test_compare_with_power_breakdown(self, tmp_path):
+        """Run a compare analysis with power_breakdown in processor config."""
+        config_data = {
+            'name': 'power_breakdown_test',
+            'scenarios': {
+                'baseline': {'processor': 'smt', 'oversub_ratio': 1.0},
+                'nosmt': {'processor': 'nosmt', 'oversub_ratio': 1.0},
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'baseline',
+            },
+            'processor': {
+                'smt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 2,
+                    'power_idle_w': 150,
+                    'power_max_w': 440,
+                    'power_breakdown': {
+                        'cpu': {'idle_w': 23, 'max_w': 153, 'power_curve': {'type': 'specpower'}},
+                        'memory': {'idle_w': 56, 'max_w': 74},
+                        'ssd': {'idle_w': 25, 'max_w': 50},
+                    },
+                },
+                'nosmt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 1,
+                    'power_idle_w': 100,
+                    'power_max_w': 300,
+                },
+            },
+            'workload': {'total_vcpus': 1000, 'avg_util': 0.3},
+        }
+
+        config_file = tmp_path / 'config.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        assert result.analysis_type == 'compare'
+
+        # SMT scenario should have power_breakdown
+        smt = result.scenario_results['baseline']
+        assert smt.get('power_breakdown') is not None
+        assert 'cpu' in smt['power_breakdown']['component_power_w']
+        assert 'memory' in smt['power_breakdown']['component_power_w']
+        assert 'ssd' in smt['power_breakdown']['component_power_w']
+
+        # nosmt scenario should NOT have power_breakdown (no power_breakdown in config)
+        nosmt = result.scenario_results['nosmt']
+        assert nosmt.get('power_breakdown') is None
+
+    def test_power_breakdown_total_matches_power_per_server(self, tmp_path):
+        """Power breakdown total should match power_per_server_w when all components use linear."""
+        config_data = {
+            'name': 'power_total_test',
+            'scenarios': {
+                'test': {'processor': 'proc', 'oversub_ratio': 1.0},
+            },
+            'analysis': {
+                'type': 'compare',
+            },
+            'processor': {
+                'proc': {
+                    'physical_cores': 48,
+                    'threads_per_core': 2,
+                    'power_idle_w': 200,
+                    'power_max_w': 500,
+                    'power_breakdown': {
+                        'cpu': {'idle_w': 50, 'max_w': 200},
+                        'memory': {'idle_w': 75, 'max_w': 100},
+                        'other': {'idle_w': 25, 'max_w': 50},
+                    },
+                },
+            },
+            'workload': {'total_vcpus': 1000, 'avg_util': 0.3},
+        }
+
+        config_file = tmp_path / 'config.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        test = result.scenario_results['test']
+        breakdown = test['power_breakdown']
+
+        # Power per server should equal breakdown total
+        assert abs(test['power_per_server_w'] - breakdown['total_power_w']) < 0.01
+
+        # And should equal sum of components
+        comp_sum = sum(breakdown['component_power_w'].values())
+        assert abs(breakdown['total_power_w'] - comp_sum) < 0.01

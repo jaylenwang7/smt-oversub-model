@@ -1,0 +1,248 @@
+// Genoa-based processor configurations
+// Derived from frugal-model/2026_analysis.py using Genoa-default-1S config
+//
+// Source: 1-socket AMD Genoa 80-core server (C2195 chassis, E4000 rack)
+// Per-component data from frugal-model/data_sources_paper/:
+//   CPU:     34.2 kgCO2e, $1,487       (CPU.yaml - AMD Genoa 80-core)
+//   Memory:  59.1 kgCO2e/DIMM, $440/DIMM (DRAM.yaml - DDR5 64GB 4800MHz)
+//   SSD:     103 kgCO2e/SSD, $272.71/SSD  (SSD.yaml - E1.S 2TB, incl. $3.71 latch)
+//   NIC:     115 kgCO2e, $1,022           (NIC.yaml - 200G Glacier Peak)
+//   Chassis: 255.48 kgCO2e, $1,505        (server.yaml - C2195 1U, incl. 2% repair overhead)
+//   Rack:    1,765.2 kgCO2e total, $17,321 total (rack.yaml - E4000, 34 servers/rack)
+//
+// SMT baseline: 12 DIMMs (768GB) + 6 SSDs (12TB) for 160 HW threads
+// no-SMT:        6 DIMMs (384GB) + 3 SSDs (6TB)  for  80 HW threads
+// Memory and SSD scale linearly with HW thread count (per_core).
+// Per-thread rates: memory = 59.1*12/160 = 4.43 kgCO2e, $33.00
+//                   ssd    = 103*6/160   = 3.86 kgCO2e, $10.23
+//
+// Power breakdown: max_w = component TDP from data_sources_paper/ (×1.05 for PSU loss).
+//   idle_w derived from frugal-model spec_derates at spec=0 (×1.05 for PSU).
+//   Derate factors at spec=0: CPU 0.30, DRAM 0.30, SSD 0.20, NIC 0.30, Fan 0.30.
+//   Component TDPs (pre-PSU): CPU 300W, DRAM 10.4W/DIMM, SSD 15W/drive,
+//     NIC 102W, DC-SCM 35W (constant), Fan 75W (C2195 1U).
+//   The smt-oversub-model power curves handle utilization-based scaling from idle to TDP.
+//
+// core_overhead: 10% of pCPUs, matching Genoa-default-1S "overhead: 10%"
+//   SMT: 10% of 160 = 16 pCPUs
+//   no-SMT: 10% of 80 = 8 pCPUs
+{
+  "genoa_smt": {
+    // AMD Genoa 80-core, SMT enabled (2 threads/core = 160 HW threads)
+    "physical_cores": 80,
+    "threads_per_core": 2,
+    "core_overhead": 16,
+    // Per-component power: max_w = TDP × 1.05 PSU, idle_w = TDP × spec_derate(0) × 1.05 PSU.
+    // CPU 300W TDP: idle = 300×0.30×1.05 = 94W, max = 300×1.05 = 315W
+    // Memory 12×10.4W = 124.8W TDP: idle = 124.8×0.30×1.05 = 39W, max = 124.8×1.05 = 131W
+    // SSD 6×15W = 90W TDP: idle = 90×0.20×1.05 = 19W, max = 90×1.05 = 94W (SSD derate at 0 = 0.20)
+    // NIC 102W TDP: idle = 102×0.30×1.05 = 32W, max = 102×1.05 = 107W
+    // Chassis (DC-SCM 35W + Fan 75W) = 110W TDP: idle = (35+75×0.30)×1.05 = 60W, max = 110×1.05 = 116W
+    "power_breakdown": {
+      "cpu":     {"idle_w": 94, "max_w": 315, "power_curve": {"type": "specpower"}},
+      "memory":  {"idle_w": 39, "max_w": 131},
+      "ssd":     {"idle_w": 19, "max_w": 94},
+      "nic":     {"idle_w": 32, "max_w": 107},
+      "chassis": {"idle_w": 60, "max_w": 116}
+    },
+    "embodied_carbon": {
+      "per_core": {
+        // 59.1 kgCO2e/DIMM * 12 DIMMs / 160 threads (DRAM.yaml)
+        "memory": 4.43,
+        // 103 kgCO2e/SSD * 6 SSDs / 160 threads (SSD.yaml)
+        "ssd": 3.86
+      },
+      "per_server": {
+        // 34.2 kgCO2e per socket (CPU.yaml, AMD Genoa 80-core)
+        "cpu": 34.2,
+        // 115 kgCO2e (NIC.yaml, 200G Glacier Peak)
+        "nic": 115.0,
+        // 255.48 kgCO2e (server.yaml, C2195 1U chassis)
+        "server": 255.48,
+        // 1,765.2 kgCO2e total rack / 34 servers (rack.yaml, E4000)
+        "rack": 51.9
+      }
+    },
+    "server_cost": {
+      "per_core": {
+        // $440/DIMM * 12 DIMMs / 160 threads (DRAM.yaml)
+        "memory": 33.0,
+        // $272.71/SSD * 6 SSDs / 160 threads (SSD.yaml, incl. latch)
+        "ssd": 10.23
+      },
+      "per_server": {
+        // $1,487 per socket (CPU.yaml, AMD Genoa 80-core)
+        "cpu": 1487.0,
+        // $1,022 (NIC.yaml, 200G Glacier Peak)
+        "nic": 1022.0,
+        // $1,505 (server.yaml, C2195 1U, incl. repair overhead)
+        "server": 1505.0,
+        // $17,321 total rack / 34 servers (rack.yaml, E4000)
+        "rack": 510.0
+      }
+    }
+  },
+
+  "genoa_nosmt": {
+    // AMD Genoa 80-core, SMT disabled (same CPU, 1 thread/core = 80 HW threads)
+    // Same physical CPU as genoa_smt, just with SMT turned off.
+    // Memory/SSD halved (6 DIMMs, 3 SSDs) since HW threads halved.
+    // Same per-thread rates, same per-server fixed costs.
+    "physical_cores": 80,
+    "threads_per_core": 1,
+    "core_overhead": 8,
+    // Per-component power: CPU same as SMT, memory/SSD halved (6 DIMMs, 3 SSDs).
+    // Same chassis since same physical server (C2195 1U).
+    "power_breakdown": {
+      "cpu":     {"idle_w": 94, "max_w": 315, "power_curve": {"type": "specpower"}},
+      "memory":  {"idle_w": 20, "max_w": 66},
+      "ssd":     {"idle_w": 9,  "max_w": 47},
+      "nic":     {"idle_w": 32, "max_w": 107},
+      "chassis": {"idle_w": 60, "max_w": 116}
+    },
+    "embodied_carbon": {
+      "per_core": {
+        // Same per-thread rate: 59.1 * 6 DIMMs / 80 threads = 4.43
+        "memory": 4.43,
+        // Same per-thread rate: 103 * 3 SSDs / 80 threads = 3.86
+        "ssd": 3.86
+      },
+      "per_server": {
+        // CPU embodied same as SMT (same physical die)
+        "cpu": 34.2,
+        "nic": 115.0,
+        "server": 255.48,
+        "rack": 51.9
+      }
+    },
+    "server_cost": {
+      "per_core": {
+        // Same per-thread rate: $440 * 6 / 80 = $33.00
+        "memory": 33.0,
+        // Same per-thread rate: $272.71 * 3 / 80 = $10.23
+        "ssd": 10.23
+      },
+      "per_server": {
+        // CPU cost same as SMT (same physical die)
+        "cpu": 1487.0,
+        "nic": 1022.0,
+        "server": 1505.0,
+        "rack": 510.0
+      }
+    }
+  },
+
+  "genoa_nosmt_linear": {
+    // Same as genoa_nosmt but with linear power curve instead of default specpower.
+    // Uses flat power_idle_w/power_max_w (no per-component breakdown).
+    "physical_cores": 80,
+    "threads_per_core": 1,
+    "core_overhead": 8,
+    "power_idle_w": 215.0,
+    "power_max_w": 651.0,
+    "embodied_carbon": {
+      "per_core": {
+        "memory": 4.43,
+        "ssd": 3.86
+      },
+      "per_server": {
+        "cpu": 34.2,
+        "nic": 115.0,
+        "server": 255.48,
+        "rack": 51.9
+      }
+    },
+    "server_cost": {
+      "per_core": {
+        "memory": 33.0,
+        "ssd": 10.23
+      },
+      "per_server": {
+        "cpu": 1487.0,
+        "nic": 1022.0,
+        "server": 1505.0,
+        "rack": 510.0
+      }
+    },
+    "power_curve": {"type": "linear"}
+  },
+
+  "genoa_nosmt_5pct_area": {
+    // AMD Genoa 80-core, SMT disabled, 5% die area reduction assumed.
+    // Removing SMT logic frees ~5% die area → 5% less CPU embodied carbon.
+    // CPU cost unchanged (same wafer/packaging process regardless of area).
+    // All other components identical to genoa_nosmt.
+    "physical_cores": 80,
+    "threads_per_core": 1,
+    "core_overhead": 8,
+    "power_breakdown": {
+      "cpu":     {"idle_w": 94, "max_w": 315, "power_curve": {"type": "specpower"}},
+      "memory":  {"idle_w": 20, "max_w": 66},
+      "ssd":     {"idle_w": 9,  "max_w": 47},
+      "nic":     {"idle_w": 32, "max_w": 107},
+      "chassis": {"idle_w": 60, "max_w": 116}
+    },
+    "embodied_carbon": {
+      "per_core": {
+        "memory": 4.43,
+        "ssd": 3.86
+      },
+      "per_server": {
+        // CPU embodied reduced 5%: 34.2 * 0.95 = 32.49 kgCO2e
+        "cpu": 32.49,
+        "nic": 115.0,
+        "server": 255.48,
+        "rack": 51.9
+      }
+    },
+    "server_cost": {
+      "per_core": {
+        "memory": 33.0,
+        "ssd": 10.23
+      },
+      "per_server": {
+        // CPU cost unchanged despite 5% area reduction
+        "cpu": 1487.0,
+        "nic": 1022.0,
+        "server": 1505.0,
+        "rack": 510.0
+      }
+    }
+  },
+
+  "genoa_nosmt_5pct_area_linear": {
+    // Same as genoa_nosmt_5pct_area but with linear power curve.
+    // Uses flat power_idle_w/power_max_w (no per-component breakdown).
+    "physical_cores": 80,
+    "threads_per_core": 1,
+    "core_overhead": 8,
+    "power_idle_w": 215.0,
+    "power_max_w": 651.0,
+    "embodied_carbon": {
+      "per_core": {
+        "memory": 4.43,
+        "ssd": 3.86
+      },
+      "per_server": {
+        // CPU embodied reduced 5%: 34.2 * 0.95 = 32.49 kgCO2e
+        "cpu": 32.49,
+        "nic": 115.0,
+        "server": 255.48,
+        "rack": 51.9
+      }
+    },
+    "server_cost": {
+      "per_core": {
+        "memory": 33.0,
+        "ssd": 10.23
+      },
+      "per_server": {
+        "cpu": 1487.0,
+        "nic": 1022.0,
+        "server": 1505.0,
+        "rack": 510.0
+      }
+    },
+    "power_curve": {"type": "linear"}
+  }
+}
