@@ -123,11 +123,26 @@ def _format_parameter_label(param_name: str) -> str:
     return ' '.join(result_words)
 
 
+def _eng_format(x, pos):
+    """Format axis tick values with engineering suffixes (k, M, B)."""
+    if x == 0:
+        return '0'
+    abs_x = abs(x)
+    if abs_x >= 1e9:
+        return f'{x / 1e9:.1f}B'
+    elif abs_x >= 1e6:
+        return f'{x / 1e6:.1f}M'
+    elif abs_x >= 1e3:
+        return f'{x / 1e3:.0f}k'
+    else:
+        return f'{x:.0f}'
+
+
 def plot_scenarios(
     scenarios: List[Dict[str, Any]],
     baseline_idx: int = 0,
     save_path: Optional[Union[str, Path]] = None,
-    figsize: Tuple[float, float] = (12, 5),
+    figsize: Tuple[float, float] = (14, 5),
     show: bool = True,
     title: Optional[str] = None,
     colors: Optional[Dict[str, str]] = None,
@@ -204,7 +219,7 @@ def plot_scenarios(
 
     labels = [s.get('name', f'Scenario {i}') for i, s in enumerate(scenarios)]
     x = np.arange(len(scenarios))
-    bar_width = 0.5
+    bar_width = 0.7
 
     for ax_idx, (metric_name, metric) in enumerate(metrics.items()):
         ax = axes[ax_idx]
@@ -265,18 +280,22 @@ def plot_scenarios(
                     ha='center', va='bottom', fontsize=10,
                     fontweight='bold', color=diff_color)
 
+        # Customize axes
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=9)
+
         # Add server count below x-axis labels if available
         if show_server_count:
+            # Extra offset when labels contain newlines (multi-line)
+            has_multiline = any('\n' in l for l in labels)
+            server_offset = -40 if has_multiline else -28
             for i, s in enumerate(scenarios):
                 servers = s.get('num_servers')
                 if servers is not None:
-                    ax.annotate(f"({servers} servers)", xy=(i, 0), xytext=(0, -28),
+                    ax.annotate(f"({servers} servers)", xy=(i, 0),
+                                xytext=(0, server_offset),
                                 textcoords='offset points', ha='center', va='top',
                                 fontsize=8, color=COLORS['neutral'])
-
-        # Customize axes
-        ax.set_xticks(x)
-        ax.set_xticklabels(labels, fontsize=10)
         ax.set_ylabel(f"{metric['label']} ({metric['unit']})", fontsize=11)
         ax.set_ylim(0, max(total_vals) * 1.15)
 
@@ -290,7 +309,8 @@ def plot_scenarios(
         ax.spines['left'].set_color('#cccccc')
         ax.spines['bottom'].set_color('#cccccc')
 
-        # Y-axis formatting
+        # Y-axis formatting: use engineering suffixes (k, M) for readability
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(_eng_format))
         ax.tick_params(axis='y', colors='#666666')
         ax.tick_params(axis='x', colors='#333333')
 
@@ -307,10 +327,12 @@ def plot_scenarios(
         fig.suptitle(title, fontsize=13, fontweight='bold', y=0.98, color='#333333')
 
     # Adjust layout based on whether title is shown
+    has_multiline = any('\n' in s.get('name', '') for s in scenarios)
+    bottom_margin = 0.10 if has_multiline else 0.05
     if show_plot_title and title:
-        plt.tight_layout(rect=[0, 0.05, 1, 0.94])
+        plt.tight_layout(rect=[0, bottom_margin, 1, 0.94])
     else:
-        plt.tight_layout(rect=[0, 0.05, 1, 1.0])
+        plt.tight_layout(rect=[0, bottom_margin, 1, 1.0])
 
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
@@ -1068,6 +1090,123 @@ def plot_compare_sweep(
     return fig
 
 
+def plot_breakeven_curve(
+    result,
+    save_path: Optional[Union[str, Path]] = None,
+    figsize: Tuple[float, float] = (10, 6),
+    show: bool = True,
+    title: Optional[str] = None,
+    show_plot_title: Optional[bool] = None,
+) -> Optional[Any]:
+    """
+    Plot breakeven curve showing breakeven values across a swept parameter.
+
+    Each series is a line on the plot (e.g., "With Resource Scaling" vs "Without").
+    X-axis is the parameter value (e.g., utilization %), Y-axis is breakeven value.
+
+    Args:
+        result: AnalysisResult with breakeven_curve_results, or dict
+        save_path: Optional path to save the figure
+        figsize: Figure size (width, height) in inches
+        show: Whether to display the plot (default True)
+        title: Optional custom title
+        show_plot_title: Whether to show the title (default from config or True)
+
+    Returns:
+        matplotlib Figure object if matplotlib is available
+    """
+    _check_matplotlib()
+
+    # Extract breakeven_curve results
+    if hasattr(result, 'breakeven_curve_results'):
+        curve_results = result.breakeven_curve_results
+    elif isinstance(result, dict):
+        curve_results = result.get('breakeven_curve_results', [])
+    else:
+        raise ValueError("Expected result with breakeven_curve_results")
+
+    if not curve_results:
+        return None
+
+    # Get config options
+    x_label = None
+    y_label = None
+    if hasattr(result, 'config') and hasattr(result.config, 'analysis'):
+        analysis = result.config.analysis
+        x_label = analysis.x_label
+        y_label = analysis.y_label
+        if show_plot_title is None:
+            show_plot_title = analysis.show_plot_title
+    elif isinstance(result, dict) and 'config' in result:
+        analysis = result['config'].get('analysis', {})
+        x_label = analysis.get('x_label')
+        y_label = analysis.get('y_label')
+        if show_plot_title is None:
+            show_plot_title = analysis.get('show_plot_title', True)
+
+    if show_plot_title is None:
+        show_plot_title = True
+
+    # Color palette
+    series_colors = ['#1a5276', '#e74c3c', '#27ae60', '#8e44ad', '#f39c12', '#16a085']
+    markers = ['o', 's', '^', 'D', 'v', 'P']
+
+    # Set up professional style
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.size': 10,
+    })
+
+    fig, ax = plt.subplots(figsize=figsize)
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('white')
+
+    for idx, series in enumerate(curve_results):
+        label = series.get('label', f'Series {idx + 1}')
+        points = series.get('points', [])
+
+        x_vals = []
+        y_vals = []
+        for pt in points:
+            be = pt.get('breakeven_value')
+            if be is not None:
+                x_vals.append(pt['x_value'])
+                y_vals.append(be)
+
+        if x_vals:
+            color = series_colors[idx % len(series_colors)]
+            marker = markers[idx % len(markers)]
+            ax.plot(x_vals, y_vals, f'{marker}-', linewidth=2, markersize=8,
+                    color=color, label=label)
+
+    ax.set_xlabel(x_label or 'Parameter', fontsize=11)
+    ax.set_ylabel(y_label or 'Breakeven Value', fontsize=11)
+    ax.legend(loc='best', frameon=True, fontsize=9)
+    ax.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    if show_plot_title:
+        if title is None:
+            config_name = None
+            if hasattr(result, 'config') and hasattr(result.config, 'name'):
+                config_name = result.config.name
+            elif isinstance(result, dict) and 'config' in result:
+                config_name = result['config'].get('name')
+            title = f"Breakeven Curve: {config_name}" if config_name else "Breakeven Curve"
+        ax.set_title(title, fontsize=13, fontweight='bold', color='#333333')
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+
+    if show:
+        plt.show()
+
+    return fig
+
+
 def _adjust_color_brightness(hex_color: str, factor: float) -> str:
     """Adjust color brightness. Factor > 1 lightens, < 1 darkens."""
     hex_color = hex_color.lstrip('#')
@@ -1189,6 +1328,9 @@ def plot_analysis_result(
 
     elif analysis_type == 'compare_sweep':
         return plot_compare_sweep(result, save_path=save_path, show=show, **kwargs)
+
+    elif analysis_type == 'breakeven_curve':
+        return plot_breakeven_curve(result, save_path=save_path, show=show, **kwargs)
 
     return None
 

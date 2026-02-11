@@ -123,6 +123,7 @@ try:
         plot_breakeven_search,
         plot_analysis_result,
         plot_sweep_analysis,
+        plot_breakeven_curve,
     )
     _HAS_PLOT = True
 except ImportError:
@@ -134,6 +135,7 @@ except ImportError:
     plot_breakeven_search = None
     plot_analysis_result = None
     plot_sweep_analysis = None
+    plot_breakeven_curve = None
 
 __all__ = [
     # Core model
@@ -213,6 +215,7 @@ __all__ = [
     'plot_breakeven_search',
     'plot_analysis_result',
     'plot_sweep_analysis',
+    'plot_breakeven_curve',
 ]
 
 __version__ = '0.1.0'

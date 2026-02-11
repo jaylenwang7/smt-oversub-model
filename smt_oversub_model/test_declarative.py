@@ -21,6 +21,7 @@ from .declarative import (
     ResourceScalingConfig,
     DeclarativeAnalysisEngine,
     run_analysis,
+    is_valid_analysis_config,
     PowerComponentSpec,
     PowerCurveSpec,
     ProcessorSpec,
@@ -1566,3 +1567,237 @@ class TestResourceScaling:
         assert scaled['embodied_cost_usd'] > unscaled['embodied_cost_usd']
         # Both should have same server count
         assert scaled['num_servers'] == unscaled['num_servers']
+
+
+class TestBreakevenCurve:
+    """Tests for breakeven_curve analysis type."""
+
+    def _make_compare_sweep_config(self, avg_util, tmp_path, suffix=""):
+        """Helper to create a compare_sweep config file that has a breakeven."""
+        config_data = {
+            'name': f'util_{int(avg_util*100)}pct{suffix}',
+            'scenarios': {
+                'smt_baseline': {
+                    'processor': 'smt',
+                    'oversub_ratio': 1.0,
+                },
+                'nosmt_target': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 1.5,
+                    'vcpu_demand_multiplier': 1.0,
+                },
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': avg_util},
+            'processor': {
+                'smt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 2,
+                    'power_idle_w': 100.0,
+                    'power_max_w': 400.0,
+                },
+                'nosmt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 1,
+                    'power_idle_w': 90.0,
+                    'power_max_w': 340.0,
+                },
+            },
+            'cost': {
+                'carbon_intensity_g_kwh': 400,
+                'electricity_cost_usd_kwh': 0.10,
+                'lifetime_years': 5,
+            },
+            'analysis': {
+                'type': 'compare_sweep',
+                'baseline': 'smt_baseline',
+                'sweep_scenario': 'nosmt_target',
+                'sweep_parameter': 'vcpu_demand_multiplier',
+                'sweep_values': [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+                'show_breakeven_marker': True,
+            },
+        }
+        filename = f'util_{int(avg_util*100)}{suffix}.json'
+        config_file = tmp_path / filename
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+        return config_file
+
+    def test_basic_breakeven_curve(self, tmp_path):
+        """Test basic breakeven_curve execution with multiple sub-configs."""
+        # Create sub-configs at different utilization levels
+        cfg_10 = self._make_compare_sweep_config(0.1, tmp_path)
+        cfg_20 = self._make_compare_sweep_config(0.2, tmp_path)
+        cfg_30 = self._make_compare_sweep_config(0.3, tmp_path)
+
+        # Create breakeven_curve config
+        curve_config = {
+            'name': 'test_breakeven_curve',
+            'analysis': {
+                'type': 'breakeven_curve',
+                'series': [
+                    {
+                        'label': 'Test Series',
+                        'configs': [str(cfg_10), str(cfg_20), str(cfg_30)],
+                    }
+                ],
+                'x_parameter': 'workload.avg_util',
+                'x_display_multiplier': 100,
+                'breakeven_metric': 'carbon',
+                'x_label': 'Utilization (%)',
+                'y_label': 'Breakeven Multiplier',
+            },
+        }
+        curve_file = tmp_path / 'curve.json'
+        with open(curve_file, 'w') as f:
+            json.dump(curve_config, f)
+
+        result = run_analysis(curve_file)
+
+        assert result.analysis_type == 'breakeven_curve'
+        assert result.breakeven_curve_results is not None
+        assert len(result.breakeven_curve_results) == 1
+
+        series = result.breakeven_curve_results[0]
+        assert series['label'] == 'Test Series'
+        assert len(series['points']) == 3
+
+        # Check x-values are display-multiplied
+        assert series['points'][0]['x_value'] == pytest.approx(10.0)
+        assert series['points'][1]['x_value'] == pytest.approx(20.0)
+        assert series['points'][2]['x_value'] == pytest.approx(30.0)
+
+        # Check raw values preserved
+        assert series['points'][0]['x_raw'] == pytest.approx(0.1)
+
+    def test_x_display_multiplier(self, tmp_path):
+        """Test that x_display_multiplier correctly scales displayed values."""
+        cfg = self._make_compare_sweep_config(0.2, tmp_path)
+
+        # With multiplier=1 (no scaling)
+        curve_config = {
+            'name': 'test_no_multiplier',
+            'analysis': {
+                'type': 'breakeven_curve',
+                'series': [{'label': 'S', 'configs': [str(cfg)]}],
+                'x_parameter': 'workload.avg_util',
+                'x_display_multiplier': 1.0,
+                'breakeven_metric': 'carbon',
+            },
+        }
+        curve_file = tmp_path / 'curve_nomult.json'
+        with open(curve_file, 'w') as f:
+            json.dump(curve_config, f)
+
+        result = run_analysis(curve_file)
+        pt = result.breakeven_curve_results[0]['points'][0]
+        assert pt['x_value'] == pytest.approx(0.2)
+        assert pt['x_raw'] == pytest.approx(0.2)
+
+    def test_multiple_series(self, tmp_path):
+        """Test breakeven_curve with multiple series."""
+        cfg_a = self._make_compare_sweep_config(0.2, tmp_path, suffix="_a")
+        cfg_b = self._make_compare_sweep_config(0.2, tmp_path, suffix="_b")
+
+        curve_config = {
+            'name': 'test_multi_series',
+            'analysis': {
+                'type': 'breakeven_curve',
+                'series': [
+                    {'label': 'Series A', 'configs': [str(cfg_a)]},
+                    {'label': 'Series B', 'configs': [str(cfg_b)]},
+                ],
+                'x_parameter': 'workload.avg_util',
+                'x_display_multiplier': 100,
+                'breakeven_metric': 'carbon',
+            },
+        }
+        curve_file = tmp_path / 'curve_multi.json'
+        with open(curve_file, 'w') as f:
+            json.dump(curve_config, f)
+
+        result = run_analysis(curve_file)
+        assert len(result.breakeven_curve_results) == 2
+        assert result.breakeven_curve_results[0]['label'] == 'Series A'
+        assert result.breakeven_curve_results[1]['label'] == 'Series B'
+
+    def test_validation_without_scenarios(self, tmp_path):
+        """Test that breakeven_curve configs are valid without 'scenarios' key."""
+        config_data = {
+            'name': 'test_valid',
+            'analysis': {
+                'type': 'breakeven_curve',
+                'series': [],
+                'x_parameter': 'workload.avg_util',
+            },
+        }
+        config_file = tmp_path / 'valid_no_scenarios.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        assert is_valid_analysis_config(config_file) is True
+
+    def test_non_breakeven_curve_requires_scenarios(self, tmp_path):
+        """Test that non-breakeven_curve configs still require 'scenarios'."""
+        config_data = {
+            'name': 'test_invalid',
+            'analysis': {'type': 'compare'},
+        }
+        config_file = tmp_path / 'invalid_no_scenarios.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        assert is_valid_analysis_config(config_file) is False
+
+    def test_to_dict_roundtrip(self):
+        """Test that breakeven_curve AnalysisSpec serializes correctly."""
+        from .declarative import AnalysisSpec
+
+        spec = AnalysisSpec(
+            type='breakeven_curve',
+            series=[{'label': 'A', 'configs': ['a.json']}],
+            x_parameter='workload.avg_util',
+            x_display_multiplier=100,
+            breakeven_metric='carbon',
+            x_label='Util (%)',
+            y_label='Breakeven',
+        )
+        d = spec.to_dict()
+        assert d['type'] == 'breakeven_curve'
+        assert d['series'] == [{'label': 'A', 'configs': ['a.json']}]
+        assert d['x_parameter'] == 'workload.avg_util'
+        assert d['x_display_multiplier'] == 100
+        assert d['breakeven_metric'] == 'carbon'
+        assert d['x_label'] == 'Util (%)'
+        assert d['y_label'] == 'Breakeven'
+
+        # Roundtrip
+        spec2 = AnalysisSpec.from_dict(d)
+        assert spec2.type == 'breakeven_curve'
+        assert spec2.series == spec.series
+        assert spec2.x_parameter == spec.x_parameter
+        assert spec2.x_display_multiplier == spec.x_display_multiplier
+
+    def test_summary_output(self, tmp_path):
+        """Test that summary text is generated."""
+        cfg = self._make_compare_sweep_config(0.2, tmp_path)
+
+        curve_config = {
+            'name': 'test_summary',
+            'analysis': {
+                'type': 'breakeven_curve',
+                'series': [{'label': 'My Series', 'configs': [str(cfg)]}],
+                'x_parameter': 'workload.avg_util',
+                'x_display_multiplier': 100,
+                'breakeven_metric': 'carbon',
+                'x_label': 'Util (%)',
+                'y_label': 'Breakeven',
+            },
+        }
+        curve_file = tmp_path / 'curve_summary.json'
+        with open(curve_file, 'w') as f:
+            json.dump(curve_config, f)
+
+        result = run_analysis(curve_file)
+        assert 'Breakeven Curve Analysis' in result.summary
+        assert 'My Series' in result.summary
+        assert '20.0' in result.summary

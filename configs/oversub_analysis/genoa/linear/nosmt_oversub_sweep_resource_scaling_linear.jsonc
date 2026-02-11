@@ -1,17 +1,17 @@
 {
-  "name": "genoa_nosmt_oversub_sweep_resource_scaling",
-  "description": "Genoa No-SMT: sweep oversub ratio with ideal scaling line. Compare fixed vs scaled memory/SSD resources.",
+  "name": "genoa_nosmt_oversub_sweep_resource_scaling_linear",
+  "description": "Genoa No-SMT Linear: sweep oversub ratio with ideal scaling line. Compare fixed vs scaled memory/SSD resources.",
   "scenarios": {
     "nosmt_no_oversub": {
-      "processor": "nosmt",
+      "processor": "nosmt_linear",
       "oversub_ratio": 1.0
     },
     "nosmt_oversub_unscaled": {
-      "processor": "nosmt",
+      "processor": "nosmt_linear",
       "oversub_ratio": 1.0
     },
     "nosmt_oversub_scaled": {
-      "processor": "nosmt",
+      "processor": "nosmt_linear",
       "oversub_ratio": 1.0,
       "resource_scaling": {
         "scale_with_vcpus": ["memory", "ssd"]
@@ -28,12 +28,12 @@
     "show_breakeven_marker": false,
     "separate_metric_plots": true,
     "labels": {
-      "nosmt_oversub_unscaled": "No-SMT (fixed resources)",
-      "nosmt_oversub_scaled": "No-SMT (scaled mem/SSD)"
+      "nosmt_oversub_unscaled": "No-SMT Linear (fixed resources)",
+      "nosmt_oversub_scaled": "No-SMT Linear (scaled mem/SSD)"
     }
   },
   "processor": {
-    "nosmt": "configs/shared/genoa_processors.jsonc:genoa_nosmt"
+    "nosmt_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_linear"
   },
   "workload": {
     "total_vcpus": 10000,
@@ -45,5 +45,5 @@
     "lifetime_years": 6
   },
   "power_curve": { "type": "polynomial" },
-  "output_dir": "./results/oversub_analysis/genoa/non-linear/nosmt_oversub_sweep_resource_scaling"
+  "output_dir": "./results/oversub_analysis/genoa/linear/nosmt_oversub_sweep_resource_scaling_linear"
 }

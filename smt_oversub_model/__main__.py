@@ -63,7 +63,7 @@ def main():
 
         if not is_valid_analysis_config(input_path):
             print(f"Error: Not a valid analysis config: {input_path}", file=sys.stderr)
-            print("A valid config must have 'name', 'scenarios', and 'analysis' keys.")
+            print("A valid config must have 'name' and 'analysis' keys ('scenarios' required for most types).")
             sys.exit(1)
 
         result = run_analysis(input_path)

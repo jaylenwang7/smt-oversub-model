@@ -1,0 +1,31 @@
+{
+  "name": "breakeven_curve_comparison",
+  "description": "Aggregate breakeven vCPU demand multipliers across utilization levels, comparing with and without resource scaling",
+  "analysis": {
+    "type": "breakeven_curve",
+    "series": [
+      {
+        "label": "Without Resource Scaling",
+        "configs": [
+          "configs/oversub_analysis/genoa/linear/util_10_pct_linear.jsonc",
+          "configs/oversub_analysis/genoa/linear/util_20_pct_linear.jsonc",
+          "configs/oversub_analysis/genoa/linear/util_30_pct_linear.jsonc"
+        ]
+      },
+      {
+        "label": "With Resource Scaling",
+        "configs": [
+          "configs/oversub_analysis/genoa/linear/util_10_pct_linear_resource_scaling.jsonc",
+          "configs/oversub_analysis/genoa/linear/util_20_pct_linear_resource_scaling.jsonc",
+          "configs/oversub_analysis/genoa/linear/util_30_pct_linear_resource_scaling.jsonc"
+        ]
+      }
+    ],
+    "x_parameter": "workload.avg_util",
+    "x_display_multiplier": 100,
+    "breakeven_metric": "carbon",
+    "x_label": "Average Utilization (%)",
+    "y_label": "Breakeven vCPU Demand Multiplier"
+  },
+  "output_dir": "./results/oversub_analysis/genoa/linear/breakeven_curve_comparison"
+}

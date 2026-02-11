@@ -492,6 +492,8 @@ class OutputWriter:
             self._plot_sweep(result, plots_dir)
         elif result.analysis_type == 'compare_sweep':
             self._plot_compare_sweep(result, plots_dir)
+        elif result.analysis_type == 'breakeven_curve':
+            self._plot_breakeven_curve(result, plots_dir)
 
     def _plot_comparison(
         self,
@@ -660,6 +662,28 @@ class OutputWriter:
                         scenario_filter=[scenario_name],
                         title=f"Compare Sweep: {display_label}",
                     )
+
+
+    def _plot_breakeven_curve(
+        self,
+        result: 'AnalysisResult',
+        plots_dir: Path,
+    ) -> None:
+        """Generate breakeven curve plot."""
+        if not result.breakeven_curve_results:
+            return
+
+        try:
+            from .plot import plot_breakeven_curve
+        except ImportError:
+            return
+
+        save_path = plots_dir / 'breakeven_curve.png'
+        plot_breakeven_curve(
+            result,
+            save_path=str(save_path),
+            show=False,
+        )
 
 
 def save_result(result: 'AnalysisResult', output_dir: str) -> None:

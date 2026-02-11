@@ -587,7 +587,7 @@ class ScenarioConfig:
 @dataclass
 class AnalysisSpec:
     """Specification for the analysis to perform."""
-    type: str  # "find_breakeven", "compare", "sweep", "compare_sweep"
+    type: str  # "find_breakeven", "compare", "sweep", "compare_sweep", "breakeven_curve"
     baseline: Optional[str] = None
     reference: Optional[str] = None
     target: Optional[str] = None
@@ -607,6 +607,13 @@ class AnalysisSpec:
     x_axis_marker_labels: Optional[List[str]] = None  # For line plots: labels for x_axis_markers (same length as x_axis_markers)
     separate_metric_plots: bool = False  # For compare_sweep: generate separate plots for carbon and TCO instead of combined
     show_ideal_scaling_line: bool = False  # For compare_sweep: show ideal 1/R scaling reference line
+    # For "breakeven_curve": aggregate breakeven points from multiple configs
+    series: Optional[List[Dict[str, Any]]] = None  # List of {label, configs} dicts
+    x_parameter: Optional[str] = None  # Parameter path to extract x-value from sub-configs (e.g., "workload.avg_util")
+    x_display_multiplier: float = 1.0  # Multiply x-values for display (e.g., 100 to show 0.1 as 10%)
+    breakeven_metric: Optional[str] = None  # Which metric's breakeven to extract: "carbon" or "tco"
+    x_label: Optional[str] = None  # Custom x-axis label
+    y_label: Optional[str] = None  # Custom y-axis label
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AnalysisSpec':
@@ -631,6 +638,12 @@ class AnalysisSpec:
             x_axis_marker_labels=data.get('x_axis_marker_labels'),
             separate_metric_plots=data.get('separate_metric_plots', False),
             show_ideal_scaling_line=data.get('show_ideal_scaling_line', False),
+            series=data.get('series'),
+            x_parameter=data.get('x_parameter'),
+            x_display_multiplier=data.get('x_display_multiplier', 1.0),
+            breakeven_metric=data.get('breakeven_metric'),
+            x_label=data.get('x_label'),
+            y_label=data.get('y_label'),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -673,6 +686,18 @@ class AnalysisSpec:
             d['separate_metric_plots'] = True
         if self.show_ideal_scaling_line:
             d['show_ideal_scaling_line'] = True
+        if self.series:
+            d['series'] = self.series
+        if self.x_parameter:
+            d['x_parameter'] = self.x_parameter
+        if self.x_display_multiplier != 1.0:
+            d['x_display_multiplier'] = self.x_display_multiplier
+        if self.breakeven_metric:
+            d['breakeven_metric'] = self.breakeven_metric
+        if self.x_label:
+            d['x_label'] = self.x_label
+        if self.y_label:
+            d['y_label'] = self.y_label
         return d
 
 
@@ -1675,6 +1700,7 @@ class AnalysisResult:
     breakeven: Optional[BreakevenResult] = None
     sweep_results: Optional[List[Dict[str, Any]]] = None
     compare_sweep_results: Optional[List[Dict[str, Any]]] = None  # For compare_sweep analysis
+    breakeven_curve_results: Optional[List[Dict[str, Any]]] = None  # For breakeven_curve analysis
     summary: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1701,6 +1727,8 @@ class AnalysisResult:
             result['sweep_results'] = self.sweep_results
         if self.compare_sweep_results:
             result['compare_sweep_results'] = self.compare_sweep_results
+        if self.breakeven_curve_results:
+            result['breakeven_curve_results'] = self.breakeven_curve_results
         return result
 
 
@@ -1733,8 +1761,13 @@ class DeclarativeAnalysisEngine:
         # Save original cost spec for sweep operations that may need it
         self._original_cost = copy.deepcopy(config.cost)
 
-        # Resolve ratio-based costs if needed (except for sweeps over ratio params)
         analysis_type = config.analysis.type
+
+        # breakeven_curve doesn't need local scenarios/processors - handle early
+        if analysis_type == 'breakeven_curve':
+            return self._run_breakeven_curve()
+
+        # Resolve ratio-based costs if needed (except for sweeps over ratio params)
         if analysis_type == 'sweep' and self._is_ratio_sweep_param(config.analysis.sweep_parameter):
             # Don't resolve yet - sweep will handle resolution per iteration
             self._setup_builder_for_ratio_sweep()
@@ -2428,6 +2461,165 @@ class DeclarativeAnalysisEngine:
             summary=summary,
         )
 
+    def _run_breakeven_curve(self) -> AnalysisResult:
+        """Run breakeven_curve: aggregate breakeven points from multiple sub-configs.
+
+        For each series, runs each referenced config file, extracts the breakeven
+        point from its compare_sweep results, and collects them for plotting.
+        """
+        analysis = self._config.analysis
+        series_specs = analysis.series
+        x_parameter = analysis.x_parameter
+        x_multiplier = analysis.x_display_multiplier
+        breakeven_metric = analysis.breakeven_metric or 'carbon'
+
+        if not series_specs:
+            raise ValueError("breakeven_curve requires 'series' with config paths")
+        if not x_parameter:
+            raise ValueError("breakeven_curve requires 'x_parameter'")
+
+        breakeven_curve_results = []
+
+        for series_spec in series_specs:
+            label = series_spec.get('label', 'unnamed')
+            config_paths = series_spec.get('configs', [])
+            series_points = []
+
+            for config_path_str in config_paths:
+                config_path = Path(config_path_str)
+
+                # Load raw config dict to extract x-value
+                with open(config_path, 'r') as f:
+                    if _HAS_JSON5:
+                        raw_config = json5.load(f)
+                    else:
+                        raw_config = json.load(f)
+
+                x_raw = self._extract_nested_value(raw_config, x_parameter)
+                if x_raw is None:
+                    raise ValueError(
+                        f"Could not extract '{x_parameter}' from {config_path_str}"
+                    )
+                x_display = float(x_raw) * x_multiplier
+
+                # Run sub-analysis
+                sub_engine = DeclarativeAnalysisEngine()
+                sub_result = sub_engine.run_from_file(config_path)
+
+                # Extract breakeven from compare_sweep_results
+                breakeven_value = self._find_breakeven_crossing(
+                    sub_result.compare_sweep_results, breakeven_metric
+                )
+
+                series_points.append({
+                    'x_value': x_display,
+                    'x_raw': float(x_raw),
+                    'breakeven_value': breakeven_value,
+                    'config_path': str(config_path),
+                    'config_name': sub_result.config.name,
+                })
+
+            breakeven_curve_results.append({
+                'label': label,
+                'points': series_points,
+            })
+
+        summary = self._build_breakeven_curve_summary(
+            breakeven_curve_results, analysis
+        )
+
+        return AnalysisResult(
+            config=self._config,
+            analysis_type='breakeven_curve',
+            scenario_results={},
+            comparisons={},
+            breakeven_curve_results=breakeven_curve_results,
+            summary=summary,
+        )
+
+    @staticmethod
+    def _extract_nested_value(data: Dict[str, Any], path: str) -> Any:
+        """Extract a value from a nested dict using dot-notation path."""
+        parts = path.split('.')
+        current = data
+        for part in parts:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return None
+        return current
+
+    @staticmethod
+    def _find_breakeven_crossing(
+        compare_sweep_results: Optional[List[Dict[str, Any]]],
+        metric: str,
+    ) -> Optional[float]:
+        """Find breakeven point (where metric crosses 0%) in compare_sweep results."""
+        if not compare_sweep_results:
+            return None
+
+        metric_key = f'{metric}_diff_pct'
+        x_values = []
+        y_values = []
+
+        for point in compare_sweep_results:
+            x_val = point.get('parameter_value', 0)
+            # Support both single-scenario and multi-scenario formats
+            if metric_key in point:
+                y_val = point[metric_key]
+            elif 'scenarios' in point:
+                # Use first scenario for breakeven
+                scenarios = point['scenarios']
+                first_scenario = next(iter(scenarios.values()), {})
+                y_val = first_scenario.get(metric_key, 0)
+            else:
+                continue
+            x_values.append(x_val)
+            y_values.append(y_val)
+
+        # Linear interpolation to find zero crossing
+        for i in range(len(x_values) - 1):
+            y1, y2 = y_values[i], y_values[i + 1]
+            x1, x2 = x_values[i], x_values[i + 1]
+            if (y1 <= 0 <= y2) or (y2 <= 0 <= y1):
+                if y2 == y1:
+                    return x1
+                t = -y1 / (y2 - y1)
+                return x1 + t * (x2 - x1)
+
+        return None
+
+    @staticmethod
+    def _build_breakeven_curve_summary(
+        results: List[Dict[str, Any]],
+        analysis: 'AnalysisSpec',
+    ) -> str:
+        """Build summary for breakeven_curve analysis."""
+        lines = [
+            f"# Breakeven Curve Analysis",
+            "",
+            f"## Configuration",
+            f"- X Parameter: {analysis.x_parameter}",
+            f"- Display Multiplier: {analysis.x_display_multiplier}",
+            f"- Breakeven Metric: {analysis.breakeven_metric or 'carbon'}",
+            "",
+        ]
+
+        for series in results:
+            label = series['label']
+            points = series['points']
+            lines.append(f"## {label}")
+            lines.append("")
+            lines.append(f"| {analysis.x_label or 'X'} | Breakeven Value |")
+            lines.append("|---|---|")
+            for pt in points:
+                be_val = pt['breakeven_value']
+                be_str = f"{be_val:.4f}" if be_val is not None else "N/A"
+                lines.append(f"| {pt['x_value']:.1f} | {be_str} |")
+            lines.append("")
+
+        return "\n".join(lines)
+
     def _apply_scenario_sweep_value(
         self,
         scenario_name: str,
@@ -2791,7 +2983,8 @@ def is_valid_analysis_config(path: Path) -> bool:
     """
     Check if a file is a valid declarative analysis config.
 
-    A valid config must have 'name', 'scenarios', and 'analysis' keys.
+    A valid config must have 'name' and 'analysis' keys.
+    'scenarios' is required for most types but not for 'breakeven_curve'.
     """
     try:
         with open(path, 'r') as f:
@@ -2799,8 +2992,13 @@ def is_valid_analysis_config(path: Path) -> bool:
                 data = json5.load(f)
             else:
                 data = json.load(f)
-        # Check for required keys
-        return all(key in data for key in ('name', 'scenarios', 'analysis'))
+        if 'name' not in data or 'analysis' not in data:
+            return False
+        # breakeven_curve doesn't require scenarios
+        analysis_type = data.get('analysis', {}).get('type')
+        if analysis_type == 'breakeven_curve':
+            return True
+        return 'scenarios' in data
     except (json.JSONDecodeError, KeyError, OSError):
         return False
     except Exception:
