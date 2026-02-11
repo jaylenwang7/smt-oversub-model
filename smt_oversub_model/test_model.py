@@ -1748,3 +1748,99 @@ class TestPowerBreakdown:
         result = model.evaluate_scenario(ScenarioParams(proc, 1.0))
 
         assert result.power_breakdown is None
+
+
+class TestComponentBreakdownPerVcpu:
+    """Tests for per_vcpu support in ComponentBreakdown."""
+
+    def test_per_vcpu_total_per_server_with_vcpus_set(self):
+        """per_vcpu components scale with vcpus_per_server when set."""
+        bd = ComponentBreakdown(
+            per_core={'cpu': 10.0},
+            per_server={'chassis': 100.0},
+            per_vcpu={'memory': 4.0, 'ssd': 3.0},
+            physical_cores=80, threads_per_core=1,
+            vcpus_per_server=144.0,
+        )
+        # per_vcpu total = (4 + 3) * 144 = 1008
+        assert abs(bd.per_vcpu_total_per_server - 1008.0) < 0.01
+
+    def test_per_vcpu_falls_back_to_hw_threads(self):
+        """per_vcpu uses hw_threads when vcpus_per_server is 0."""
+        bd = ComponentBreakdown(
+            per_vcpu={'memory': 5.0},
+            physical_cores=48, threads_per_core=2,
+            vcpus_per_server=0,
+        )
+        # Falls back to 48 * 2 = 96
+        assert abs(bd.per_vcpu_total_per_server - 480.0) < 0.01
+
+    def test_total_per_server_includes_per_vcpu(self):
+        """total_per_server includes per_core + per_server + per_vcpu."""
+        bd = ComponentBreakdown(
+            per_core={'cpu': 10.0},
+            per_server={'chassis': 200.0},
+            per_vcpu={'memory': 4.0},
+            physical_cores=80, threads_per_core=1,
+            vcpus_per_server=144.0,
+        )
+        # per_core: 10 * 80 = 800
+        # per_server: 200
+        # per_vcpu: 4 * 144 = 576
+        expected = 800.0 + 200.0 + 576.0
+        assert abs(bd.total_per_server - expected) < 0.01
+
+    def test_resolve_preserves_per_vcpu(self):
+        """resolve() carries per_vcpu and vcpus_per_server to new breakdown."""
+        bd = ComponentBreakdown(
+            per_vcpu={'memory': 5.0},
+        )
+        resolved = bd.resolve(80, 1, vcpus_per_server=144.0)
+        assert resolved.per_vcpu == {'memory': 5.0}
+        assert resolved.vcpus_per_server == 144.0
+        assert resolved.physical_cores == 80
+        assert abs(resolved.per_vcpu_total_per_server - 720.0) < 0.01
+
+    def test_empty_per_vcpu_is_zero(self):
+        """Empty per_vcpu contributes zero to total."""
+        bd = ComponentBreakdown(
+            per_core={'cpu': 10.0},
+            per_server={'chassis': 100.0},
+            physical_cores=48, threads_per_core=2,
+        )
+        assert bd.per_vcpu_total_per_server == 0.0
+        # Total unchanged from existing behavior
+        assert abs(bd.total_per_server - (10.0 * 96 + 100.0)) < 0.01
+
+
+class TestEmbodiedBreakdownPerVcpu:
+    """Tests for per_vcpu fleet-level calculations in EmbodiedBreakdown."""
+
+    def test_carbon_fleet_includes_per_vcpu(self):
+        """Fleet carbon includes per_vcpu components."""
+        carbon_bd = ComponentBreakdown(
+            per_core={'cpu': 10.0},
+            per_server={'chassis': 200.0},
+            per_vcpu={'memory': 4.0},
+            physical_cores=80, threads_per_core=1,
+            vcpus_per_server=144.0,
+        )
+        eb = EmbodiedBreakdown(carbon=carbon_bd, num_servers=10)
+        fleet = eb.carbon_fleet_components
+        assert 'per_vcpu.memory' in fleet
+        # 4.0 * 144 * 10 = 5760
+        assert abs(fleet['per_vcpu.memory'] - 5760.0) < 0.01
+
+    def test_cost_fleet_includes_per_vcpu(self):
+        """Fleet cost includes per_vcpu components."""
+        cost_bd = ComponentBreakdown(
+            per_vcpu={'memory': 33.0, 'ssd': 10.0},
+            physical_cores=80, threads_per_core=1,
+            vcpus_per_server=144.0,
+        )
+        eb = EmbodiedBreakdown(cost=cost_bd, num_servers=5)
+        fleet = eb.cost_fleet_components
+        assert 'per_vcpu.memory' in fleet
+        assert 'per_vcpu.ssd' in fleet
+        # memory: 33 * 144 * 5 = 23760
+        assert abs(fleet['per_vcpu.memory'] - 23760.0) < 0.01

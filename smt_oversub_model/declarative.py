@@ -500,6 +500,53 @@ class GeneralizedBreakevenFinder:
 # --- Config Dataclasses ---
 
 @dataclass
+class ResourceScalingConfig:
+    """Configuration for resource scaling with oversubscription.
+
+    When oversubscription packs more vCPUs onto a server than HW threads,
+    some resources (memory, SSD) must scale with actual vCPU count.
+
+    Attributes:
+        scale_with_vcpus: Component names to move from per_core to per_vcpu scaling.
+            These components will use vcpus_per_server as their multiplier instead
+            of hw_threads. Components not found in per_core are silently skipped.
+        per_vcpu_carbon: Custom per-vCPU carbon components (additive, kg CO2e per vCPU).
+        per_vcpu_cost: Custom per-vCPU cost components (additive, USD per vCPU).
+        scale_power: Whether to also scale matching power_breakdown components
+            by the resource scale factor. Defaults to True.
+    """
+    scale_with_vcpus: List[str] = field(default_factory=list)
+    per_vcpu_carbon: Dict[str, float] = field(default_factory=dict)
+    per_vcpu_cost: Dict[str, float] = field(default_factory=dict)
+    scale_power: bool = True
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ResourceScalingConfig':
+        per_vcpu = data.get('per_vcpu', {})
+        return cls(
+            scale_with_vcpus=list(data.get('scale_with_vcpus', [])),
+            per_vcpu_carbon=dict(per_vcpu.get('carbon', {})),
+            per_vcpu_cost=dict(per_vcpu.get('cost', {})),
+            scale_power=data.get('scale_power', True),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {}
+        if self.scale_with_vcpus:
+            d['scale_with_vcpus'] = list(self.scale_with_vcpus)
+        if self.per_vcpu_carbon or self.per_vcpu_cost:
+            per_vcpu: Dict[str, Any] = {}
+            if self.per_vcpu_carbon:
+                per_vcpu['carbon'] = dict(self.per_vcpu_carbon)
+            if self.per_vcpu_cost:
+                per_vcpu['cost'] = dict(self.per_vcpu_cost)
+            d['per_vcpu'] = per_vcpu
+        if not self.scale_power:
+            d['scale_power'] = False
+        return d
+
+
+@dataclass
 class ScenarioConfig:
     """Configuration for a single scenario."""
     processor: str  # "smt" or "nosmt"
@@ -507,15 +554,20 @@ class ScenarioConfig:
     util_overhead: float = 0.0
     vcpu_demand_multiplier: float = 1.0
     overrides: Optional[Dict[str, Any]] = None  # processor param overrides
+    resource_scaling: Optional[ResourceScalingConfig] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ScenarioConfig':
+        resource_scaling = None
+        if 'resource_scaling' in data and isinstance(data['resource_scaling'], dict):
+            resource_scaling = ResourceScalingConfig.from_dict(data['resource_scaling'])
         return cls(
             processor=data.get('processor', 'smt'),
             oversub_ratio=data.get('oversub_ratio', 1.0),
             util_overhead=data.get('util_overhead', 0.0),
             vcpu_demand_multiplier=data.get('vcpu_demand_multiplier', 1.0),
             overrides=data.get('overrides'),
+            resource_scaling=resource_scaling,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -527,6 +579,8 @@ class ScenarioConfig:
         }
         if self.overrides:
             d['overrides'] = self.overrides
+        if self.resource_scaling:
+            d['resource_scaling'] = self.resource_scaling.to_dict()
         return d
 
 
@@ -552,6 +606,7 @@ class AnalysisSpec:
     x_axis_markers: Optional[List[float]] = None  # For line plots: draw vertical lines at these x-values and label intersections
     x_axis_marker_labels: Optional[List[str]] = None  # For line plots: labels for x_axis_markers (same length as x_axis_markers)
     separate_metric_plots: bool = False  # For compare_sweep: generate separate plots for carbon and TCO instead of combined
+    show_ideal_scaling_line: bool = False  # For compare_sweep: show ideal 1/R scaling reference line
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AnalysisSpec':
@@ -575,6 +630,7 @@ class AnalysisSpec:
             x_axis_markers=data.get('x_axis_markers'),
             x_axis_marker_labels=data.get('x_axis_marker_labels'),
             separate_metric_plots=data.get('separate_metric_plots', False),
+            show_ideal_scaling_line=data.get('show_ideal_scaling_line', False),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -615,6 +671,8 @@ class AnalysisSpec:
             d['x_axis_marker_labels'] = self.x_axis_marker_labels
         if self.separate_metric_plots:
             d['separate_metric_plots'] = True
+        if self.show_ideal_scaling_line:
+            d['show_ideal_scaling_line'] = True
         return d
 
 
@@ -1972,6 +2030,33 @@ class DeclarativeAnalysisEngine:
             cost_overrides['server_cost_usd'] = self._config.cost.server_cost.resolve_total(phys, tpc)
             cost_breakdown = self._config.cost.server_cost.to_component_breakdown(phys, tpc)
 
+        # Apply resource scaling if configured
+        if scenario_cfg.resource_scaling:
+            scaling = scenario_cfg.resource_scaling
+            hw_threads = phys * tpc
+            raw_vcpus = params.processor.available_pcpus * params.oversub_ratio
+            # Clamp to at least hw_threads: can't have less than base hardware
+            vcpus_per_server = max(float(hw_threads), raw_vcpus)
+            scale_factor = max(1.0, vcpus_per_server / hw_threads)
+
+            # Scale embodied carbon breakdown
+            if carbon_breakdown is not None:
+                carbon_breakdown = self._apply_resource_scaling_to_breakdown(
+                    carbon_breakdown, scaling.scale_with_vcpus,
+                    scaling.per_vcpu_carbon, vcpus_per_server)
+                cost_overrides['embodied_carbon_kg'] = carbon_breakdown.total_per_server
+
+            # Scale cost breakdown
+            if cost_breakdown is not None:
+                cost_breakdown = self._apply_resource_scaling_to_breakdown(
+                    cost_breakdown, scaling.scale_with_vcpus,
+                    scaling.per_vcpu_cost, vcpus_per_server)
+                cost_overrides['server_cost_usd'] = cost_breakdown.total_per_server
+
+            # Scale power components
+            if scaling.scale_power and scaling.scale_with_vcpus and scale_factor > 1.0:
+                params = self._apply_power_scaling(params, scaling.scale_with_vcpus, scale_factor)
+
         # Attach breakdown metadata if available
         if carbon_breakdown is not None:
             cost_overrides['carbon_breakdown'] = carbon_breakdown
@@ -1980,6 +2065,103 @@ class DeclarativeAnalysisEngine:
 
         result = self._model.evaluate_scenario(params, cost_overrides if cost_overrides else None)
         return params, result
+
+    def _apply_resource_scaling_to_breakdown(
+        self,
+        breakdown: ComponentBreakdown,
+        scale_with_vcpus: List[str],
+        custom_per_vcpu: Dict[str, float],
+        vcpus_per_server: float,
+    ) -> ComponentBreakdown:
+        """Move named components from per_core to per_vcpu and add custom per-vCPU values.
+
+        Components listed in scale_with_vcpus are removed from per_core and placed
+        in per_vcpu so they scale with vcpus_per_server instead of hw_threads.
+        Components not found in per_core are silently skipped.
+
+        Args:
+            breakdown: Original ComponentBreakdown
+            scale_with_vcpus: Component names to move from per_core to per_vcpu
+            custom_per_vcpu: Additional per-vCPU components (additive)
+            vcpus_per_server: Number of vCPUs per server
+
+        Returns:
+            New ComponentBreakdown with per_vcpu scaling applied
+        """
+        new_per_core = dict(breakdown.per_core)
+        new_per_vcpu = dict(breakdown.per_vcpu)
+
+        # Move named components from per_core to per_vcpu
+        for comp_name in scale_with_vcpus:
+            if comp_name in new_per_core:
+                new_per_vcpu[comp_name] = new_per_core.pop(comp_name)
+
+        # Add custom per-vCPU components
+        for comp_name, val in custom_per_vcpu.items():
+            new_per_vcpu[comp_name] = new_per_vcpu.get(comp_name, 0) + val
+
+        return ComponentBreakdown(
+            per_core=new_per_core,
+            per_server=dict(breakdown.per_server),
+            per_vcpu=new_per_vcpu,
+            physical_cores=breakdown.physical_cores,
+            threads_per_core=breakdown.threads_per_core,
+            vcpus_per_server=vcpus_per_server,
+        )
+
+    def _apply_power_scaling(
+        self,
+        params: ScenarioParams,
+        scale_with_vcpus: List[str],
+        scale_factor: float,
+    ) -> ScenarioParams:
+        """Scale power components that match resource-scaled names.
+
+        For matching power_breakdown components, creates new PowerComponentCurve
+        with idle_w and max_w multiplied by scale_factor. Rebuilds composite
+        power curve and returns new ScenarioParams with modified ProcessorConfig.
+
+        Args:
+            params: Original ScenarioParams
+            scale_with_vcpus: Component names to scale
+            scale_factor: Multiplier for matching power components (vcpus/hw_threads)
+
+        Returns:
+            New ScenarioParams with scaled power components
+        """
+        if not params.processor.power_components:
+            return params
+
+        new_components = {}
+        modified = False
+        for name, comp in params.processor.power_components.items():
+            if name in scale_with_vcpus:
+                new_components[name] = PowerComponentCurve(
+                    idle_w=comp.idle_w * scale_factor,
+                    max_w=comp.max_w * scale_factor,
+                    curve_fn=comp.curve_fn,
+                )
+                modified = True
+            else:
+                new_components[name] = comp
+
+        if not modified:
+            return params
+
+        new_power_curve = build_composite_power_curve(new_components)
+        new_processor = ProcessorConfig(
+            physical_cores=params.processor.physical_cores,
+            threads_per_core=params.processor.threads_per_core,
+            power_curve=new_power_curve,
+            core_overhead=params.processor.core_overhead,
+            power_components=new_components,
+        )
+        return ScenarioParams(
+            processor=new_processor,
+            oversub_ratio=params.oversub_ratio,
+            util_overhead=params.util_overhead,
+            vcpu_demand_multiplier=params.vcpu_demand_multiplier,
+        )
 
     def _run_find_breakeven(self) -> AnalysisResult:
         """Run breakeven finding analysis."""

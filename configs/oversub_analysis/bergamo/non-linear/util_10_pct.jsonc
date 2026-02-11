@@ -5,7 +5,7 @@
     "smt_oversub": {
       "processor": "smt",
       "oversub_ratio": 2.34,
-      "util_overhead": 0.05
+      "util_overhead": 0.0
     },
     "nosmt_oversub": {
       "processor": "nosmt",

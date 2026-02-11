@@ -256,15 +256,18 @@ class CostParams:
 
 @dataclass
 class ComponentBreakdown:
-    """Breakdown of per-core and per-server cost/carbon components.
+    """Breakdown of per-core, per-server, and per-vCPU cost/carbon components.
 
     Per-core components scale with total HW threads (physical_cores * threads_per_core).
     Per-server components are flat per server.
+    Per-vCPU components scale with vcpus_per_server (for resource scaling with oversubscription).
     """
     per_core: Dict[str, float] = field(default_factory=dict)
     per_server: Dict[str, float] = field(default_factory=dict)
+    per_vcpu: Dict[str, float] = field(default_factory=dict)
     physical_cores: int = 0
     threads_per_core: int = 1
+    vcpus_per_server: float = 0  # 0 means "not set, fall back to hw_threads for per_vcpu"
 
     @property
     def total_hw_threads(self) -> int:
@@ -279,16 +282,23 @@ class ComponentBreakdown:
         return sum(self.per_server.values())
 
     @property
-    def total_per_server(self) -> float:
-        return self.per_core_total_per_server + self.per_server_total
+    def per_vcpu_total_per_server(self) -> float:
+        multiplier = self.vcpus_per_server if self.vcpus_per_server > 0 else self.total_hw_threads
+        return sum(self.per_vcpu.values()) * multiplier
 
-    def resolve(self, physical_cores: int, threads_per_core: int) -> 'ComponentBreakdown':
+    @property
+    def total_per_server(self) -> float:
+        return self.per_core_total_per_server + self.per_server_total + self.per_vcpu_total_per_server
+
+    def resolve(self, physical_cores: int, threads_per_core: int, vcpus_per_server: float = 0) -> 'ComponentBreakdown':
         """Return a new breakdown with core counts set for computing totals."""
         return ComponentBreakdown(
             per_core=dict(self.per_core),
             per_server=dict(self.per_server),
+            per_vcpu=dict(self.per_vcpu),
             physical_cores=physical_cores,
             threads_per_core=threads_per_core,
+            vcpus_per_server=vcpus_per_server,
         )
 
 
@@ -309,6 +319,9 @@ class EmbodiedBreakdown:
             result[f"per_core.{name}"] = val * self.carbon.total_hw_threads * self.num_servers
         for name, val in self.carbon.per_server.items():
             result[f"per_server.{name}"] = val * self.num_servers
+        vcpu_mult = self.carbon.vcpus_per_server if self.carbon.vcpus_per_server > 0 else self.carbon.total_hw_threads
+        for name, val in self.carbon.per_vcpu.items():
+            result[f"per_vcpu.{name}"] = val * vcpu_mult * self.num_servers
         return result
 
     @property
@@ -321,6 +334,9 @@ class EmbodiedBreakdown:
             result[f"per_core.{name}"] = val * self.cost.total_hw_threads * self.num_servers
         for name, val in self.cost.per_server.items():
             result[f"per_server.{name}"] = val * self.num_servers
+        vcpu_mult = self.cost.vcpus_per_server if self.cost.vcpus_per_server > 0 else self.cost.total_hw_threads
+        for name, val in self.cost.per_vcpu.items():
+            result[f"per_vcpu.{name}"] = val * vcpu_mult * self.num_servers
         return result
 
 

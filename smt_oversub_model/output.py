@@ -357,9 +357,12 @@ class OutputWriter:
                 if carbon_bd:
                     per_core = carbon_bd.get('per_core', {})
                     per_server = carbon_bd.get('per_server', {})
+                    per_vcpu = carbon_bd.get('per_vcpu', {})
                     phys = carbon_bd.get('physical_cores', 0)
                     tpc = carbon_bd.get('threads_per_core', 1)
                     hw_threads = phys * tpc
+                    vcpus = carbon_bd.get('vcpus_per_server', 0)
+                    vcpu_mult = vcpus if vcpus > 0 else hw_threads
                     servers = d.get('servers', 0)
 
                     lines.append(f"    Embodied Carbon:")
@@ -373,16 +376,27 @@ class OutputWriter:
                         comp_fleet = val * servers
                         per_server_total += val
                         lines.append(f"      per_server.{comp}: {val:.1f}/server x {servers} servers = {comp_fleet:,.0f} kg")
-                    total_per_srv = per_core_total + per_server_total
-                    lines.append(f"      Total per server: {total_per_srv:,.0f} kg ({per_core_total:,.0f} per-core + {per_server_total:,.0f} per-server)")
+                    per_vcpu_total = 0.0
+                    for comp, val in per_vcpu.items():
+                        comp_fleet = val * vcpu_mult * servers
+                        per_vcpu_total += val * vcpu_mult
+                        lines.append(f"      per_vcpu.{comp}: {val:.1f}/vCPU x {vcpu_mult:.1f} vCPUs x {servers} servers = {comp_fleet:,.0f} kg")
+                    total_per_srv = per_core_total + per_server_total + per_vcpu_total
+                    parts = [f"{per_core_total:,.0f} per-core", f"{per_server_total:,.0f} per-server"]
+                    if per_vcpu_total > 0:
+                        parts.append(f"{per_vcpu_total:,.0f} per-vCPU")
+                    lines.append(f"      Total per server: {total_per_srv:,.0f} kg ({' + '.join(parts)})")
 
                 cost_bd = d.get('cost_breakdown')
                 if cost_bd:
                     per_core = cost_bd.get('per_core', {})
                     per_server = cost_bd.get('per_server', {})
+                    per_vcpu = cost_bd.get('per_vcpu', {})
                     phys = cost_bd.get('physical_cores', 0)
                     tpc = cost_bd.get('threads_per_core', 1)
                     hw_threads = phys * tpc
+                    vcpus = cost_bd.get('vcpus_per_server', 0)
+                    vcpu_mult = vcpus if vcpus > 0 else hw_threads
                     servers = d.get('servers', 0)
 
                     lines.append(f"    Server Cost:")
@@ -396,8 +410,16 @@ class OutputWriter:
                         comp_fleet = val * servers
                         per_server_total += val
                         lines.append(f"      per_server.{comp}: ${val:.1f}/server x {servers} servers = ${comp_fleet:,.0f}")
-                    total_per_srv = per_core_total + per_server_total
-                    lines.append(f"      Total per server: ${total_per_srv:,.0f} (${per_core_total:,.0f} per-core + ${per_server_total:,.0f} per-server)")
+                    per_vcpu_total = 0.0
+                    for comp, val in per_vcpu.items():
+                        comp_fleet = val * vcpu_mult * servers
+                        per_vcpu_total += val * vcpu_mult
+                        lines.append(f"      per_vcpu.{comp}: ${val:.1f}/vCPU x {vcpu_mult:.1f} vCPUs x {servers} servers = ${comp_fleet:,.0f}")
+                    total_per_srv = per_core_total + per_server_total + per_vcpu_total
+                    parts = [f"${per_core_total:,.0f} per-core", f"${per_server_total:,.0f} per-server"]
+                    if per_vcpu_total > 0:
+                        parts.append(f"${per_vcpu_total:,.0f} per-vCPU")
+                    lines.append(f"      Total per server: ${total_per_srv:,.0f} ({' + '.join(parts)})")
 
                 if not carbon_bd and not cost_bd:
                     lines.append("    (no breakdown data)")

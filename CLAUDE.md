@@ -479,6 +479,56 @@ Output includes:
 - `sweep_scenarios`: List of scenarios for multi-line comparison
 - `show_breakeven_marker`: Show/hide breakeven point markers on plot (default: true)
 - `separate_metric_plots`: Generate separate plots for carbon and TCO instead of a combined plot (default: false)
+- `show_ideal_scaling_line`: Show dotted ideal 1/R scaling reference line on plot (default: false). Ideal savings = `-(1 - 1/R) * 100%`.
+
+### Resource Scaling for vCPU Density
+
+When oversubscription packs more vCPUs onto a server than HW threads, resources like memory and SSD must scale with the actual vCPU count. The `resource_scaling` option on a scenario makes specified components scale with `vcpus_per_server` instead of `hw_threads`.
+
+**Mode 1 — Borrow from per_core** (components use vcpus_per_server as multiplier):
+```json
+{
+  "nosmt_oversub_scaled": {
+    "processor": "nosmt",
+    "oversub_ratio": 2.0,
+    "resource_scaling": {
+      "scale_with_vcpus": ["memory", "ssd"],
+      "scale_power": true
+    }
+  }
+}
+```
+
+**Mode 2 — Custom per-vCPU values** (additive, on top of existing per_core):
+```json
+{
+  "resource_scaling": {
+    "per_vcpu": {
+      "carbon": {"extra_memory": 2.0},
+      "cost": {"extra_memory": 30.0}
+    }
+  }
+}
+```
+
+Both modes can be combined. `scale_power` defaults to `true`.
+
+**Behavior:**
+- `scale_with_vcpus` moves named components from `per_core` to `per_vcpu` (no double-counting). Components not found in `per_core` are silently skipped.
+- `vcpus_per_server = max(hw_threads, available_pcpus * oversub_ratio)` — never below base hardware.
+- `scale_factor = vcpus_per_server / hw_threads` — used for power scaling.
+- When `scale_power` is true (default), matching `power_breakdown` components have their idle_w/max_w multiplied by `scale_factor`. Composite power curve is rebuilt.
+- Backward compatible — all fields have safe defaults. Existing configs unaffected.
+
+**Math example** (Genoa nosmt, 80 cores, 1 tpc, core_overhead=8):
+- `hw_threads = 80`, `available_pcpus = 72`
+- At R=2.0: `vcpus_per_server = max(80, 72 * 2.0) = 144`, `scale_factor = 1.8`
+- CAPEX: memory `per_core=4.43` moves to `per_vcpu` → `4.43 * 144 = 637.9 kg/server` (was `4.43 * 80 = 354.4`)
+- OPEX: memory power `idle=20W, max=66W` scaled by 1.8 → `idle=36W, max=119W`
+
+**Key classes:**
+- `ResourceScalingConfig` (declarative.py): Config-level dataclass with `scale_with_vcpus`, `per_vcpu_carbon`, `per_vcpu_cost`, `scale_power`
+- `ComponentBreakdown` (model.py): Extended with `per_vcpu` dict and `vcpus_per_server` field
 
 **Math (Embodied Anchor)**:
 ```

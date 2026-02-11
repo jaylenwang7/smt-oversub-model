@@ -18,6 +18,7 @@ from .declarative import (
     GeneralizedBreakevenFinder,
     AnalysisConfig,
     ScenarioConfig,
+    ResourceScalingConfig,
     DeclarativeAnalysisEngine,
     run_analysis,
     PowerComponentSpec,
@@ -1099,3 +1100,469 @@ class TestPowerBreakdownEndToEnd:
         # And should equal sum of components
         comp_sum = sum(breakdown['component_power_w'].values())
         assert abs(breakdown['total_power_w'] - comp_sum) < 0.01
+
+
+class TestResourceScaling:
+    """Tests for ResourceScalingConfig and resource scaling in _evaluate_scenario."""
+
+    def test_from_dict_scale_with_vcpus(self):
+        """Parse scale_with_vcpus from config."""
+        data = {'scale_with_vcpus': ['memory', 'ssd']}
+        cfg = ResourceScalingConfig.from_dict(data)
+        assert cfg.scale_with_vcpus == ['memory', 'ssd']
+        assert cfg.scale_power is True
+        assert cfg.per_vcpu_carbon == {}
+        assert cfg.per_vcpu_cost == {}
+
+    def test_from_dict_custom_per_vcpu(self):
+        """Parse custom per-vCPU values."""
+        data = {
+            'per_vcpu': {
+                'carbon': {'extra_memory': 2.0},
+                'cost': {'extra_memory': 30.0},
+            },
+        }
+        cfg = ResourceScalingConfig.from_dict(data)
+        assert cfg.per_vcpu_carbon == {'extra_memory': 2.0}
+        assert cfg.per_vcpu_cost == {'extra_memory': 30.0}
+
+    def test_from_dict_scale_power_false(self):
+        """Parse scale_power: false."""
+        data = {'scale_with_vcpus': ['memory'], 'scale_power': False}
+        cfg = ResourceScalingConfig.from_dict(data)
+        assert cfg.scale_power is False
+
+    def test_to_dict_round_trip(self):
+        """from_dict -> to_dict preserves data."""
+        data = {
+            'scale_with_vcpus': ['memory', 'ssd'],
+            'per_vcpu': {'carbon': {'extra': 1.0}},
+            'scale_power': False,
+        }
+        cfg = ResourceScalingConfig.from_dict(data)
+        d = cfg.to_dict()
+        assert d['scale_with_vcpus'] == ['memory', 'ssd']
+        assert d['per_vcpu']['carbon'] == {'extra': 1.0}
+        assert d['scale_power'] is False
+
+    def test_scenario_config_with_resource_scaling(self):
+        """ScenarioConfig parses resource_scaling field."""
+        data = {
+            'processor': 'nosmt',
+            'oversub_ratio': 2.0,
+            'resource_scaling': {
+                'scale_with_vcpus': ['memory', 'ssd'],
+            },
+        }
+        cfg = ScenarioConfig.from_dict(data)
+        assert cfg.resource_scaling is not None
+        assert cfg.resource_scaling.scale_with_vcpus == ['memory', 'ssd']
+
+    def test_scenario_config_to_dict_with_resource_scaling(self):
+        """ScenarioConfig.to_dict includes resource_scaling."""
+        cfg = ScenarioConfig(
+            processor='nosmt',
+            oversub_ratio=2.0,
+            resource_scaling=ResourceScalingConfig(scale_with_vcpus=['memory']),
+        )
+        d = cfg.to_dict()
+        assert 'resource_scaling' in d
+        assert d['resource_scaling']['scale_with_vcpus'] == ['memory']
+
+    def test_scale_factor_clamped_at_1(self):
+        """At R=1.0, scale_factor should be 1.0 (no downscaling)."""
+        # Genoa nosmt: 80 cores, 1 tpc, core_overhead=8
+        # available_pcpus = 72, at R=1.0: vcpus = 72
+        # hw_threads = 80, scale_factor = max(1.0, 72/80) = 1.0
+        config_data = {
+            'name': 'test_scale_clamp',
+            'scenarios': {
+                'nosmt_r1': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 1.0,
+                    'resource_scaling': {'scale_with_vcpus': ['memory', 'ssd']},
+                },
+                'nosmt_baseline': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 1.0,
+                },
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'nosmt_baseline',
+                'scenarios': ['nosmt_baseline', 'nosmt_r1'],
+            },
+            'processor': {
+                'nosmt': {
+                    'physical_cores': 80,
+                    'threads_per_core': 1,
+                    'power_idle_w': 200,
+                    'power_max_w': 500,
+                    'core_overhead': 8,
+                    'embodied_carbon': {
+                        'per_core': {'memory': 4.43, 'ssd': 3.86},
+                        'per_server': {'cpu': 34.2},
+                    },
+                    'server_cost': {
+                        'per_core': {'memory': 33.0, 'ssd': 10.23},
+                        'per_server': {'cpu': 1487.0},
+                    },
+                },
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+        }
+        engine = DeclarativeAnalysisEngine()
+        config = AnalysisConfig.from_dict(config_data)
+        result = engine.run(config)
+        # Both should produce same embodied carbon since scale_factor <= 1
+        baseline = result.scenario_results['nosmt_baseline']
+        scaled = result.scenario_results['nosmt_r1']
+        assert abs(baseline['embodied_carbon_kg'] - scaled['embodied_carbon_kg']) < 0.01
+
+    def test_borrowed_components_move_to_per_vcpu(self):
+        """scale_with_vcpus moves components from per_core to per_vcpu (no double-counting)."""
+        config_data = {
+            'name': 'test_borrow',
+            'scenarios': {
+                'unscaled': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                },
+                'scaled': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                    'resource_scaling': {'scale_with_vcpus': ['memory']},
+                },
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'unscaled',
+                'scenarios': ['unscaled', 'scaled'],
+            },
+            'processor': {
+                'nosmt': {
+                    'physical_cores': 80,
+                    'threads_per_core': 1,
+                    'power_idle_w': 200,
+                    'power_max_w': 500,
+                    'core_overhead': 8,
+                    'embodied_carbon': {
+                        'per_core': {'memory': 4.43, 'ssd': 3.86},
+                        'per_server': {'cpu': 34.2},
+                    },
+                },
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+        }
+        engine = DeclarativeAnalysisEngine()
+        config = AnalysisConfig.from_dict(config_data)
+        result = engine.run(config)
+        scaled = result.scenario_results['scaled']
+        bd = scaled['embodied_breakdown']['carbon']
+        # memory should be in per_vcpu, not per_core
+        assert 'memory' not in bd['per_core']
+        assert 'memory' in bd['per_vcpu']
+        # ssd should remain in per_core
+        assert 'ssd' in bd['per_core']
+
+    def test_end_to_end_genoa_nosmt_r2(self):
+        """End-to-end math verification for Genoa nosmt at R=2.0 with memory/SSD scaling."""
+        # Genoa nosmt: 80 cores, 1 tpc, core_overhead=8
+        # available_pcpus = 72, at R=2.0: vcpus_per_server = 144
+        # hw_threads = 80, scale_factor = 144/80 = 1.8
+        config_data = {
+            'name': 'test_genoa_r2',
+            'scenarios': {
+                'unscaled': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                },
+                'scaled': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                    'resource_scaling': {'scale_with_vcpus': ['memory', 'ssd']},
+                },
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'unscaled',
+                'scenarios': ['unscaled', 'scaled'],
+            },
+            'processor': {
+                'nosmt': {
+                    'physical_cores': 80,
+                    'threads_per_core': 1,
+                    'power_idle_w': 200,
+                    'power_max_w': 500,
+                    'core_overhead': 8,
+                    'embodied_carbon': {
+                        'per_core': {'memory': 4.43, 'ssd': 3.86},
+                        'per_server': {'cpu': 34.2},
+                    },
+                    'server_cost': {
+                        'per_core': {'memory': 33.0, 'ssd': 10.23},
+                        'per_server': {'cpu': 1487.0},
+                    },
+                },
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+        }
+        engine = DeclarativeAnalysisEngine()
+        config = AnalysisConfig.from_dict(config_data)
+        result = engine.run(config)
+
+        unscaled = result.scenario_results['unscaled']
+        scaled = result.scenario_results['scaled']
+
+        # Both should have same number of servers (same oversub ratio, same processor)
+        assert unscaled['num_servers'] == scaled['num_servers']
+        num_servers = unscaled['num_servers']
+
+        # Verify unscaled embodied carbon per server:
+        # per_core: (4.43 + 3.86) * 80 = 663.2
+        # per_server: 34.2
+        # total: 697.4
+        unscaled_per_server = (4.43 + 3.86) * 80 + 34.2
+        assert abs(unscaled['embodied_carbon_kg'] - unscaled_per_server * num_servers) < 1.0
+
+        # Verify scaled embodied carbon per server:
+        # memory and ssd moved to per_vcpu, multiplied by 144 instead of 80
+        # per_vcpu: (4.43 + 3.86) * 144 = 1193.76
+        # per_server: 34.2
+        # total: 1227.96
+        scaled_per_server = (4.43 + 3.86) * 144 + 34.2
+        assert abs(scaled['embodied_carbon_kg'] - scaled_per_server * num_servers) < 1.0
+
+        # Scaled should be significantly higher
+        assert scaled['embodied_carbon_kg'] > unscaled['embodied_carbon_kg']
+
+    def test_power_scaling_correctness(self):
+        """Power components scale by correct factor with resource scaling."""
+        config_data = {
+            'name': 'test_power_scale',
+            'scenarios': {
+                'unscaled': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                },
+                'scaled': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                    'resource_scaling': {'scale_with_vcpus': ['memory']},
+                },
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'unscaled',
+                'scenarios': ['unscaled', 'scaled'],
+            },
+            'processor': {
+                'nosmt': {
+                    'physical_cores': 80,
+                    'threads_per_core': 1,
+                    'power_idle_w': 200,
+                    'power_max_w': 500,
+                    'core_overhead': 8,
+                    'power_breakdown': {
+                        'cpu': {'idle_w': 94, 'max_w': 315},
+                        'memory': {'idle_w': 20, 'max_w': 66},
+                        'chassis': {'idle_w': 60, 'max_w': 116},
+                    },
+                },
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+        }
+        engine = DeclarativeAnalysisEngine()
+        config = AnalysisConfig.from_dict(config_data)
+        result = engine.run(config)
+
+        unscaled = result.scenario_results['unscaled']
+        scaled = result.scenario_results['scaled']
+
+        # scale_factor = 144/80 = 1.8
+        # Scaled power should be higher because memory power is scaled
+        assert scaled['power_per_server_w'] > unscaled['power_per_server_w']
+
+        # Check power breakdown: memory should be scaled by 1.8
+        unscaled_mem = unscaled['power_breakdown']['component_power_w']['memory']
+        scaled_mem = scaled['power_breakdown']['component_power_w']['memory']
+        # Scale factor = 1.8
+        assert abs(scaled_mem / unscaled_mem - 1.8) < 0.01
+
+        # CPU should be unchanged
+        unscaled_cpu = unscaled['power_breakdown']['component_power_w']['cpu']
+        scaled_cpu = scaled['power_breakdown']['component_power_w']['cpu']
+        assert abs(unscaled_cpu - scaled_cpu) < 0.01
+
+    def test_scale_power_false_disables_power_scaling(self):
+        """scale_power: false prevents power component scaling."""
+        config_data = {
+            'name': 'test_no_power_scale',
+            'scenarios': {
+                'unscaled': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                },
+                'scaled_no_power': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                    'resource_scaling': {
+                        'scale_with_vcpus': ['memory'],
+                        'scale_power': False,
+                    },
+                },
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'unscaled',
+                'scenarios': ['unscaled', 'scaled_no_power'],
+            },
+            'processor': {
+                'nosmt': {
+                    'physical_cores': 80,
+                    'threads_per_core': 1,
+                    'power_idle_w': 200,
+                    'power_max_w': 500,
+                    'core_overhead': 8,
+                    'power_breakdown': {
+                        'cpu': {'idle_w': 94, 'max_w': 315},
+                        'memory': {'idle_w': 20, 'max_w': 66},
+                    },
+                },
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+        }
+        engine = DeclarativeAnalysisEngine()
+        config = AnalysisConfig.from_dict(config_data)
+        result = engine.run(config)
+
+        unscaled = result.scenario_results['unscaled']
+        scaled = result.scenario_results['scaled_no_power']
+
+        # Power should be the same since scale_power is false
+        assert abs(unscaled['power_per_server_w'] - scaled['power_per_server_w']) < 0.01
+
+    def test_custom_per_vcpu_additive(self):
+        """Custom per_vcpu components are additive on top of borrowed."""
+        config_data = {
+            'name': 'test_custom_per_vcpu',
+            'scenarios': {
+                'scaled': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                    'resource_scaling': {
+                        'scale_with_vcpus': ['memory'],
+                        'per_vcpu': {
+                            'carbon': {'extra_cooling': 1.0},
+                        },
+                    },
+                },
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'scaled',
+                'scenarios': ['scaled'],
+            },
+            'processor': {
+                'nosmt': {
+                    'physical_cores': 80,
+                    'threads_per_core': 1,
+                    'power_idle_w': 200,
+                    'power_max_w': 500,
+                    'core_overhead': 8,
+                    'embodied_carbon': {
+                        'per_core': {'memory': 4.0},
+                        'per_server': {'cpu': 30.0},
+                    },
+                },
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+        }
+        engine = DeclarativeAnalysisEngine()
+        config = AnalysisConfig.from_dict(config_data)
+        result = engine.run(config)
+
+        scaled = result.scenario_results['scaled']
+        bd = scaled['embodied_breakdown']['carbon']
+        # memory should be in per_vcpu (moved from per_core)
+        assert 'memory' in bd['per_vcpu']
+        # extra_cooling should also be in per_vcpu
+        assert 'extra_cooling' in bd['per_vcpu']
+        assert abs(bd['per_vcpu']['extra_cooling'] - 1.0) < 0.01
+
+    def test_integration_full_declarative_engine(self, tmp_path):
+        """Integration test: full config dict through DeclarativeAnalysisEngine."""
+        config_data = {
+            'name': 'resource_scaling_integration',
+            'scenarios': {
+                'baseline': {'processor': 'smt', 'oversub_ratio': 1.0},
+                'nosmt_unscaled': {'processor': 'nosmt', 'oversub_ratio': 2.0},
+                'nosmt_scaled': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                    'resource_scaling': {
+                        'scale_with_vcpus': ['memory', 'ssd'],
+                    },
+                },
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'baseline',
+                'scenarios': ['baseline', 'nosmt_unscaled', 'nosmt_scaled'],
+            },
+            'processor': {
+                'smt': {
+                    'physical_cores': 48, 'threads_per_core': 2,
+                    'power_idle_w': 100, 'power_max_w': 400,
+                    'core_overhead': 4,
+                    'embodied_carbon': {
+                        'per_core': {'memory': 5.0, 'ssd': 3.0},
+                        'per_server': {'cpu': 50.0},
+                    },
+                    'server_cost': {
+                        'per_core': {'memory': 30.0, 'ssd': 10.0},
+                        'per_server': {'cpu': 1500.0},
+                    },
+                },
+                'nosmt': {
+                    'physical_cores': 48, 'threads_per_core': 1,
+                    'power_idle_w': 90, 'power_max_w': 340,
+                    'core_overhead': 4,
+                    'embodied_carbon': {
+                        'per_core': {'memory': 5.0, 'ssd': 3.0},
+                        'per_server': {'cpu': 50.0},
+                    },
+                    'server_cost': {
+                        'per_core': {'memory': 30.0, 'ssd': 10.0},
+                        'per_server': {'cpu': 1500.0},
+                    },
+                },
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+            'cost': {
+                'carbon_intensity_g_kwh': 400,
+                'electricity_cost_usd_kwh': 0.10,
+                'lifetime_years': 5,
+            },
+        }
+
+        config_file = tmp_path / 'config.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+
+        # All three scenarios should exist
+        assert 'baseline' in result.scenario_results
+        assert 'nosmt_unscaled' in result.scenario_results
+        assert 'nosmt_scaled' in result.scenario_results
+
+        unscaled = result.scenario_results['nosmt_unscaled']
+        scaled = result.scenario_results['nosmt_scaled']
+
+        # Scaled should have higher embodied carbon (memory/ssd scale with vCPUs)
+        assert scaled['embodied_carbon_kg'] > unscaled['embodied_carbon_kg']
+        # Scaled should have higher embodied cost
+        assert scaled['embodied_cost_usd'] > unscaled['embodied_cost_usd']
+        # Both should have same server count
+        assert scaled['num_servers'] == unscaled['num_servers']

@@ -1,0 +1,48 @@
+{
+  "name": "genoa_nosmt_oversub_sweep_resource_scaling",
+  "description": "Genoa No-SMT: sweep oversub ratio with ideal scaling line. Compare fixed vs scaled memory/SSD resources.",
+  "scenarios": {
+    "nosmt_no_oversub": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.0
+    },
+    "nosmt_oversub_unscaled": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.0
+    },
+    "nosmt_oversub_scaled": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.0,
+      "resource_scaling": {
+        "scale_with_vcpus": ["memory", "ssd"]
+      }
+    }
+  },
+  "analysis": {
+    "type": "compare_sweep",
+    "baseline": "nosmt_no_oversub",
+    "sweep_scenarios": ["nosmt_oversub_unscaled", "nosmt_oversub_scaled"],
+    "sweep_parameter": "oversub_ratio",
+    "sweep_values": [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0],
+    "show_ideal_scaling_line": true,
+    "show_breakeven_marker": false,
+    "separate_metric_plots": true,
+    "labels": {
+      "nosmt_oversub_unscaled": "No-SMT (fixed resources)",
+      "nosmt_oversub_scaled": "No-SMT (scaled mem/SSD)"
+    }
+  },
+  "processor": {
+    "nosmt": "configs/shared/genoa_processors.jsonc:genoa_nosmt"
+  },
+  "workload": {
+    "total_vcpus": 10000,
+    "avg_util": 0.3
+  },
+  "cost": {
+    "carbon_intensity_g_kwh": 175,
+    "electricity_cost_usd_kwh": 0.28,
+    "lifetime_years": 6
+  },
+  "power_curve": { "type": "polynomial" }
+}

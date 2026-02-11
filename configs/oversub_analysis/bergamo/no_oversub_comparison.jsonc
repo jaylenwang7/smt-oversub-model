@@ -1,0 +1,47 @@
+{
+  "name": "no_oversub_comparison",
+  "description": "Comparison of SMT vs no-SMT (polynomial curve) vs no-SMT (linear curve), all with no oversubscription.",
+  "scenarios": {
+    "smt_no_oversub": {
+      "processor": "smt",
+      "oversub_ratio": 1.0
+    },
+    "nosmt_no_oversub": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.0
+    },
+    "nosmt_linear_no_oversub": {
+      "processor": "nosmt_linear",
+      "oversub_ratio": 1.0
+    }
+  },
+  "workload": {
+    "total_vcpus": 10000,
+    "avg_util": 0.1
+  },
+  "analysis": {
+    "type": "compare",
+    "baseline": "smt_no_oversub",
+    "scenarios": ["smt_no_oversub", "nosmt_no_oversub", "nosmt_linear_no_oversub"],
+    "labels": {
+      "smt_no_oversub": "SMT (R=1.0)",
+      "nosmt_no_oversub": "No-SMT (R=1.0)",
+      "nosmt_linear_no_oversub": "No-SMT Linear (R=1.0)"
+    },
+    "show_plot_title": false
+  },
+  "processor": {
+    "smt": "configs/shared/bergamo_processors.jsonc:bergamo_smt",
+    "nosmt": "configs/shared/bergamo_processors.jsonc:bergamo_nosmt",
+    "nosmt_linear": "configs/shared/bergamo_processors.jsonc:bergamo_nosmt_linear"
+  },
+  "cost": {
+    "carbon_intensity_g_kwh": 175,
+    "electricity_cost_usd_kwh": 0.28,
+    "lifetime_years": 6
+  },
+  "power_curve": {
+    "type": "polynomial"
+  },
+  "output_dir": "./results/oversub_analysis/bergamo/no_oversub_comparison"
+}

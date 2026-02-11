@@ -939,6 +939,19 @@ def plot_compare_sweep(
                            markeredgecolor='white', markeredgewidth=2, zorder=15)
                     breakeven_points.append((breakeven_x, scenario_label, metric_name, color))
 
+    # Ideal scaling reference line (1/R): shows theoretical max server savings
+    show_ideal_scaling_line = False
+    if hasattr(result, 'config') and hasattr(result.config, 'analysis'):
+        show_ideal_scaling_line = result.config.analysis.show_ideal_scaling_line
+    elif isinstance(result, dict) and 'config' in result:
+        analysis_cfg = result['config'].get('analysis', {})
+        show_ideal_scaling_line = analysis_cfg.get('show_ideal_scaling_line', False)
+
+    if show_ideal_scaling_line and param_values:
+        ideal_y = [-(1 - 1/R) * 100 if R > 0 else 0 for R in param_values]
+        ax.plot(param_values, ideal_y, '--', color='#888888', linewidth=1.5,
+                alpha=0.7, label='Ideal (1/R scaling)', zorder=5)
+
     # Reference line at 0%
     ax.axhline(0, color='black', linestyle='-', alpha=0.3, linewidth=1.5,
                label='Baseline (0%)')
