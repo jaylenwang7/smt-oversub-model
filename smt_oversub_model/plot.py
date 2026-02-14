@@ -1179,6 +1179,34 @@ def plot_breakeven_curve(
             ax.plot(x_vals, y_vals, f'{marker}-', linewidth=2, markersize=8,
                     color=color, label=label)
 
+    # Draw y-axis markers (horizontal reference lines)
+    y_axis_markers = None
+    y_axis_marker_labels = None
+    if hasattr(result, 'config') and hasattr(result.config, 'analysis'):
+        y_axis_markers = result.config.analysis.y_axis_markers
+        y_axis_marker_labels = result.config.analysis.y_axis_marker_labels
+    elif isinstance(result, dict) and 'config' in result:
+        analysis_cfg = result['config'].get('analysis', {})
+        y_axis_markers = analysis_cfg.get('y_axis_markers')
+        y_axis_marker_labels = analysis_cfg.get('y_axis_marker_labels')
+
+    if y_axis_markers:
+        for marker_idx, marker_y in enumerate(y_axis_markers):
+            ax.axhline(marker_y, color='gray', linestyle='--', alpha=0.5,
+                       linewidth=1.5, zorder=1)
+            if y_axis_marker_labels and marker_idx < len(y_axis_marker_labels):
+                marker_label = y_axis_marker_labels[marker_idx]
+                ax.annotate(
+                    marker_label,
+                    xy=(1.0, marker_y),
+                    xycoords=('axes fraction', 'data'),
+                    xytext=(5, 0), textcoords='offset points',
+                    fontsize=9, color='#555555', fontweight='bold',
+                    ha='left', va='center',
+                    bbox=dict(boxstyle='round,pad=0.2', facecolor='white',
+                              edgecolor='gray', alpha=0.9),
+                )
+
     ax.set_xlabel(x_label or 'Parameter', fontsize=11)
     ax.set_ylabel(y_label or 'Breakeven Value', fontsize=11)
     ax.legend(loc='best', frameon=True, fontsize=9)

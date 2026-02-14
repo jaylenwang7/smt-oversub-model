@@ -614,6 +614,8 @@ class AnalysisSpec:
     breakeven_metric: Optional[str] = None  # Which metric's breakeven to extract: "carbon" or "tco"
     x_label: Optional[str] = None  # Custom x-axis label
     y_label: Optional[str] = None  # Custom y-axis label
+    y_axis_markers: Optional[List[float]] = None  # For breakeven_curve: draw horizontal lines at these y-values
+    y_axis_marker_labels: Optional[List[str]] = None  # Labels for y_axis_markers (same length)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AnalysisSpec':
@@ -644,6 +646,8 @@ class AnalysisSpec:
             breakeven_metric=data.get('breakeven_metric'),
             x_label=data.get('x_label'),
             y_label=data.get('y_label'),
+            y_axis_markers=data.get('y_axis_markers'),
+            y_axis_marker_labels=data.get('y_axis_marker_labels'),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -698,6 +702,10 @@ class AnalysisSpec:
             d['x_label'] = self.x_label
         if self.y_label:
             d['y_label'] = self.y_label
+        if self.y_axis_markers:
+            d['y_axis_markers'] = self.y_axis_markers
+        if self.y_axis_marker_labels:
+            d['y_axis_marker_labels'] = self.y_axis_marker_labels
         return d
 
 

@@ -1,21 +1,27 @@
 {
-  "name": "util_20pct_smt_vs_nosmt_linear_oversub",
-  "description": "At 20% utilization: Compare SMT (R=1.3) vs No-SMT Linear (R=2.0) while sweeping vCPU demand discount for No-SMT",
+  "name": "util_40pct_smt_vs_nosmt_linear_oversub_resource_scaling",
+  "description": "At 40% utilization: Compare SMT (R=1.0) vs No-SMT Linear (R=1.2) with scaled memory/SSD, sweeping vCPU demand discount",
   "scenarios": {
     "smt_oversub": {
       "processor": "smt",
-      "oversub_ratio": 1.33,
-      "util_overhead": 0.0
+      "oversub_ratio": 1.0,
+      "util_overhead": 0.0,
+      "resource_scaling": {
+        "scale_with_vcpus": ["memory", "ssd"]
+      }
     },
     "nosmt_oversub": {
       "processor": "nosmt_linear",
-      "oversub_ratio": 2.34,
-      "vcpu_demand_multiplier": 1.0
+      "oversub_ratio": 1.6,
+      "vcpu_demand_multiplier": 1.0,
+      "resource_scaling": {
+        "scale_with_vcpus": ["memory", "ssd"]
+      }
     }
   },
   "workload": {
     "total_vcpus": 10000,
-    "avg_util": 0.2
+    "avg_util": 0.4
   },
   "analysis": {
     "type": "compare_sweep",
@@ -23,15 +29,15 @@
     "sweep_scenario": "nosmt_oversub",
     "sweep_parameter": "vcpu_demand_multiplier",
     "sweep_parameter_label": "vCPU Demand Discount",
-    "sweep_values": [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2],
+    "sweep_values": [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0],
     "show_breakeven_marker": true,
     "separate_metric_plots": true,
     "show_plot_title": false,
     "x_axis_markers": [0.65, 0.75, 0.85],
     "x_axis_marker_labels": ["low", "geomean", "high"],
     "labels": {
-      "smt_oversub": "SMT (R=1.3, 25% oversub)",
-      "nosmt_oversub": "No-SMT Linear (R=2.34, 57.7% oversub)"
+      "smt_oversub": "SMT (R=1.0, 0% oversub, scaled)",
+      "nosmt_oversub": "No-SMT Linear (R=1.6, 37.5% oversub, scaled)"
     }
   },
   "processor": {
@@ -46,5 +52,5 @@
   "power_curve": {
     "type": "polynomial"
   },
-  "output_dir": "./results/oversub_analysis/genoa/linear/util_20pct_linear"
+  "output_dir": "./results/oversub_analysis/genoa/linear/util_40pct_linear_resource_scaling"
 }
