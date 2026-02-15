@@ -9,7 +9,7 @@
     },
     "nosmt_oversub": {
       "processor": "nosmt_linear",
-      "oversub_ratio": 3.0,
+      "oversub_ratio": 5.0,
       "vcpu_demand_multiplier": 1.0
     }
   },
@@ -31,7 +31,7 @@
     "x_axis_marker_labels": ["low", "geomean", "high"],
     "labels": {
       "smt_oversub": "SMT (R=2.34, 57.7% oversub)",
-      "nosmt_oversub": "No-SMT Linear (R=3.0, 66.7% oversub)"
+      "nosmt_oversub": "No-SMT Linear (R=5.0, 80.0% oversub)"
     }
   },
   "processor": {

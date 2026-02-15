@@ -1,0 +1,46 @@
+{
+  "name": "smt_vs_nosmt_breakeven_tco",
+  "description": "Find the vCPU demand discount for No-SMT (polynomial curve) to match SMT TCO, both with no oversubscription.",
+  "scenarios": {
+    "smt_no_oversub": {
+      "processor": "smt",
+      "oversub_ratio": 1.0
+    },
+    "nosmt_no_oversub": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.0,
+      "vcpu_demand_multiplier": 1.0
+    }
+  },
+  "workload": {
+    "total_vcpus": 10000,
+    "avg_util": 0.1
+  },
+  "analysis": {
+    "type": "find_breakeven",
+    "baseline": "smt_no_oversub",
+    "reference": "smt_no_oversub",
+    "target": "nosmt_no_oversub",
+    "vary_parameter": "vcpu_demand_multiplier",
+    "match_metric": "tco",
+    "search_bounds": [0.3, 1.0],
+    "labels": {
+      "smt_no_oversub": "SMT (R=1.0)",
+      "nosmt_no_oversub": "No-SMT Polynomial (R=1.0)"
+    },
+    "show_plot_title": false
+  },
+  "processor": {
+    "smt": "configs/shared/genoa_processors.jsonc:genoa_smt",
+    "nosmt": "configs/shared/genoa_processors.jsonc:genoa_nosmt"
+  },
+  "cost": {
+    "carbon_intensity_g_kwh": 175,
+    "electricity_cost_usd_kwh": 0.28,
+    "lifetime_years": 6
+  },
+  "power_curve": {
+    "type": "polynomial"
+  },
+  "output_dir": "./results/oversub_analysis/genoa/linear/smt_vs_nosmt_breakeven_tco"
+}

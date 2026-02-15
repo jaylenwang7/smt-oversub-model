@@ -494,6 +494,8 @@ class OutputWriter:
             self._plot_compare_sweep(result, plots_dir)
         elif result.analysis_type == 'breakeven_curve':
             self._plot_breakeven_curve(result, plots_dir)
+        elif result.analysis_type == 'savings_curve':
+            self._plot_savings_curve(result, plots_dir)
 
     def _plot_comparison(
         self,
@@ -525,6 +527,7 @@ class OutputWriter:
         if not scenarios:
             return
 
+        # Always generate combined plot
         save_path = plots_dir / 'comparison.png'
         plot_scenarios(
             scenarios,
@@ -534,6 +537,24 @@ class OutputWriter:
             title=f"Scenario Comparison: {result.config.name}",
             show_plot_title=show_plot_title,
         )
+
+        # Generate separate metric plots if requested
+        separate_metrics = False
+        if hasattr(result.config, 'analysis') and result.config.analysis.separate_metric_plots:
+            separate_metrics = True
+
+        if separate_metrics:
+            for metric_name, filename_suffix in [('carbon', 'carbon'), ('tco', 'TCO')]:
+                metric_save_path = plots_dir / f'comparison_{filename_suffix}.png'
+                plot_scenarios(
+                    scenarios,
+                    baseline_idx=0,
+                    save_path=str(metric_save_path),
+                    show=False,
+                    title=f"Scenario Comparison: {result.config.name}",
+                    show_plot_title=show_plot_title,
+                    metric=metric_name,
+                )
 
     def _plot_breakeven(
         self,
@@ -684,6 +705,41 @@ class OutputWriter:
             save_path=str(save_path),
             show=False,
         )
+
+    def _plot_savings_curve(
+        self,
+        result: 'AnalysisResult',
+        plots_dir: Path,
+    ) -> None:
+        """Generate savings curve plots: combined and separate per-metric."""
+        if not result.savings_curve_results:
+            return
+
+        try:
+            from .plot import plot_savings_curve
+        except ImportError:
+            return
+
+        # Combined plot
+        save_path = plots_dir / 'savings_curve.png'
+        plot_savings_curve(
+            result,
+            save_path=str(save_path),
+            show=False,
+        )
+
+        # Separate per-metric plots
+        metrics = ['carbon', 'tco']
+        if hasattr(result.config, 'analysis') and result.config.analysis.metrics:
+            metrics = result.config.analysis.metrics
+        for m in metrics:
+            save_path = plots_dir / f'savings_curve_{m}.png'
+            plot_savings_curve(
+                result,
+                save_path=str(save_path),
+                show=False,
+                metric=m,
+            )
 
 
 def save_result(result: 'AnalysisResult', output_dir: str) -> None:

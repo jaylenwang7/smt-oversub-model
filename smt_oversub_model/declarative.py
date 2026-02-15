@@ -390,6 +390,7 @@ class GeneralizedBreakevenFinder:
         match_condition: Union[SimpleCondition, CompoundCondition],
         search_bounds: Tuple[float, float],
         tolerance: float = 0.001,
+        cost_overrides: Optional[Dict[str, Any]] = None,
     ) -> BreakevenResult:
         """
         Binary search to find parameter value where target matches reference.
@@ -401,6 +402,7 @@ class GeneralizedBreakevenFinder:
             match_condition: Condition(s) to satisfy
             search_bounds: (low, high) bounds for search
             tolerance: Convergence tolerance
+            cost_overrides: Per-processor cost overrides (embodied_carbon_kg, server_cost_usd, etc.)
 
         Returns:
             BreakevenResult with breakeven value and search history
@@ -420,7 +422,7 @@ class GeneralizedBreakevenFinder:
         def evaluate_at(value: float) -> Tuple[ScenarioResult, float]:
             """Evaluate scenario at given parameter value."""
             modified = param_path.set(base_scenario, value)
-            result = self.model.evaluate_scenario(modified)
+            result = self.model.evaluate_scenario(modified, cost_overrides)
             error = get_error(result, reference_result)
             return result, error
 
@@ -587,7 +589,7 @@ class ScenarioConfig:
 @dataclass
 class AnalysisSpec:
     """Specification for the analysis to perform."""
-    type: str  # "find_breakeven", "compare", "sweep", "compare_sweep", "breakeven_curve"
+    type: str  # "find_breakeven", "compare", "sweep", "compare_sweep", "breakeven_curve", "savings_curve"
     baseline: Optional[str] = None
     reference: Optional[str] = None
     target: Optional[str] = None
@@ -615,7 +617,12 @@ class AnalysisSpec:
     x_label: Optional[str] = None  # Custom x-axis label
     y_label: Optional[str] = None  # Custom y-axis label
     y_axis_markers: Optional[List[float]] = None  # For breakeven_curve: draw horizontal lines at these y-values
-    y_axis_marker_labels: Optional[List[str]] = None  # Labels for y_axis_markers (same length)
+    y_axis_marker_labels: Optional[List[str]] = None  # Labels for y_axis_markers
+    # For "savings_curve": extract savings at specific marker values from compare_sweep sub-configs
+    configs: Optional[List[str]] = None  # List of config file paths (for savings_curve)
+    marker_values: Optional[List[float]] = None  # Sweep parameter values to extract savings at
+    marker_labels: Optional[List[str]] = None  # Display labels for marker_values
+    metrics: Optional[List[str]] = None  # Metrics to extract: ["carbon", "tco"] (same length)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AnalysisSpec':
@@ -648,6 +655,10 @@ class AnalysisSpec:
             y_label=data.get('y_label'),
             y_axis_markers=data.get('y_axis_markers'),
             y_axis_marker_labels=data.get('y_axis_marker_labels'),
+            configs=data.get('configs'),
+            marker_values=data.get('marker_values'),
+            marker_labels=data.get('marker_labels'),
+            metrics=data.get('metrics'),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -706,6 +717,14 @@ class AnalysisSpec:
             d['y_axis_markers'] = self.y_axis_markers
         if self.y_axis_marker_labels:
             d['y_axis_marker_labels'] = self.y_axis_marker_labels
+        if self.configs:
+            d['configs'] = self.configs
+        if self.marker_values:
+            d['marker_values'] = self.marker_values
+        if self.marker_labels:
+            d['marker_labels'] = self.marker_labels
+        if self.metrics:
+            d['metrics'] = self.metrics
         return d
 
 
@@ -1709,6 +1728,7 @@ class AnalysisResult:
     sweep_results: Optional[List[Dict[str, Any]]] = None
     compare_sweep_results: Optional[List[Dict[str, Any]]] = None  # For compare_sweep analysis
     breakeven_curve_results: Optional[List[Dict[str, Any]]] = None  # For breakeven_curve analysis
+    savings_curve_results: Optional[List[Dict[str, Any]]] = None  # For savings_curve analysis
     summary: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1737,6 +1757,8 @@ class AnalysisResult:
             result['compare_sweep_results'] = self.compare_sweep_results
         if self.breakeven_curve_results:
             result['breakeven_curve_results'] = self.breakeven_curve_results
+        if self.savings_curve_results:
+            result['savings_curve_results'] = self.savings_curve_results
         return result
 
 
@@ -1771,9 +1793,11 @@ class DeclarativeAnalysisEngine:
 
         analysis_type = config.analysis.type
 
-        # breakeven_curve doesn't need local scenarios/processors - handle early
+        # Meta-analyses don't need local scenarios/processors - handle early
         if analysis_type == 'breakeven_curve':
             return self._run_breakeven_curve()
+        if analysis_type == 'savings_curve':
+            return self._run_savings_curve()
 
         # Resolve ratio-based costs if needed (except for sweeps over ratio params)
         if analysis_type == 'sweep' and self._is_ratio_sweep_param(config.analysis.sweep_parameter):
@@ -2031,23 +2055,24 @@ class DeclarativeAnalysisEngine:
             vcpu_demand_multiplier=scenario_cfg.vcpu_demand_multiplier,
         )
 
-    def _evaluate_scenario(self, name: str) -> Tuple[ScenarioParams, ScenarioResult]:
-        """Evaluate a scenario by name and return params and result.
+    def _resolve_scenario_cost_overrides(self, name: str) -> Tuple[Dict[str, Any], Optional['ScenarioParams']]:
+        """Resolve per-processor cost overrides for a scenario.
 
-        Resolves embodied carbon and server cost using priority chain:
-        1. Processor-level structured (embodied_carbon: {per_core, per_server})
-        2. Processor-level flat (embodied_carbon_kg)
-        3. Global cost structured (cost.embodied_carbon: {...})
-        4. Global cost flat (cost.embodied_carbon_kg) - already in model defaults
+        Returns a tuple of (cost_overrides, modified_params). The cost_overrides dict
+        contains embodied_carbon_kg, server_cost_usd, and breakdowns. modified_params
+        is non-None only when resource_scaling modifies the power curve.
+
+        This is the single source of truth for cost resolution, used by both
+        _evaluate_scenario() and the breakeven finder.
         """
         scenario_cfg = self._config.scenarios[name]
         params = self._build_scenario_params(scenario_cfg)
-
         proc_name = scenario_cfg.processor
         proc_spec = self._processor_config.get(proc_name)
         phys = params.processor.physical_cores
         tpc = params.processor.threads_per_core
-        cost_overrides = {}
+        cost_overrides: Dict[str, Any] = {}
+        modified_params = None
 
         # Resolve embodied carbon: structured > flat > global structured > global flat
         carbon_breakdown = None
@@ -2097,12 +2122,33 @@ class DeclarativeAnalysisEngine:
             # Scale power components
             if scaling.scale_power and scaling.scale_with_vcpus and scale_factor > 1.0:
                 params = self._apply_power_scaling(params, scaling.scale_with_vcpus, scale_factor)
+                modified_params = params
 
         # Attach breakdown metadata if available
         if carbon_breakdown is not None:
             cost_overrides['carbon_breakdown'] = carbon_breakdown
         if cost_breakdown is not None:
             cost_overrides['cost_breakdown'] = cost_breakdown
+
+        return cost_overrides, modified_params
+
+    def _evaluate_scenario(self, name: str) -> Tuple[ScenarioParams, ScenarioResult]:
+        """Evaluate a scenario by name and return params and result.
+
+        Resolves embodied carbon and server cost using priority chain:
+        1. Processor-level structured (embodied_carbon: {per_core, per_server})
+        2. Processor-level flat (embodied_carbon_kg)
+        3. Global cost structured (cost.embodied_carbon: {...})
+        4. Global cost flat (cost.embodied_carbon_kg) - already in model defaults
+        """
+        cost_overrides, modified_params = self._resolve_scenario_cost_overrides(name)
+
+        # Use modified params (from resource scaling) or build fresh
+        if modified_params is not None:
+            params = modified_params
+        else:
+            scenario_cfg = self._config.scenarios[name]
+            params = self._build_scenario_params(scenario_cfg)
 
         result = self._model.evaluate_scenario(params, cost_overrides if cost_overrides else None)
         return params, result
@@ -2225,6 +2271,11 @@ class DeclarativeAnalysisEngine:
         else:
             condition = SimpleCondition(metric='carbon', match_type=MatchType.EQUAL)
 
+        # Resolve per-processor cost overrides for the target scenario
+        target_cost_overrides, modified_target_params = self._resolve_scenario_cost_overrides(analysis.target)
+        if modified_target_params is not None:
+            target_params = modified_target_params
+
         # Run breakeven search
         finder = GeneralizedBreakevenFinder(self._model)
         bounds = tuple(analysis.search_bounds or [1.0, 10.0])
@@ -2234,6 +2285,7 @@ class DeclarativeAnalysisEngine:
             vary_parameter=analysis.vary_parameter,
             match_condition=condition,
             search_bounds=bounds,
+            cost_overrides=target_cost_overrides if target_cost_overrides else None,
         )
 
         # Collect results
@@ -2325,6 +2377,11 @@ class DeclarativeAnalysisEngine:
             else:
                 condition = CompoundCondition.from_dict(match_metric)
 
+            # Resolve per-processor cost overrides for the target scenario
+            target_cost_overrides, modified_target_params = self._resolve_scenario_cost_overrides(analysis.target)
+            if modified_target_params is not None:
+                target_params = modified_target_params
+
             finder = GeneralizedBreakevenFinder(self._model)
             bounds = tuple(analysis.search_bounds or [1.0, 10.0])
             be_result = finder.find_breakeven(
@@ -2333,6 +2390,7 @@ class DeclarativeAnalysisEngine:
                 vary_parameter=analysis.vary_parameter,
                 match_condition=condition,
                 search_bounds=bounds,
+                cost_overrides=target_cost_overrides if target_cost_overrides else None,
             )
 
             sweep_results.append({
@@ -2624,6 +2682,180 @@ class DeclarativeAnalysisEngine:
                 be_val = pt['breakeven_value']
                 be_str = f"{be_val:.4f}" if be_val is not None else "N/A"
                 lines.append(f"| {pt['x_value']:.1f} | {be_str} |")
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _run_savings_curve(self) -> AnalysisResult:
+        """Run savings_curve: extract savings at specific marker values across sub-configs.
+
+        For each sub-config (a compare_sweep analysis), runs the analysis, then
+        interpolates the % diff at each marker value. Produces data for plotting
+        savings vs a parameter (e.g., utilization) with one line per marker value.
+        """
+        analysis = self._config.analysis
+        config_paths = analysis.configs
+        x_parameter = analysis.x_parameter
+        x_multiplier = analysis.x_display_multiplier
+        marker_values = analysis.marker_values or []
+        marker_labels = analysis.marker_labels or [str(v) for v in marker_values]
+        metrics = analysis.metrics or ['carbon', 'tco']
+
+        if not config_paths:
+            raise ValueError("savings_curve requires 'configs' with config file paths")
+        if not x_parameter:
+            raise ValueError("savings_curve requires 'x_parameter'")
+        if not marker_values:
+            raise ValueError("savings_curve requires 'marker_values'")
+
+        # For each marker value, collect points across all configs
+        savings_curve_results = []
+        for i, (mv, ml) in enumerate(zip(marker_values, marker_labels)):
+            savings_curve_results.append({
+                'label': f"{ml} ({mv})",
+                'marker_value': mv,
+                'points': [],
+            })
+
+        for config_path_str in config_paths:
+            config_path = Path(config_path_str)
+
+            # Load raw config to extract x-value
+            with open(config_path, 'r') as f:
+                if _HAS_JSON5:
+                    raw_config = json5.load(f)
+                else:
+                    raw_config = json.load(f)
+
+            x_raw = self._extract_nested_value(raw_config, x_parameter)
+            if x_raw is None:
+                raise ValueError(
+                    f"Could not extract '{x_parameter}' from {config_path_str}"
+                )
+            x_display = float(x_raw) * x_multiplier
+
+            # Run sub-analysis
+            sub_engine = DeclarativeAnalysisEngine()
+            sub_result = sub_engine.run_from_file(config_path)
+
+            if not sub_result.compare_sweep_results:
+                raise ValueError(
+                    f"Sub-config {config_path_str} did not produce compare_sweep_results"
+                )
+
+            # For each marker value, interpolate the savings at that sweep parameter value
+            for i, mv in enumerate(marker_values):
+                point = {
+                    'x_value': x_display,
+                    'x_raw': float(x_raw),
+                    'config_path': str(config_path),
+                }
+                for metric in metrics:
+                    key = f'{metric}_diff_pct'
+                    value = self._interpolate_metric_at_value(
+                        sub_result.compare_sweep_results, key, mv
+                    )
+                    point[key] = value
+                savings_curve_results[i]['points'].append(point)
+
+        summary = self._build_savings_curve_summary(
+            savings_curve_results, analysis, metrics
+        )
+
+        return AnalysisResult(
+            config=self._config,
+            analysis_type='savings_curve',
+            scenario_results={},
+            comparisons={},
+            savings_curve_results=savings_curve_results,
+            summary=summary,
+        )
+
+    @staticmethod
+    def _interpolate_metric_at_value(
+        compare_sweep_results: List[Dict[str, Any]],
+        metric_key: str,
+        target_value: float,
+    ) -> Optional[float]:
+        """Interpolate a metric value at a specific sweep parameter value.
+
+        Uses linear interpolation between adjacent sweep points.
+        Returns None if the target is outside the sweep range.
+        """
+        # Build sorted list of (param_value, metric_value) pairs
+        points = []
+        for entry in compare_sweep_results:
+            pv = entry['parameter_value']
+            # Try top-level key first (single-scenario backward compat)
+            mv = entry.get(metric_key)
+            if mv is None:
+                # Try first scenario in scenarios dict
+                scenarios = entry.get('scenarios', {})
+                for scenario_data in scenarios.values():
+                    mv = scenario_data.get(metric_key)
+                    if mv is not None:
+                        break
+            if mv is not None:
+                points.append((pv, mv))
+
+        if not points:
+            return None
+
+        points.sort(key=lambda p: p[0])
+
+        # Exact match
+        for pv, mv in points:
+            if abs(pv - target_value) < 1e-9:
+                return mv
+
+        # Interpolate
+        for j in range(len(points) - 1):
+            x0, y0 = points[j]
+            x1, y1 = points[j + 1]
+            if x0 <= target_value <= x1:
+                t = (target_value - x0) / (x1 - x0)
+                return y0 + t * (y1 - y0)
+
+        return None
+
+    @staticmethod
+    def _build_savings_curve_summary(
+        results: List[Dict[str, Any]],
+        analysis: 'AnalysisSpec',
+        metrics: List[str],
+    ) -> str:
+        """Build summary for savings_curve analysis."""
+        lines = [
+            "# Savings Curve Analysis",
+            "",
+            "## Configuration",
+            f"- X Parameter: {analysis.x_parameter}",
+            f"- Display Multiplier: {analysis.x_display_multiplier}",
+            f"- Metrics: {', '.join(metrics)}",
+            f"- Marker Values: {analysis.marker_values}",
+            "",
+        ]
+
+        # Build table header
+        metric_headers = []
+        for m in metrics:
+            metric_headers.append(f"{m.upper()} Diff %")
+        header = f"| {analysis.x_label or 'X'} | " + " | ".join(metric_headers) + " |"
+        separator = "|---" + "|---" * len(metrics) + "|"
+
+        for series in results:
+            label = series['label']
+            points = series['points']
+            lines.append(f"## {label}")
+            lines.append("")
+            lines.append(header)
+            lines.append(separator)
+            for pt in points:
+                cols = [f"{pt['x_value']:.1f}"]
+                for m in metrics:
+                    val = pt.get(f'{m}_diff_pct')
+                    cols.append(f"{val:.2f}" if val is not None else "N/A")
+                lines.append("| " + " | ".join(cols) + " |")
             lines.append("")
 
         return "\n".join(lines)
@@ -3002,9 +3234,9 @@ def is_valid_analysis_config(path: Path) -> bool:
                 data = json.load(f)
         if 'name' not in data or 'analysis' not in data:
             return False
-        # breakeven_curve doesn't require scenarios
+        # Meta-analyses don't require scenarios
         analysis_type = data.get('analysis', {}).get('type')
-        if analysis_type == 'breakeven_curve':
+        if analysis_type in ('breakeven_curve', 'savings_curve'):
             return True
         return 'scenarios' in data
     except (json.JSONDecodeError, KeyError, OSError):

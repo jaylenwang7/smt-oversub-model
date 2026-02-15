@@ -148,6 +148,7 @@ def plot_scenarios(
     colors: Optional[Dict[str, str]] = None,
     show_server_count: bool = True,
     show_plot_title: bool = True,
+    metric: Optional[str] = None,
 ) -> Optional[Any]:
     """
     Create professional stacked bar charts comparing arbitrary scenarios.
@@ -171,6 +172,7 @@ def plot_scenarios(
         colors: Optional dict with 'embodied' and 'operational' color overrides
         show_server_count: Whether to show server count under labels
         show_plot_title: Whether to show the title (default True)
+        metric: Optional single metric to plot ('carbon' or 'tco'). If None, plots both.
 
     Returns:
         matplotlib Figure object if matplotlib is available
@@ -185,7 +187,7 @@ def plot_scenarios(
         colors = COLORS.copy()
 
     # Metrics to plot
-    metrics = {
+    all_metrics = {
         'tco': {
             'label': 'Total Cost of Ownership',
             'embodied_key': 'embodied_cost_usd',
@@ -204,6 +206,16 @@ def plot_scenarios(
         },
     }
 
+    # Filter to single metric if requested
+    if metric:
+        if metric not in all_metrics:
+            raise ValueError(f"Unknown metric '{metric}', must be 'carbon' or 'tco'")
+        metrics = {metric: all_metrics[metric]}
+    else:
+        metrics = all_metrics
+
+    single_metric = len(metrics) == 1
+
     # Set up professional style
     plt.rcParams.update({
         'font.family': 'sans-serif',
@@ -214,21 +226,25 @@ def plot_scenarios(
         'ytick.labelsize': 9,
     })
 
-    fig, axes = plt.subplots(1, 2, figsize=figsize)
+    num_axes = len(metrics)
+    effective_figsize = (figsize[0] // 2, figsize[1]) if single_metric else figsize
+    fig, axes = plt.subplots(1, num_axes, figsize=effective_figsize)
+    if single_metric:
+        axes = [axes]
     fig.patch.set_facecolor('white')
 
     labels = [s.get('name', f'Scenario {i}') for i, s in enumerate(scenarios)]
     x = np.arange(len(scenarios))
     bar_width = 0.7
 
-    for ax_idx, (metric_name, metric) in enumerate(metrics.items()):
+    for ax_idx, (metric_name, metric_info) in enumerate(metrics.items()):
         ax = axes[ax_idx]
         ax.set_facecolor('white')
 
         # Extract values
-        embodied_vals = [s.get(metric['embodied_key'], 0) for s in scenarios]
-        operational_vals = [s.get(metric['operational_key'], 0) for s in scenarios]
-        total_vals = [s.get(metric['total_key'], 0) for s in scenarios]
+        embodied_vals = [s.get(metric_info['embodied_key'], 0) for s in scenarios]
+        operational_vals = [s.get(metric_info['operational_key'], 0) for s in scenarios]
+        total_vals = [s.get(metric_info['total_key'], 0) for s in scenarios]
 
         if not any(total_vals):
             ax.text(0.5, 0.5, 'No data available', ha='center', va='center',
@@ -275,7 +291,7 @@ def plot_scenarios(
         # Add diff from baseline annotation above bars
         max_total = max(total_vals) if total_vals else 1
         for i, total in enumerate(total_vals):
-            diff_text, diff_color = _format_diff(total, baseline_total, metric['is_carbon'])
+            diff_text, diff_color = _format_diff(total, baseline_total, metric_info['is_carbon'])
             ax.text(i, total + max_total * 0.03, diff_text,
                     ha='center', va='bottom', fontsize=10,
                     fontweight='bold', color=diff_color)
@@ -296,7 +312,7 @@ def plot_scenarios(
                                 xytext=(0, server_offset),
                                 textcoords='offset points', ha='center', va='top',
                                 fontsize=8, color=COLORS['neutral'])
-        ax.set_ylabel(f"{metric['label']} ({metric['unit']})", fontsize=11)
+        ax.set_ylabel(f"{metric_info['label']} ({metric_info['unit']})", fontsize=11)
         ax.set_ylim(0, max(total_vals) * 1.15)
 
         # Clean grid
@@ -320,7 +336,7 @@ def plot_scenarios(
         mpatches.Patch(color=colors.get('operational', COLORS['operational']), label='Operational (OpEx)'),
     ]
     fig.legend(handles=handles, loc='upper center', ncol=2,
-               bbox_to_anchor=(0.5, -0.02), frameon=False, fontsize=10)
+               bbox_to_anchor=(0.5, 0.01), frameon=False, fontsize=10)
 
     # Title (only if show_plot_title is True)
     if title and show_plot_title:
@@ -328,7 +344,7 @@ def plot_scenarios(
 
     # Adjust layout based on whether title is shown
     has_multiline = any('\n' in s.get('name', '') for s in scenarios)
-    bottom_margin = 0.10 if has_multiline else 0.05
+    bottom_margin = 0.06 if has_multiline else 0.02
     if show_plot_title and title:
         plt.tight_layout(rect=[0, bottom_margin, 1, 0.94])
     else:
@@ -1255,6 +1271,149 @@ def _adjust_color_brightness(hex_color: str, factor: float) -> str:
     return f'#{r:02x}{g:02x}{b:02x}'
 
 
+def plot_savings_curve(
+    result,
+    save_path: Optional[Union[str, Path]] = None,
+    figsize: Tuple[float, float] = (10, 6),
+    show: bool = True,
+    title: Optional[str] = None,
+    show_plot_title: Optional[bool] = None,
+    metric: Optional[str] = None,
+) -> Optional[Any]:
+    """
+    Plot savings curve showing % savings at specific marker values across a parameter.
+
+    Each marker value is a line on the plot. When metric is None, creates side-by-side
+    subplots for all metrics. When metric is specified, creates a single plot for that metric.
+
+    Args:
+        result: AnalysisResult with savings_curve_results, or dict
+        save_path: Optional path to save the figure
+        figsize: Figure size (width, height) in inches
+        show: Whether to display the plot (default True)
+        title: Optional custom title
+        show_plot_title: Whether to show the title (default from config or True)
+        metric: Optional single metric to plot ('carbon' or 'tco'). None = all metrics.
+
+    Returns:
+        matplotlib Figure object if matplotlib is available
+    """
+    _check_matplotlib()
+
+    # Extract savings_curve results
+    if hasattr(result, 'savings_curve_results'):
+        curve_results = result.savings_curve_results
+    elif isinstance(result, dict):
+        curve_results = result.get('savings_curve_results', [])
+    else:
+        raise ValueError("Expected result with savings_curve_results")
+
+    if not curve_results:
+        return None
+
+    # Get config options
+    x_label = None
+    y_label = None
+    all_metrics = ['carbon', 'tco']
+    if hasattr(result, 'config') and hasattr(result.config, 'analysis'):
+        analysis = result.config.analysis
+        x_label = analysis.x_label
+        y_label = analysis.y_label
+        all_metrics = analysis.metrics or all_metrics
+        if show_plot_title is None:
+            show_plot_title = analysis.show_plot_title
+    elif isinstance(result, dict) and 'config' in result:
+        analysis = result['config'].get('analysis', {})
+        x_label = analysis.get('x_label')
+        y_label = analysis.get('y_label')
+        all_metrics = analysis.get('metrics', all_metrics)
+        if show_plot_title is None:
+            show_plot_title = analysis.get('show_plot_title', True)
+
+    if show_plot_title is None:
+        show_plot_title = True
+
+    # Determine which metrics to plot
+    metrics = [metric] if metric else all_metrics
+
+    # Color palette
+    series_colors = ['#1a5276', '#e74c3c', '#27ae60', '#8e44ad', '#f39c12', '#16a085']
+    marker_shapes = ['o', 's', '^', 'D', 'v', 'P']
+
+    metric_labels = {'carbon': 'Carbon', 'tco': 'TCO'}
+
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.size': 10,
+    })
+
+    n_metrics = len(metrics)
+    if n_metrics == 1:
+        fig, ax_single = plt.subplots(figsize=figsize)
+        axes = [ax_single]
+    else:
+        fig, axes = plt.subplots(1, n_metrics, figsize=(figsize[0] * n_metrics / 2, figsize[1]))
+    fig.patch.set_facecolor('white')
+
+    for ax_idx, m in enumerate(metrics):
+        ax = axes[ax_idx]
+        ax.set_facecolor('white')
+        metric_key = f'{m}_diff_pct'
+
+        for idx, series in enumerate(curve_results):
+            label = series.get('label', f'Marker {idx + 1}')
+            points = series.get('points', [])
+
+            x_vals = []
+            y_vals = []
+            for pt in points:
+                val = pt.get(metric_key)
+                if val is not None:
+                    x_vals.append(pt['x_value'])
+                    y_vals.append(val)
+
+            if x_vals:
+                color = series_colors[idx % len(series_colors)]
+                mkr = marker_shapes[idx % len(marker_shapes)]
+                ax.plot(x_vals, y_vals, f'{mkr}-', linewidth=2, markersize=8,
+                        color=color, label=label)
+
+        # Reference line at 0%
+        ax.axhline(0, color='#333333', linestyle='--', linewidth=1.0, alpha=0.7)
+
+        # Shading: green below 0 (savings), red above (increase)
+        ylim = ax.get_ylim()
+        if ylim[0] < 0:
+            ax.axhspan(ylim[0], 0, color='#27ae60', alpha=0.05, zorder=0)
+        if ylim[1] > 0:
+            ax.axhspan(0, ylim[1], color='#e74c3c', alpha=0.05, zorder=0)
+        ax.set_ylim(ylim)
+
+        ax.set_xlabel(x_label or 'Parameter', fontsize=11)
+        ax.set_ylabel(y_label or 'Savings vs Baseline (%)', fontsize=11)
+        ax.legend(loc='best', frameon=True, fontsize=9)
+        ax.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        if show_plot_title:
+            ax.set_title(f"{metric_labels.get(m, m)} Savings",
+                         fontsize=12, fontweight='bold', color='#333333')
+
+    if show_plot_title and title:
+        fig.suptitle(title, fontsize=13, fontweight='bold', color='#333333', y=1.02)
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+
+    if show:
+        plt.show()
+
+    return fig
+
+
 def plot_analysis_result(
     result,
     save_path: Optional[Union[str, Path]] = None,
@@ -1359,6 +1518,9 @@ def plot_analysis_result(
 
     elif analysis_type == 'breakeven_curve':
         return plot_breakeven_curve(result, save_path=save_path, show=show, **kwargs)
+
+    elif analysis_type == 'savings_curve':
+        return plot_savings_curve(result, save_path=save_path, show=show, **kwargs)
 
     return None
 

@@ -18,7 +18,7 @@ pip install -e ".[plot]"   # matplotlib, numpy
 pip install -e ".[all]"    # everything
 
 # Run all tests
-pytest smt_oversub_model/test_model.py -v
+pytest smt_oversub_model/test_model.py smt_oversub_model/test_declarative.py -v
 
 # Run a single test
 pytest smt_oversub_model/test_model.py::TestPowerCurve::test_power_at_zero_util -v
@@ -546,6 +546,30 @@ Given: operational_carbon_fraction (f_op), total_carbon_kg, reference scenario
 3. embodied_carbon_kg = embodied_total / num_servers
 4. carbon_intensity_g_kwh = operational_total × 1000 / energy_kwh
 ```
+
+## Common Pitfalls & Testing Rules
+
+### The Cost Override Problem
+
+The declarative engine has two layers: `OverssubModel.evaluate_scenario()` (core model with flat `CostParams`) and `DeclarativeAnalysisEngine._evaluate_scenario()` (resolves per-processor structured costs into `cost_overrides`). Any code path that calls `model.evaluate_scenario()` directly — bypassing `_evaluate_scenario()` — will silently use **default costs** (1000 kg, $10,000) instead of the processor's actual structured values.
+
+**Rule: Every code path that evaluates a scenario must use processor-resolved costs.** The single source of truth is `_resolve_scenario_cost_overrides()`, which handles the full priority chain AND resource scaling. If you add a new analysis type or evaluation path, it must either:
+1. Call `_evaluate_scenario()`, or
+2. Call `_resolve_scenario_cost_overrides()` and pass the result to `model.evaluate_scenario()`
+
+**Rule: Tests for any analysis type must include a variant with per-processor structured costs** (e.g., `embodied_carbon: {per_core, per_server}`) that differ from the global defaults. If a test only uses flat defaults (no processor-level cost overrides), it cannot catch this class of bug. Specifically:
+- Use structured `embodied_carbon` and `server_cost` on the processor specs
+- Choose values that are clearly different from the defaults (1000 kg / $10,000)
+- Assert that the per-server values in the result match the structured calculation, NOT the defaults
+
+### Testing Checklist for New Features
+
+When adding a new analysis type or modifying an existing evaluation path:
+
+1. **Structured cost test**: Include processors with `embodied_carbon: {per_core, per_server}` and verify per-server values in results match the structured calculation
+2. **Resource scaling test**: If the path involves scenario evaluation, test with `resource_scaling` configured and verify scaled costs propagate correctly
+3. **Cross-path consistency**: If a feature has both a "direct evaluation" path and an "iterative search" path (like breakeven), verify both produce the same per-server costs for identical inputs
+4. **Feature combination tests**: Test combinations of features (structured costs + breakeven, resource scaling + breakeven, ratio-based costs + structured costs) — bugs hide at feature intersections
 
 ## Example Notebooks
 

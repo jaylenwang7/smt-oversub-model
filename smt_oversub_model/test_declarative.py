@@ -454,6 +454,90 @@ class TestDeclarativeAnalysisEngine:
 
         assert result.breakeven is not None
 
+    def test_find_breakeven_uses_processor_cost_overrides(self):
+        """Breakeven search must use per-processor cost overrides, not model defaults.
+
+        Regression test: the GeneralizedBreakevenFinder previously called
+        model.evaluate_scenario() without cost_overrides, so it used defaults
+        (1000 kg, $10000) instead of the processor's actual structured costs.
+        """
+        config_dict = {
+            'name': 'test_breakeven_cost_overrides',
+            'scenarios': {
+                'baseline': {'processor': 'smt', 'oversub_ratio': 1.0},
+                'reference': {'processor': 'smt', 'oversub_ratio': 1.0},
+                'target': {'processor': 'nosmt', 'oversub_ratio': 1.0,
+                           'vcpu_demand_multiplier': 1.0},
+            },
+            'analysis': {
+                'type': 'find_breakeven',
+                'baseline': 'baseline',
+                'reference': 'reference',
+                'target': 'target',
+                'vary_parameter': 'vcpu_demand_multiplier',
+                'match_metric': 'carbon',
+                'search_bounds': [0.3, 1.0],
+            },
+            'processor': {
+                'smt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 2,
+                    'core_overhead': 0,
+                    'power_idle_w': 100,
+                    'power_max_w': 400,
+                    # Structured costs that differ from defaults (1000/$10000)
+                    'embodied_carbon': {
+                        'per_core': {'memory': 5.0},
+                        'per_server': {'chassis': 200.0},
+                    },
+                    'server_cost': {
+                        'per_core': {'memory': 40.0},
+                        'per_server': {'chassis': 3000.0},
+                    },
+                },
+                'nosmt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 1,
+                    'core_overhead': 0,
+                    'power_idle_w': 90,
+                    'power_max_w': 340,
+                    # Per-server: 5*48 + 200 = 440 kg, 40*48 + 3000 = $4920
+                    # Very different from defaults of 1000/$10000
+                    'embodied_carbon': {
+                        'per_core': {'memory': 5.0},
+                        'per_server': {'chassis': 200.0},
+                    },
+                    'server_cost': {
+                        'per_core': {'memory': 40.0},
+                        'per_server': {'chassis': 3000.0},
+                    },
+                },
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+            'cost': {
+                'carbon_intensity_g_kwh': 400,
+                'electricity_cost_usd_kwh': 0.10,
+                'lifetime_years': 5,
+            },
+        }
+
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        assert result.breakeven is not None
+        assert result.breakeven.achieved is True
+
+        # Verify the target at breakeven uses the correct per-server costs
+        target_data = result.scenario_results.get('target', {})
+        num_servers = target_data['num_servers']
+        # nosmt per-server embodied: 5.0 * 48 + 200 = 440 kg (NOT the default 1000)
+        expected_embodied_per_server = 5.0 * 48 + 200.0  # = 440
+        actual_embodied_per_server = target_data['embodied_carbon_kg'] / num_servers
+        assert abs(actual_embodied_per_server - expected_embodied_per_server) < 1.0, \
+            f"Expected ~{expected_embodied_per_server} kg/server, got {actual_embodied_per_server:.1f} " \
+            f"(breakeven finder may be using default costs instead of processor overrides)"
+
 
 class TestAnalysisConfig:
     """Tests for AnalysisConfig dataclass."""
@@ -1801,3 +1885,202 @@ class TestBreakevenCurve:
         assert 'Breakeven Curve Analysis' in result.summary
         assert 'My Series' in result.summary
         assert '20.0' in result.summary
+
+
+class TestSavingsCurve:
+    """Tests for savings_curve analysis type."""
+
+    def _make_compare_sweep_config(self, avg_util, tmp_path, suffix=""):
+        """Helper to create a compare_sweep config file."""
+        config_data = {
+            'name': f'util_{int(avg_util*100)}pct{suffix}',
+            'scenarios': {
+                'smt_baseline': {
+                    'processor': 'smt',
+                    'oversub_ratio': 1.0,
+                },
+                'nosmt_target': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 1.5,
+                    'vcpu_demand_multiplier': 1.0,
+                },
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': avg_util},
+            'processor': {
+                'smt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 2,
+                    'power_idle_w': 100.0,
+                    'power_max_w': 400.0,
+                },
+                'nosmt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 1,
+                    'power_idle_w': 90.0,
+                    'power_max_w': 340.0,
+                },
+            },
+            'cost': {
+                'carbon_intensity_g_kwh': 400,
+                'electricity_cost_usd_kwh': 0.10,
+                'lifetime_years': 5,
+            },
+            'analysis': {
+                'type': 'compare_sweep',
+                'baseline': 'smt_baseline',
+                'sweep_scenario': 'nosmt_target',
+                'sweep_parameter': 'vcpu_demand_multiplier',
+                'sweep_values': [0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+                'show_breakeven_marker': True,
+            },
+        }
+        filename = f'util_{int(avg_util*100)}{suffix}.json'
+        config_file = tmp_path / filename
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+        return config_file
+
+    def test_basic_savings_curve(self, tmp_path):
+        """Test basic savings_curve execution."""
+        cfg_10 = self._make_compare_sweep_config(0.1, tmp_path)
+        cfg_20 = self._make_compare_sweep_config(0.2, tmp_path)
+        cfg_30 = self._make_compare_sweep_config(0.3, tmp_path)
+
+        curve_config = {
+            'name': 'test_savings_curve',
+            'analysis': {
+                'type': 'savings_curve',
+                'configs': [str(cfg_10), str(cfg_20), str(cfg_30)],
+                'x_parameter': 'workload.avg_util',
+                'x_display_multiplier': 100,
+                'marker_values': [0.7, 0.8, 0.9],
+                'marker_labels': ['low', 'mid', 'high'],
+                'metrics': ['carbon', 'tco'],
+                'x_label': 'Utilization (%)',
+                'y_label': 'Savings vs Baseline (%)',
+            },
+        }
+        curve_file = tmp_path / 'savings_curve.json'
+        with open(curve_file, 'w') as f:
+            json.dump(curve_config, f)
+
+        result = run_analysis(curve_file)
+
+        assert result.analysis_type == 'savings_curve'
+        assert result.savings_curve_results is not None
+        assert len(result.savings_curve_results) == 3  # one per marker value
+
+        # Check structure of first marker series
+        series = result.savings_curve_results[0]
+        assert series['marker_value'] == 0.7
+        assert 'low' in series['label']
+        assert len(series['points']) == 3  # one per config
+
+        # Check x-values are display-multiplied
+        assert series['points'][0]['x_value'] == pytest.approx(10.0)
+        assert series['points'][1]['x_value'] == pytest.approx(20.0)
+        assert series['points'][2]['x_value'] == pytest.approx(30.0)
+
+        # Check raw values preserved
+        assert series['points'][0]['x_raw'] == pytest.approx(0.1)
+
+        # Each point should have both metrics
+        for pt in series['points']:
+            assert 'carbon_diff_pct' in pt
+            assert 'tco_diff_pct' in pt
+            assert pt['carbon_diff_pct'] is not None
+            assert pt['tco_diff_pct'] is not None
+
+    def test_savings_curve_summary(self, tmp_path):
+        """Test that savings_curve produces a summary."""
+        cfg = self._make_compare_sweep_config(0.2, tmp_path)
+
+        curve_config = {
+            'name': 'test_summary',
+            'analysis': {
+                'type': 'savings_curve',
+                'configs': [str(cfg)],
+                'x_parameter': 'workload.avg_util',
+                'x_display_multiplier': 100,
+                'marker_values': [0.7],
+                'marker_labels': ['mid'],
+                'metrics': ['carbon'],
+                'x_label': 'Utilization (%)',
+            },
+        }
+        curve_file = tmp_path / 'savings_summary.json'
+        with open(curve_file, 'w') as f:
+            json.dump(curve_config, f)
+
+        result = run_analysis(curve_file)
+        assert 'Savings Curve Analysis' in result.summary
+        assert 'mid' in result.summary
+        assert '20.0' in result.summary
+
+    def test_savings_curve_to_dict(self, tmp_path):
+        """Test that savings_curve results serialize correctly."""
+        cfg = self._make_compare_sweep_config(0.2, tmp_path)
+
+        curve_config = {
+            'name': 'test_to_dict',
+            'analysis': {
+                'type': 'savings_curve',
+                'configs': [str(cfg)],
+                'x_parameter': 'workload.avg_util',
+                'x_display_multiplier': 100,
+                'marker_values': [0.7, 0.9],
+                'marker_labels': ['low', 'high'],
+                'metrics': ['carbon', 'tco'],
+            },
+        }
+        curve_file = tmp_path / 'savings_dict.json'
+        with open(curve_file, 'w') as f:
+            json.dump(curve_config, f)
+
+        result = run_analysis(curve_file)
+        d = result.to_dict()
+        assert 'savings_curve_results' in d
+        assert len(d['savings_curve_results']) == 2
+
+    def test_savings_curve_interpolation(self, tmp_path):
+        """Test interpolation for marker values between sweep points."""
+        cfg = self._make_compare_sweep_config(0.2, tmp_path)
+
+        # Use marker value 0.75 which is between sweep values 0.7 and 0.8
+        curve_config = {
+            'name': 'test_interp',
+            'analysis': {
+                'type': 'savings_curve',
+                'configs': [str(cfg)],
+                'x_parameter': 'workload.avg_util',
+                'x_display_multiplier': 100,
+                'marker_values': [0.75],
+                'marker_labels': ['interp'],
+                'metrics': ['carbon'],
+            },
+        }
+        curve_file = tmp_path / 'savings_interp.json'
+        with open(curve_file, 'w') as f:
+            json.dump(curve_config, f)
+
+        result = run_analysis(curve_file)
+        pt = result.savings_curve_results[0]['points'][0]
+        assert pt['carbon_diff_pct'] is not None
+
+    def test_is_valid_analysis_config(self, tmp_path):
+        """Test that savings_curve configs pass validation without scenarios."""
+        from smt_oversub_model.declarative import is_valid_analysis_config
+        config_data = {
+            'name': 'test_valid',
+            'analysis': {
+                'type': 'savings_curve',
+                'configs': ['some/path.json'],
+                'x_parameter': 'workload.avg_util',
+                'marker_values': [0.7],
+            },
+        }
+        config_file = tmp_path / 'valid.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        assert is_valid_analysis_config(config_file) is True
