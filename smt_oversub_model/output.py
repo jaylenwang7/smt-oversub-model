@@ -471,6 +471,29 @@ class OutputWriter:
         writer.writeheader()
         writer.writerows(data)
 
+    def _get_plot_kwargs(self, result: 'AnalysisResult') -> dict:
+        """Extract common plot kwargs (figsize, style) from result config's PlotSpec."""
+        kwargs = {}
+        plot_config = None
+        if hasattr(result.config, 'analysis') and result.config.analysis.plot:
+            plot_config = result.config.analysis.plot
+
+        if plot_config:
+            from .plot import PlotStyle
+            style_kwargs = {}
+            if plot_config.bar_width is not None:
+                style_kwargs['bar_width'] = plot_config.bar_width
+            if plot_config.bar_gap_factor is not None:
+                style_kwargs['bar_gap_factor'] = plot_config.bar_gap_factor
+            if plot_config.dpi is not None:
+                style_kwargs['dpi'] = plot_config.dpi
+            if style_kwargs:
+                kwargs['style'] = PlotStyle(**style_kwargs)
+            if plot_config.figsize:
+                kwargs['figsize'] = tuple(plot_config.figsize)
+
+        return kwargs
+
     def _write_plots(self, result: 'AnalysisResult') -> None:
         """Generate and save plots."""
         try:
@@ -529,14 +552,16 @@ class OutputWriter:
 
         # Always generate combined plot
         save_path = plots_dir / 'comparison.png'
-        plot_scenarios(
-            scenarios,
-            baseline_idx=0,
-            save_path=str(save_path),
-            show=False,
-            title=f"Scenario Comparison: {result.config.name}",
-            show_plot_title=show_plot_title,
-        )
+        plot_kwargs = {
+            'baseline_idx': 0,
+            'save_path': str(save_path),
+            'show': False,
+            'title': f"Scenario Comparison: {result.config.name}",
+            'show_plot_title': show_plot_title,
+            **self._get_plot_kwargs(result),
+        }
+
+        plot_scenarios(scenarios, **plot_kwargs)
 
         # Generate separate metric plots if requested
         separate_metrics = False
@@ -546,15 +571,10 @@ class OutputWriter:
         if separate_metrics:
             for metric_name, filename_suffix in [('carbon', 'carbon'), ('tco', 'TCO')]:
                 metric_save_path = plots_dir / f'comparison_{filename_suffix}.png'
-                plot_scenarios(
-                    scenarios,
-                    baseline_idx=0,
-                    save_path=str(metric_save_path),
-                    show=False,
-                    title=f"Scenario Comparison: {result.config.name}",
-                    show_plot_title=show_plot_title,
-                    metric=metric_name,
-                )
+                metric_kwargs = plot_kwargs.copy()
+                metric_kwargs['save_path'] = str(metric_save_path)
+                metric_kwargs['metric'] = metric_name
+                plot_scenarios(scenarios, **metric_kwargs)
 
     def _plot_breakeven(
         self,
@@ -576,6 +596,7 @@ class OutputWriter:
             save_path=str(save_path),
             show=False,
             title=f"Breakeven Search: {result.config.name}",
+            **self._get_plot_kwargs(result),
         )
 
     def _plot_sweep(
@@ -597,6 +618,7 @@ class OutputWriter:
             result,
             save_path=str(save_path),
             show=False,
+            **self._get_plot_kwargs(result),
         )
 
     def _plot_compare_sweep(
@@ -620,6 +642,8 @@ class OutputWriter:
         except ImportError:
             return
 
+        common_kwargs = self._get_plot_kwargs(result)
+
         # Check if multi-scenario
         first_point = result.compare_sweep_results[0]
         is_multi = 'scenarios' in first_point and len(first_point.get('scenarios', {})) > 1
@@ -638,6 +662,7 @@ class OutputWriter:
                     save_path=str(save_path),
                     show=False,
                     metric=metric,
+                    **common_kwargs,
                 )
         else:
             # Generate combined plot
@@ -646,6 +671,7 @@ class OutputWriter:
                 result,
                 save_path=str(save_path),
                 show=False,
+                **common_kwargs,
             )
 
         # For multi-scenario, also generate individual plots
@@ -673,6 +699,7 @@ class OutputWriter:
                             scenario_filter=[scenario_name],
                             title=f"Compare Sweep: {display_label}",
                             metric=metric,
+                            **common_kwargs,
                         )
                 else:
                     save_path = plots_dir / f'compare_sweep_{safe_name}.png'
@@ -682,6 +709,7 @@ class OutputWriter:
                         show=False,
                         scenario_filter=[scenario_name],
                         title=f"Compare Sweep: {display_label}",
+                        **common_kwargs,
                     )
 
 
@@ -704,6 +732,7 @@ class OutputWriter:
             result,
             save_path=str(save_path),
             show=False,
+            **self._get_plot_kwargs(result),
         )
 
     def _plot_savings_curve(
@@ -720,12 +749,15 @@ class OutputWriter:
         except ImportError:
             return
 
+        common_kwargs = self._get_plot_kwargs(result)
+
         # Combined plot
         save_path = plots_dir / 'savings_curve.png'
         plot_savings_curve(
             result,
             save_path=str(save_path),
             show=False,
+            **common_kwargs,
         )
 
         # Separate per-metric plots
@@ -739,7 +771,41 @@ class OutputWriter:
                 save_path=str(save_path),
                 show=False,
                 metric=m,
+                **common_kwargs,
             )
+
+        # Progressive plots
+        progressive_save = False
+        progressive_order = None
+        if hasattr(result.config, 'analysis'):
+            progressive_save = result.config.analysis.progressive_save
+            progressive_order = result.config.analysis.progressive_order
+
+        if progressive_save:
+            progressive_dir = plots_dir / 'progressive'
+            progressive_dir.mkdir(exist_ok=True)
+
+            # Combined
+            plot_savings_curve(
+                result,
+                show=False,
+                progressive_save_dir=str(progressive_dir),
+                progressive_order=progressive_order,
+                **common_kwargs,
+            )
+
+            # Per-metric
+            for m in metrics:
+                metric_dir = progressive_dir / m
+                metric_dir.mkdir(exist_ok=True)
+                plot_savings_curve(
+                    result,
+                    show=False,
+                    metric=m,
+                    progressive_save_dir=str(metric_dir),
+                    progressive_order=progressive_order,
+                    **common_kwargs,
+                )
 
 
 def save_result(result: 'AnalysisResult', output_dir: str) -> None:

@@ -587,6 +587,24 @@ class ScenarioConfig:
 
 
 @dataclass
+class PlotSpec:
+    """Configuration for plot styling."""
+    figsize: Optional[List[float]] = None  # Figure size [width, height] in inches
+    bar_width: Optional[float] = None  # Bar width (default 0.8)
+    bar_gap_factor: Optional[float] = None  # Gap between bars (default 0.9)
+    dpi: Optional[int] = None  # DPI for saved plots (default 300)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'PlotSpec':
+        return cls(
+            figsize=data.get('figsize'),
+            bar_width=data.get('bar_width'),
+            bar_gap_factor=data.get('bar_gap_factor'),
+            dpi=data.get('dpi'),
+        )
+
+
+@dataclass
 class AnalysisSpec:
     """Specification for the analysis to perform."""
     type: str  # "find_breakeven", "compare", "sweep", "compare_sweep", "breakeven_curve", "savings_curve"
@@ -623,9 +641,16 @@ class AnalysisSpec:
     marker_values: Optional[List[float]] = None  # Sweep parameter values to extract savings at
     marker_labels: Optional[List[str]] = None  # Display labels for marker_values
     metrics: Optional[List[str]] = None  # Metrics to extract: ["carbon", "tco"] (same length)
+    legend_title: Optional[str] = None  # Title for plot legend
+    progressive_save: bool = False  # Save progressive plot snapshots (empty → series added one at a time)
+    progressive_order: Optional[List[str]] = None  # Order to reveal series (by marker_labels)
+    plot: Optional[PlotSpec] = None  # Plot styling configuration
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AnalysisSpec':
+        plot_data = data.get('plot')
+        plot_spec = PlotSpec.from_dict(plot_data) if plot_data else None
+        
         return cls(
             type=data.get('type', 'compare'),
             baseline=data.get('baseline'),
@@ -659,6 +684,10 @@ class AnalysisSpec:
             marker_values=data.get('marker_values'),
             marker_labels=data.get('marker_labels'),
             metrics=data.get('metrics'),
+            legend_title=data.get('legend_title'),
+            progressive_save=data.get('progressive_save', False),
+            progressive_order=data.get('progressive_order'),
+            plot=plot_spec,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -725,6 +754,12 @@ class AnalysisSpec:
             d['marker_labels'] = self.marker_labels
         if self.metrics:
             d['metrics'] = self.metrics
+        if self.legend_title:
+            d['legend_title'] = self.legend_title
+        if self.progressive_save:
+            d['progressive_save'] = True
+        if self.progressive_order:
+            d['progressive_order'] = self.progressive_order
         return d
 
 

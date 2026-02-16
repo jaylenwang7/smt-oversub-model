@@ -16,7 +16,13 @@
     "y_label": "Savings vs SMT Baseline (%)",
     "marker_values": [0.65, 0.75, 0.85],
     "marker_labels": ["low", "geomean", "high"],
-    "metrics": ["carbon", "tco"]
+    "metrics": ["carbon", "tco"],
+    "legend_title": "SMT:no-SMT performance",
+    "progressive_save": true,
+    "progressive_order": ["geomean", "low", "high"],
+    "plot": {
+      "figsize": [8, 5]
+    }
   },
   "output_dir": "./results/oversub_analysis/genoa/linear/savings_curve"
 }

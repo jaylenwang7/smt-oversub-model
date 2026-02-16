@@ -1384,6 +1384,9 @@ def plot_savings_curve(
     show_plot_title: Optional[bool] = None,
     metric: Optional[str] = None,
     style: Optional[PlotStyle] = None,
+    progressive_save_dir: Optional[Union[str, Path]] = None,
+    progressive_order: Optional[List[str]] = None,
+    legend_title: Optional[str] = None,
 ) -> Optional[Any]:
     """
     Plot savings curve showing % savings at specific marker values across a parameter.
@@ -1400,6 +1403,9 @@ def plot_savings_curve(
         show_plot_title: Whether to show the title (default from config or True)
         metric: Optional single metric to plot ('carbon' or 'tco'). None = all metrics.
         style: Optional PlotStyle for customizing appearance (default: ATF style)
+        progressive_save_dir: Directory to save progressive snapshots (step_0.png = empty, step_N.png = N series)
+        progressive_order: Order to reveal series by label. If None, uses natural order.
+        legend_title: Optional title for the legend
 
     Returns:
         matplotlib Figure object if matplotlib is available
@@ -1431,6 +1437,8 @@ def plot_savings_curve(
         all_metrics = analysis.metrics or all_metrics
         if show_plot_title is None:
             show_plot_title = analysis.show_plot_title
+        if legend_title is None:
+            legend_title = analysis.legend_title
     elif isinstance(result, dict) and 'config' in result:
         analysis = result['config'].get('analysis', {})
         x_label = analysis.get('x_label')
@@ -1438,6 +1446,8 @@ def plot_savings_curve(
         all_metrics = analysis.get('metrics', all_metrics)
         if show_plot_title is None:
             show_plot_title = analysis.get('show_plot_title', True)
+        if legend_title is None:
+            legend_title = analysis.get('legend_title')
 
     if show_plot_title is None:
         show_plot_title = True
@@ -1501,7 +1511,10 @@ def plot_savings_curve(
         ax.set_xlabel(x_label or 'Parameter', fontsize=style.axis_label_fontsize)
         ax.set_ylabel(y_label or 'Savings vs Baseline (%)',
                        fontsize=style.axis_label_fontsize)
-        ax.legend(loc='best', frameon=True, fontsize=style.legend_fontsize)
+        legend_kwargs = dict(loc='best', frameon=True, fontsize=style.legend_fontsize)
+        if legend_title:
+            legend_kwargs['title'] = legend_title
+        ax.legend(**legend_kwargs)
         _apply_common_style(ax, style)
 
         if show_plot_title:
@@ -1518,6 +1531,115 @@ def plot_savings_curve(
     if save_path:
         plt.savefig(save_path, dpi=style.dpi, bbox_inches='tight',
                     facecolor=style.facecolor)
+
+    # Progressive save: render snapshots with 0..N series visible
+    if progressive_save_dir:
+        prog_dir = Path(progressive_save_dir)
+        prog_dir.mkdir(parents=True, exist_ok=True)
+
+        # Capture axis bounds from the full plot
+        axis_bounds = []
+        for ax in axes:
+            axis_bounds.append((ax.get_xlim(), ax.get_ylim()))
+
+        # Determine reveal order: map progressive_order labels to series indices
+        series_labels = [s.get('label', f'Marker {i + 1}') for i, s in enumerate(curve_results)]
+        if progressive_order:
+            ordered_indices = []
+            for po_label in progressive_order:
+                for i, sl in enumerate(series_labels):
+                    if po_label.lower() in sl.lower() and i not in ordered_indices:
+                        ordered_indices.append(i)
+                        break
+            # Append any remaining series not matched
+            for i in range(len(curve_results)):
+                if i not in ordered_indices:
+                    ordered_indices.append(i)
+        else:
+            ordered_indices = list(range(len(curve_results)))
+
+        n_series = len(ordered_indices)
+
+        # Generate step 0 (empty) through step N (all series)
+        for step in range(n_series + 1):
+            visible_indices = set(ordered_indices[:step])
+
+            if n_metrics == 1:
+                sfig, sax_single = plt.subplots(figsize=figsize)
+                saxes = [sax_single]
+            else:
+                sfig, saxes = plt.subplots(1, n_metrics,
+                                           figsize=(figsize[0] * n_metrics / 2, figsize[1]))
+            sfig.patch.set_facecolor(style.facecolor)
+
+            for ax_idx, m in enumerate(metrics):
+                sax = saxes[ax_idx]
+                metric_key = f'{m}_diff_pct'
+
+                for idx, series in enumerate(curve_results):
+                    label = series.get('label', f'Marker {idx + 1}')
+                    points = series.get('points', [])
+
+                    x_vals = []
+                    y_vals = []
+                    for pt in points:
+                        val = pt.get(metric_key)
+                        if val is not None:
+                            x_vals.append(pt['x_value'])
+                            y_vals.append(val)
+
+                    if x_vals:
+                        color = series_colors[idx % len(series_colors)]
+                        mkr = marker_shapes[idx % len(marker_shapes)]
+                        if idx in visible_indices:
+                            sax.plot(x_vals, y_vals, f'{mkr}-', linewidth=style.line_width,
+                                     markersize=style.marker_size, alpha=style.line_alpha,
+                                     color=color, label=label)
+                        else:
+                            # Plot invisible line (no label) to preserve axis bounds
+                            sax.plot(x_vals, y_vals, f'{mkr}-', linewidth=style.line_width,
+                                     markersize=style.marker_size, alpha=0.0,
+                                     color=color)
+
+                # Reference line at 0%
+                sax.axhline(0, color='#333333', linestyle='--', linewidth=1.0, alpha=0.7)
+
+                # Apply saved axis bounds
+                saved_xlim, saved_ylim = axis_bounds[ax_idx]
+                sax.set_xlim(saved_xlim)
+                sax.set_ylim(saved_ylim)
+
+                # Shading
+                if saved_ylim[0] < 0:
+                    sax.axhspan(saved_ylim[0], 0, color='#27ae60', alpha=0.05, zorder=0)
+                if saved_ylim[1] > 0:
+                    sax.axhspan(0, saved_ylim[1], color='#e74c3c', alpha=0.05, zorder=0)
+
+                sax.set_xlabel(x_label or 'Parameter', fontsize=style.axis_label_fontsize)
+                sax.set_ylabel(y_label or 'Savings vs Baseline (%)',
+                               fontsize=style.axis_label_fontsize)
+                prog_legend_kwargs = dict(loc='best', frameon=True, fontsize=style.legend_fontsize)
+                if legend_title:
+                    prog_legend_kwargs['title'] = legend_title
+                # Only show legend if there are visible series
+                if visible_indices:
+                    sax.legend(**prog_legend_kwargs)
+                _apply_common_style(sax, style)
+
+                if show_plot_title:
+                    sax.set_title(f"{metric_labels.get(m, m)} Savings",
+                                  fontsize=style.title_fontsize - 1, fontweight='bold',
+                                  color='#333333')
+
+            if show_plot_title and title:
+                sfig.suptitle(title, fontsize=style.title_fontsize, fontweight='bold',
+                              color='#333333', y=1.02)
+
+            plt.tight_layout()
+            step_path = prog_dir / f'savings_curve_step_{step}.png'
+            plt.savefig(step_path, dpi=style.dpi, bbox_inches='tight',
+                        facecolor=style.facecolor)
+            plt.close(sfig)
 
     if show:
         plt.show()

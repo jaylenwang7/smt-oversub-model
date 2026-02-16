@@ -20,11 +20,15 @@
     "baseline": "smt_no_oversub",
     "scenarios": ["smt_no_oversub", "nosmt_linear_no_oversub"],
     "labels": {
-      "smt_no_oversub": "SMT (R=1.0)",
-      "nosmt_linear_no_oversub": "No-SMT Linear (R=1.0)"
+      "smt_no_oversub": "SMT",
+      "nosmt_linear_no_oversub": "No-SMT"
     },
     "show_plot_title": false,
-    "separate_metric_plots": true
+    "separate_metric_plots": true,
+    "plot": {
+      "figsize": [10, 4],
+      "bar_width": 0.6
+    }
   },
   "processor": {
     "smt": "configs/shared/genoa_processors.jsonc:genoa_smt",
