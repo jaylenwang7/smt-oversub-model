@@ -22,6 +22,7 @@ Usage:
     plot_scenarios(scenarios, baseline_idx=0)
 """
 
+from dataclasses import dataclass, field
 from typing import Optional, Union, Dict, Any, Tuple, List
 from pathlib import Path
 
@@ -42,6 +43,73 @@ COLORS = {
     'negative': '#e74c3c',       # Red for negative savings
     'neutral': '#7f8c8d',        # Gray for neutral
 }
+
+
+@dataclass
+class PlotStyle:
+    """Centralized style configuration for all plots.
+
+    Defaults match ATF benchmarking style. Override individual fields
+    to customize: ``PlotStyle(bar_alpha=1.0, dpi=150)``.
+    """
+
+    # Bar properties
+    bar_width: float = 0.8
+    bar_alpha: float = 0.8
+    bar_edgecolor: str = 'black'
+    bar_linewidth: float = 0.5
+    bar_hatch_embodied: Optional[str] = None
+    bar_hatch_operational: Optional[str] = None
+    bar_gap_factor: float = 0.9
+
+    # Line plot properties
+    line_width: float = 1.5
+    line_alpha: float = 0.7
+    marker_size: int = 8
+
+    # Grid
+    grid: bool = True
+    grid_axis: str = 'y'
+    grid_alpha: float = 0.3
+    grid_linestyle: str = '--'
+    grid_color: str = '#cccccc'
+
+    # Figure
+    dpi: int = 300
+    facecolor: str = 'white'
+
+    # Font sizes
+    title_fontsize: int = 13
+    axis_label_fontsize: int = 11
+    tick_fontsize: int = 10
+    annotation_fontsize: int = 9
+    legend_fontsize: int = 10
+
+    # Spines
+    hide_top_spine: bool = True
+    hide_right_spine: bool = True
+    spine_color: str = '#cccccc'
+
+    # Colors (override COLORS dict entries)
+    colors: Optional[Dict[str, str]] = None
+
+
+DEFAULT_STYLE = PlotStyle()
+
+
+def _apply_common_style(ax, style: PlotStyle):
+    """Apply shared style settings (grid, spines, background) to an axes."""
+    ax.set_facecolor(style.facecolor)
+    if style.grid:
+        ax.grid(True, axis=style.grid_axis, alpha=style.grid_alpha,
+                linestyle=style.grid_linestyle, color=style.grid_color)
+        ax.set_axisbelow(True)
+    if style.hide_top_spine:
+        ax.spines['top'].set_visible(False)
+    if style.hide_right_spine:
+        ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_color(style.spine_color)
+    ax.spines['bottom'].set_color(style.spine_color)
 
 
 def _check_matplotlib():
@@ -149,6 +217,7 @@ def plot_scenarios(
     show_server_count: bool = True,
     show_plot_title: bool = True,
     metric: Optional[str] = None,
+    style: Optional[PlotStyle] = None,
 ) -> Optional[Any]:
     """
     Create professional stacked bar charts comparing arbitrary scenarios.
@@ -173,18 +242,22 @@ def plot_scenarios(
         show_server_count: Whether to show server count under labels
         show_plot_title: Whether to show the title (default True)
         metric: Optional single metric to plot ('carbon' or 'tco'). If None, plots both.
+        style: Optional PlotStyle for customizing appearance (default: ATF style)
 
     Returns:
         matplotlib Figure object if matplotlib is available
     """
     _check_matplotlib()
 
+    if style is None:
+        style = DEFAULT_STYLE
+
     if not scenarios:
         raise ValueError("No scenarios to plot")
 
-    # Use provided colors or defaults
+    # Use provided colors, then style colors, then defaults
     if colors is None:
-        colors = COLORS.copy()
+        colors = style.colors if style.colors else COLORS.copy()
 
     # Metrics to plot
     all_metrics = {
@@ -219,11 +292,11 @@ def plot_scenarios(
     # Set up professional style
     plt.rcParams.update({
         'font.family': 'sans-serif',
-        'font.size': 10,
-        'axes.labelsize': 11,
-        'axes.titlesize': 12,
-        'xtick.labelsize': 10,
-        'ytick.labelsize': 9,
+        'font.size': style.tick_fontsize,
+        'axes.labelsize': style.axis_label_fontsize,
+        'axes.titlesize': style.title_fontsize,
+        'xtick.labelsize': style.tick_fontsize,
+        'ytick.labelsize': style.tick_fontsize - 1,
     })
 
     num_axes = len(metrics)
@@ -231,15 +304,14 @@ def plot_scenarios(
     fig, axes = plt.subplots(1, num_axes, figsize=effective_figsize)
     if single_metric:
         axes = [axes]
-    fig.patch.set_facecolor('white')
+    fig.patch.set_facecolor(style.facecolor)
 
     labels = [s.get('name', f'Scenario {i}') for i, s in enumerate(scenarios)]
     x = np.arange(len(scenarios))
-    bar_width = 0.7
+    bar_width = style.bar_width
 
     for ax_idx, (metric_name, metric_info) in enumerate(metrics.items()):
         ax = axes[ax_idx]
-        ax.set_facecolor('white')
 
         # Extract values
         embodied_vals = [s.get(metric_info['embodied_key'], 0) for s in scenarios]
@@ -248,26 +320,32 @@ def plot_scenarios(
 
         if not any(total_vals):
             ax.text(0.5, 0.5, 'No data available', ha='center', va='center',
-                    transform=ax.transAxes, fontsize=11, color=COLORS['neutral'])
+                    transform=ax.transAxes, fontsize=style.axis_label_fontsize,
+                    color=COLORS['neutral'])
+            _apply_common_style(ax, style)
             continue
 
         baseline_total = total_vals[baseline_idx] if baseline_idx < len(total_vals) else total_vals[0]
 
         # Plot stacked bars
         bars_embodied = ax.bar(
-            x, embodied_vals, bar_width,
+            x, embodied_vals, bar_width * style.bar_gap_factor,
             label='Embodied (CapEx)',
             color=colors.get('embodied', COLORS['embodied']),
-            edgecolor='white',
-            linewidth=0.5,
+            edgecolor=style.bar_edgecolor,
+            linewidth=style.bar_linewidth,
+            alpha=style.bar_alpha,
+            hatch=style.bar_hatch_embodied,
         )
         bars_operational = ax.bar(
-            x, operational_vals, bar_width,
+            x, operational_vals, bar_width * style.bar_gap_factor,
             bottom=embodied_vals,
             label='Operational (OpEx)',
             color=colors.get('operational', COLORS['operational']),
-            edgecolor='white',
-            linewidth=0.5,
+            edgecolor=style.bar_edgecolor,
+            linewidth=style.bar_linewidth,
+            alpha=style.bar_alpha,
+            hatch=style.bar_hatch_operational,
         )
 
         # Add percentage labels inside bars (only if segment is large enough)
@@ -279,13 +357,15 @@ def plot_scenarios(
                 # Embodied percentage (bottom part)
                 if emb_pct > 10:
                     ax.text(i, emb / 2, f'{emb_pct:.0f}%',
-                            ha='center', va='center', fontsize=9,
+                            ha='center', va='center',
+                            fontsize=style.annotation_fontsize,
                             fontweight='medium', color='white')
 
                 # Operational percentage (top part)
                 if ops_pct > 10:
                     ax.text(i, emb + ops / 2, f'{ops_pct:.0f}%',
-                            ha='center', va='center', fontsize=9,
+                            ha='center', va='center',
+                            fontsize=style.annotation_fontsize,
                             fontweight='medium', color='white')
 
         # Add diff from baseline annotation above bars
@@ -293,12 +373,13 @@ def plot_scenarios(
         for i, total in enumerate(total_vals):
             diff_text, diff_color = _format_diff(total, baseline_total, metric_info['is_carbon'])
             ax.text(i, total + max_total * 0.03, diff_text,
-                    ha='center', va='bottom', fontsize=10,
+                    ha='center', va='bottom',
+                    fontsize=style.tick_fontsize,
                     fontweight='bold', color=diff_color)
 
         # Customize axes
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, fontsize=9)
+        ax.set_xticklabels(labels, fontsize=style.annotation_fontsize)
 
         # Add server count below x-axis labels if available
         if show_server_count:
@@ -312,18 +393,11 @@ def plot_scenarios(
                                 xytext=(0, server_offset),
                                 textcoords='offset points', ha='center', va='top',
                                 fontsize=8, color=COLORS['neutral'])
-        ax.set_ylabel(f"{metric_info['label']} ({metric_info['unit']})", fontsize=11)
+        ax.set_ylabel(f"{metric_info['label']} ({metric_info['unit']})",
+                       fontsize=style.axis_label_fontsize)
         ax.set_ylim(0, max(total_vals) * 1.15)
 
-        # Clean grid
-        ax.yaxis.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
-        ax.set_axisbelow(True)
-
-        # Clean spines
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_color('#cccccc')
-        ax.spines['bottom'].set_color('#cccccc')
+        _apply_common_style(ax, style)
 
         # Y-axis formatting: use engineering suffixes (k, M) for readability
         ax.yaxis.set_major_formatter(plt.FuncFormatter(_eng_format))
@@ -336,11 +410,13 @@ def plot_scenarios(
         mpatches.Patch(color=colors.get('operational', COLORS['operational']), label='Operational (OpEx)'),
     ]
     fig.legend(handles=handles, loc='upper center', ncol=2,
-               bbox_to_anchor=(0.5, 0.01), frameon=False, fontsize=10)
+               bbox_to_anchor=(0.5, 0.01), frameon=False,
+               fontsize=style.legend_fontsize)
 
     # Title (only if show_plot_title is True)
     if title and show_plot_title:
-        fig.suptitle(title, fontsize=13, fontweight='bold', y=0.98, color='#333333')
+        fig.suptitle(title, fontsize=style.title_fontsize, fontweight='bold',
+                     y=0.98, color='#333333')
 
     # Adjust layout based on whether title is shown
     has_multiline = any('\n' in s.get('name', '') for s in scenarios)
@@ -351,7 +427,8 @@ def plot_scenarios(
         plt.tight_layout(rect=[0, bottom_margin, 1, 1.0])
 
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.savefig(save_path, dpi=style.dpi, bbox_inches='tight',
+                    facecolor=style.facecolor)
 
     if show:
         plt.show()
@@ -393,6 +470,7 @@ def plot_scenario_comparison(
     show: bool = True,
     title: Optional[str] = None,
     colors: Optional[Dict[str, str]] = None,
+    style: Optional[PlotStyle] = None,
 ) -> Optional[Any]:
     """
     Create stacked bar charts comparing scenarios from a RunResult.
@@ -412,6 +490,7 @@ def plot_scenario_comparison(
         show: Whether to display the plot (default True)
         title: Optional custom title
         colors: Optional dict with 'embodied' and 'operational' color overrides
+        style: Optional PlotStyle for customizing appearance (default: ATF style)
 
     Returns:
         matplotlib Figure object if matplotlib is available
@@ -458,6 +537,7 @@ def plot_scenario_comparison(
         show=show,
         title=title,
         colors=colors,
+        style=style,
     )
 
 
@@ -468,6 +548,7 @@ def plot_sweep_breakeven(
     figsize: Tuple[float, float] = (10, 6),
     show: bool = True,
     title: Optional[str] = None,
+    style: Optional[PlotStyle] = None,
 ) -> Optional[Any]:
     """
     Plot breakeven oversubscription ratio across a parameter sweep.
@@ -479,11 +560,15 @@ def plot_sweep_breakeven(
         figsize: Figure size (width, height) in inches
         show: Whether to display the plot (default True)
         title: Optional custom title
+        style: Optional PlotStyle for customizing appearance (default: ATF style)
 
     Returns:
         matplotlib Figure object if matplotlib is available
     """
     _check_matplotlib()
+
+    if style is None:
+        style = DEFAULT_STYLE
 
     # Extract sweep results
     if hasattr(result, 'sweep_results') and result.sweep_results:
@@ -519,12 +604,11 @@ def plot_sweep_breakeven(
     # Set up professional style
     plt.rcParams.update({
         'font.family': 'sans-serif',
-        'font.size': 10,
+        'font.size': style.tick_fontsize,
     })
 
     fig, ax = plt.subplots(figsize=figsize)
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
+    fig.patch.set_facecolor(style.facecolor)
 
     # Plot line with markers, handling None values
     valid_x = []
@@ -538,7 +622,8 @@ def plot_sweep_breakeven(
         else:
             none_x.append(x)
 
-    ax.plot(valid_x, valid_y, 'o-', linewidth=2, markersize=8,
+    ax.plot(valid_x, valid_y, 'o-', linewidth=style.line_width,
+            markersize=style.marker_size, alpha=style.line_alpha,
             color=COLORS['embodied'], label=f'Breakeven ({metric.upper()})')
 
     # Mark where breakeven is not achievable
@@ -551,25 +636,25 @@ def plot_sweep_breakeven(
     ax.axhline(1.0, color=COLORS['neutral'], linestyle=':', alpha=0.7, linewidth=1.5,
                label='No oversubscription (R=1.0)')
 
-    ax.set_xlabel(_format_parameter_label(param_name), fontsize=11)
-    ax.set_ylabel(f'Breakeven Oversubscription Ratio ({metric.upper()})', fontsize=11)
+    ax.set_xlabel(_format_parameter_label(param_name),
+                   fontsize=style.axis_label_fontsize)
+    ax.set_ylabel(f'Breakeven Oversubscription Ratio ({metric.upper()})',
+                   fontsize=style.axis_label_fontsize)
 
-    ax.legend(loc='best', frameon=True, fontsize=9)
-    ax.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_color('#cccccc')
-    ax.spines['bottom'].set_color('#cccccc')
+    ax.legend(loc='best', frameon=True, fontsize=style.legend_fontsize)
+    _apply_common_style(ax, style)
 
     if title is None:
         exp_name = meta.get('experiment_name', 'Sweep')
         title = f"Breakeven Analysis: {exp_name}"
-    ax.set_title(title, fontsize=13, fontweight='bold', color='#333333')
+    ax.set_title(title, fontsize=style.title_fontsize, fontweight='bold',
+                 color='#333333')
 
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.savefig(save_path, dpi=style.dpi, bbox_inches='tight',
+                    facecolor=style.facecolor)
 
     if show:
         plt.show()
@@ -619,6 +704,7 @@ def plot_breakeven_search(
     figsize: Tuple[float, float] = (10, 6),
     show: bool = True,
     title: Optional[str] = None,
+    style: Optional[PlotStyle] = None,
 ) -> Optional[Any]:
     """
     Plot the convergence of a breakeven search.
@@ -631,11 +717,15 @@ def plot_breakeven_search(
         figsize: Figure size (width, height) in inches
         show: Whether to display the plot (default True)
         title: Optional custom title
+        style: Optional PlotStyle for customizing appearance (default: ATF style)
 
     Returns:
         matplotlib Figure object if matplotlib is available
     """
     _check_matplotlib()
+
+    if style is None:
+        style = DEFAULT_STYLE
 
     # Extract search history
     if hasattr(breakeven_result, 'search_history'):
@@ -664,15 +754,15 @@ def plot_breakeven_search(
     # Set up professional style
     plt.rcParams.update({
         'font.family': 'sans-serif',
-        'font.size': 10,
+        'font.size': style.tick_fontsize,
     })
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=figsize, sharex=True)
-    fig.patch.set_facecolor('white')
+    fig.patch.set_facecolor(style.facecolor)
 
     # Plot parameter values
-    ax1.set_facecolor('white')
-    ax1.plot(iterations, values, 'o-', linewidth=2, markersize=6,
+    ax1.plot(iterations, values, 'o-', linewidth=style.line_width, markersize=6,
+             alpha=style.line_alpha,
              color=COLORS['embodied'], label='Parameter Value')
 
     # Mark final value if breakeven achieved
@@ -686,33 +776,31 @@ def plot_breakeven_search(
         ax1.axhline(final_value, color=COLORS['positive'], linestyle='--',
                    alpha=0.7, linewidth=1.5, label=f'Breakeven: {final_value:.4f}')
 
-    ax1.set_ylabel('Parameter Value', fontsize=11)
-    ax1.legend(loc='best', frameon=True, fontsize=9)
-    ax1.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
-    ax1.spines['top'].set_visible(False)
-    ax1.spines['right'].set_visible(False)
+    ax1.set_ylabel('Parameter Value', fontsize=style.axis_label_fontsize)
+    ax1.legend(loc='best', frameon=True, fontsize=style.legend_fontsize)
+    _apply_common_style(ax1, style)
 
     # Plot errors
-    ax2.set_facecolor('white')
-    ax2.plot(iterations, errors, 'o-', linewidth=2, markersize=6,
+    ax2.plot(iterations, errors, 'o-', linewidth=style.line_width, markersize=6,
+             alpha=style.line_alpha,
              color=COLORS['operational'], label='Error')
     ax2.axhline(0, color=COLORS['neutral'], linestyle='-', alpha=0.5, linewidth=1)
 
-    ax2.set_xlabel('Iteration', fontsize=11)
-    ax2.set_ylabel('Normalized Error', fontsize=11)
-    ax2.legend(loc='best', frameon=True, fontsize=9)
-    ax2.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
-    ax2.spines['top'].set_visible(False)
-    ax2.spines['right'].set_visible(False)
+    ax2.set_xlabel('Iteration', fontsize=style.axis_label_fontsize)
+    ax2.set_ylabel('Normalized Error', fontsize=style.axis_label_fontsize)
+    ax2.legend(loc='best', frameon=True, fontsize=style.legend_fontsize)
+    _apply_common_style(ax2, style)
 
     if title is None:
         title = "Breakeven Search Convergence"
-    fig.suptitle(title, fontsize=13, fontweight='bold', y=0.98, color='#333333')
+    fig.suptitle(title, fontsize=style.title_fontsize, fontweight='bold',
+                 y=0.98, color='#333333')
 
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.savefig(save_path, dpi=style.dpi, bbox_inches='tight',
+                    facecolor=style.facecolor)
 
     if show:
         plt.show()
@@ -784,6 +872,7 @@ def plot_compare_sweep(
     show_plot_title: Optional[bool] = None,
     x_axis_markers: Optional[List[float]] = None,
     x_axis_marker_labels: Optional[List[str]] = None,
+    style: Optional[PlotStyle] = None,
 ) -> Optional[Any]:
     """
     Plot compare_sweep results showing % difference vs sweep parameter.
@@ -803,11 +892,15 @@ def plot_compare_sweep(
         show_plot_title: Whether to show the title (default from config or True)
         x_axis_markers: List of x-values to draw vertical lines and label intersections (default from config or None)
         x_axis_marker_labels: Labels for x_axis_markers, displayed at top of vertical lines (default from config or None)
+        style: Optional PlotStyle for customizing appearance (default: ATF style)
 
     Returns:
         matplotlib Figure object if matplotlib is available
     """
     _check_matplotlib()
+
+    if style is None:
+        style = DEFAULT_STYLE
 
     # Extract compare_sweep results
     if hasattr(result, 'compare_sweep_results'):
@@ -914,12 +1007,11 @@ def plot_compare_sweep(
     # Set up professional style
     plt.rcParams.update({
         'font.family': 'sans-serif',
-        'font.size': 10,
+        'font.size': style.tick_fontsize,
     })
 
     fig, ax = plt.subplots(figsize=figsize)
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
+    fig.patch.set_facecolor(style.facecolor)
 
     # Determine which metrics to plot
     if metric == 'all':
@@ -935,7 +1027,7 @@ def plot_compare_sweep(
 
         for metric_name in metrics_to_plot:
             metric_key = f'{metric_name}_diff_pct'
-            style = metric_styles[metric_name]
+            metric_style = metric_styles[metric_name]
 
             # Extract values for this scenario and metric
             if is_multi:
@@ -946,9 +1038,9 @@ def plot_compare_sweep(
 
             # Build label using display labels
             # Use label_suffix (which has proper capitalization like ' TCO', ' Carbon')
-            metric_display = style['label_suffix'].strip()  # e.g., 'Carbon', 'TCO'
+            metric_display = metric_style['label_suffix'].strip()  # e.g., 'Carbon', 'TCO'
             if is_multi and len(metrics_to_plot) > 1:
-                plot_label = f"{scenario_label}{style['label_suffix']}"
+                plot_label = f"{scenario_label}{metric_style['label_suffix']}"
             elif is_multi:
                 plot_label = scenario_label
             elif len(metrics_to_plot) > 1:
@@ -965,8 +1057,9 @@ def plot_compare_sweep(
                 color = base_color
 
             # Plot line
-            line, = ax.plot(param_values, y_values, f"{style['marker']}-",
-                           linewidth=2, markersize=8, color=color, label=plot_label)
+            line, = ax.plot(param_values, y_values, f"{metric_style['marker']}-",
+                           linewidth=style.line_width, markersize=style.marker_size,
+                           alpha=style.line_alpha, color=color, label=plot_label)
 
             # Find and mark breakeven point
             if show_breakeven_marker:
@@ -1000,9 +1093,11 @@ def plot_compare_sweep(
     ax.axhspan(0, y_max, alpha=0.1, color=COLORS['negative'], label='_nolegend_')
 
     # Add annotations for savings/cost regions
-    ax.text(0.02, 0.02, 'Savings', transform=ax.transAxes, fontsize=9,
+    ax.text(0.02, 0.02, 'Savings', transform=ax.transAxes,
+            fontsize=style.annotation_fontsize,
             color=COLORS['positive'], fontweight='bold', alpha=0.7)
-    ax.text(0.02, 0.98, 'Increase', transform=ax.transAxes, fontsize=9,
+    ax.text(0.02, 0.98, 'Increase', transform=ax.transAxes,
+            fontsize=style.annotation_fontsize,
             color=COLORS['negative'], fontweight='bold', alpha=0.7, va='top')
 
     # Add breakeven labels (high zorder to appear above x_axis_marker labels)
@@ -1016,14 +1111,15 @@ def plot_compare_sweep(
                 label_text = f"Breakeven: {bx:.3f}"
             ax.annotate(label_text, xy=(bx, 0), xytext=(0, y_offset),
                        textcoords='offset points', ha='center', va='bottom',
-                       fontsize=9, fontweight='bold', color=color,
+                       fontsize=style.annotation_fontsize, fontweight='bold',
+                       color=color,
                        bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
                                 edgecolor=color, alpha=0.9),
                        zorder=20)
 
-    ax.set_xlabel(display_param_name, fontsize=11)
-    ax.set_ylabel('Change vs Baseline (%)', fontsize=11)
-    
+    ax.set_xlabel(display_param_name, fontsize=style.axis_label_fontsize)
+    ax.set_ylabel('Change vs Baseline (%)', fontsize=style.axis_label_fontsize)
+
     # Draw x-axis markers if specified
     if x_axis_markers:
         for marker_idx, marker_x in enumerate(x_axis_markers):
@@ -1037,7 +1133,8 @@ def plot_compare_sweep(
                 y_top = ax.get_ylim()[1]
                 ax.annotate(marker_label, xy=(marker_x, y_top),
                            xytext=(0, 5), textcoords='offset points',
-                           fontsize=9, color='#555555', fontweight='bold',
+                           fontsize=style.annotation_fontsize, color='#555555',
+                           fontweight='bold',
                            ha='center', va='bottom',
                            bbox=dict(boxstyle='round,pad=0.2', facecolor='white',
                                    edgecolor='gray', alpha=0.9))
@@ -1067,7 +1164,8 @@ def plot_compare_sweep(
                             color = base_color
 
                         # Plot marker point
-                        ax.plot(marker_x, y_at_marker, 'o', markersize=8, color=color,
+                        ax.plot(marker_x, y_at_marker, 'o',
+                               markersize=style.marker_size, color=color,
                                markeredgecolor='white', markeredgewidth=1.5, zorder=10)
 
                         # Add label with y-value
@@ -1077,11 +1175,9 @@ def plot_compare_sweep(
                                    fontsize=8, color=color, fontweight='bold',
                                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
                                            edgecolor=color, alpha=0.8))
-    
-    ax.legend(loc='best', frameon=True, fontsize=9)
-    ax.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+
+    ax.legend(loc='best', frameon=True, fontsize=style.legend_fontsize)
+    _apply_common_style(ax, style)
 
     # Set title only if show_plot_title is True
     if show_plot_title:
@@ -1092,13 +1188,15 @@ def plot_compare_sweep(
             elif isinstance(result, dict) and 'config' in result:
                 config_name = result['config'].get('name')
             title = f"Compare Sweep: {config_name}" if config_name else "Compare Sweep Analysis"
-        
-        ax.set_title(title, fontsize=13, fontweight='bold', color='#333333')
+
+        ax.set_title(title, fontsize=style.title_fontsize, fontweight='bold',
+                     color='#333333')
 
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.savefig(save_path, dpi=style.dpi, bbox_inches='tight',
+                    facecolor=style.facecolor)
 
     if show:
         plt.show()
@@ -1113,6 +1211,7 @@ def plot_breakeven_curve(
     show: bool = True,
     title: Optional[str] = None,
     show_plot_title: Optional[bool] = None,
+    style: Optional[PlotStyle] = None,
 ) -> Optional[Any]:
     """
     Plot breakeven curve showing breakeven values across a swept parameter.
@@ -1127,11 +1226,15 @@ def plot_breakeven_curve(
         show: Whether to display the plot (default True)
         title: Optional custom title
         show_plot_title: Whether to show the title (default from config or True)
+        style: Optional PlotStyle for customizing appearance (default: ATF style)
 
     Returns:
         matplotlib Figure object if matplotlib is available
     """
     _check_matplotlib()
+
+    if style is None:
+        style = DEFAULT_STYLE
 
     # Extract breakeven_curve results
     if hasattr(result, 'breakeven_curve_results'):
@@ -1170,12 +1273,11 @@ def plot_breakeven_curve(
     # Set up professional style
     plt.rcParams.update({
         'font.family': 'sans-serif',
-        'font.size': 10,
+        'font.size': style.tick_fontsize,
     })
 
     fig, ax = plt.subplots(figsize=figsize)
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
+    fig.patch.set_facecolor(style.facecolor)
 
     for idx, series in enumerate(curve_results):
         label = series.get('label', f'Series {idx + 1}')
@@ -1192,7 +1294,8 @@ def plot_breakeven_curve(
         if x_vals:
             color = series_colors[idx % len(series_colors)]
             marker = markers[idx % len(markers)]
-            ax.plot(x_vals, y_vals, f'{marker}-', linewidth=2, markersize=8,
+            ax.plot(x_vals, y_vals, f'{marker}-', linewidth=style.line_width,
+                    markersize=style.marker_size, alpha=style.line_alpha,
                     color=color, label=label)
 
     # Draw y-axis markers (horizontal reference lines)
@@ -1217,18 +1320,17 @@ def plot_breakeven_curve(
                     xy=(1.0, marker_y),
                     xycoords=('axes fraction', 'data'),
                     xytext=(5, 0), textcoords='offset points',
-                    fontsize=9, color='#555555', fontweight='bold',
+                    fontsize=style.annotation_fontsize, color='#555555',
+                    fontweight='bold',
                     ha='left', va='center',
                     bbox=dict(boxstyle='round,pad=0.2', facecolor='white',
                               edgecolor='gray', alpha=0.9),
                 )
 
-    ax.set_xlabel(x_label or 'Parameter', fontsize=11)
-    ax.set_ylabel(y_label or 'Breakeven Value', fontsize=11)
-    ax.legend(loc='best', frameon=True, fontsize=9)
-    ax.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+    ax.set_xlabel(x_label or 'Parameter', fontsize=style.axis_label_fontsize)
+    ax.set_ylabel(y_label or 'Breakeven Value', fontsize=style.axis_label_fontsize)
+    ax.legend(loc='best', frameon=True, fontsize=style.legend_fontsize)
+    _apply_common_style(ax, style)
 
     if show_plot_title:
         if title is None:
@@ -1238,12 +1340,14 @@ def plot_breakeven_curve(
             elif isinstance(result, dict) and 'config' in result:
                 config_name = result['config'].get('name')
             title = f"Breakeven Curve: {config_name}" if config_name else "Breakeven Curve"
-        ax.set_title(title, fontsize=13, fontweight='bold', color='#333333')
+        ax.set_title(title, fontsize=style.title_fontsize, fontweight='bold',
+                     color='#333333')
 
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.savefig(save_path, dpi=style.dpi, bbox_inches='tight',
+                    facecolor=style.facecolor)
 
     if show:
         plt.show()
@@ -1279,6 +1383,7 @@ def plot_savings_curve(
     title: Optional[str] = None,
     show_plot_title: Optional[bool] = None,
     metric: Optional[str] = None,
+    style: Optional[PlotStyle] = None,
 ) -> Optional[Any]:
     """
     Plot savings curve showing % savings at specific marker values across a parameter.
@@ -1294,11 +1399,15 @@ def plot_savings_curve(
         title: Optional custom title
         show_plot_title: Whether to show the title (default from config or True)
         metric: Optional single metric to plot ('carbon' or 'tco'). None = all metrics.
+        style: Optional PlotStyle for customizing appearance (default: ATF style)
 
     Returns:
         matplotlib Figure object if matplotlib is available
     """
     _check_matplotlib()
+
+    if style is None:
+        style = DEFAULT_STYLE
 
     # Extract savings_curve results
     if hasattr(result, 'savings_curve_results'):
@@ -1344,7 +1453,7 @@ def plot_savings_curve(
 
     plt.rcParams.update({
         'font.family': 'sans-serif',
-        'font.size': 10,
+        'font.size': style.tick_fontsize,
     })
 
     n_metrics = len(metrics)
@@ -1353,11 +1462,10 @@ def plot_savings_curve(
         axes = [ax_single]
     else:
         fig, axes = plt.subplots(1, n_metrics, figsize=(figsize[0] * n_metrics / 2, figsize[1]))
-    fig.patch.set_facecolor('white')
+    fig.patch.set_facecolor(style.facecolor)
 
     for ax_idx, m in enumerate(metrics):
         ax = axes[ax_idx]
-        ax.set_facecolor('white')
         metric_key = f'{m}_diff_pct'
 
         for idx, series in enumerate(curve_results):
@@ -1375,7 +1483,8 @@ def plot_savings_curve(
             if x_vals:
                 color = series_colors[idx % len(series_colors)]
                 mkr = marker_shapes[idx % len(marker_shapes)]
-                ax.plot(x_vals, y_vals, f'{mkr}-', linewidth=2, markersize=8,
+                ax.plot(x_vals, y_vals, f'{mkr}-', linewidth=style.line_width,
+                        markersize=style.marker_size, alpha=style.line_alpha,
                         color=color, label=label)
 
         # Reference line at 0%
@@ -1389,24 +1498,26 @@ def plot_savings_curve(
             ax.axhspan(0, ylim[1], color='#e74c3c', alpha=0.05, zorder=0)
         ax.set_ylim(ylim)
 
-        ax.set_xlabel(x_label or 'Parameter', fontsize=11)
-        ax.set_ylabel(y_label or 'Savings vs Baseline (%)', fontsize=11)
-        ax.legend(loc='best', frameon=True, fontsize=9)
-        ax.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
+        ax.set_xlabel(x_label or 'Parameter', fontsize=style.axis_label_fontsize)
+        ax.set_ylabel(y_label or 'Savings vs Baseline (%)',
+                       fontsize=style.axis_label_fontsize)
+        ax.legend(loc='best', frameon=True, fontsize=style.legend_fontsize)
+        _apply_common_style(ax, style)
 
         if show_plot_title:
             ax.set_title(f"{metric_labels.get(m, m)} Savings",
-                         fontsize=12, fontweight='bold', color='#333333')
+                         fontsize=style.title_fontsize - 1, fontweight='bold',
+                         color='#333333')
 
     if show_plot_title and title:
-        fig.suptitle(title, fontsize=13, fontweight='bold', color='#333333', y=1.02)
+        fig.suptitle(title, fontsize=style.title_fontsize, fontweight='bold',
+                     color='#333333', y=1.02)
 
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.savefig(save_path, dpi=style.dpi, bbox_inches='tight',
+                    facecolor=style.facecolor)
 
     if show:
         plt.show()
@@ -1531,6 +1642,7 @@ def plot_sweep_analysis(
     figsize: Tuple[float, float] = (10, 6),
     show: bool = True,
     title: Optional[str] = None,
+    style: Optional[PlotStyle] = None,
 ) -> Optional[Any]:
     """
     Plot sweep analysis results showing breakeven values across parameter sweep.
@@ -1541,11 +1653,15 @@ def plot_sweep_analysis(
         figsize: Figure size (width, height) in inches
         show: Whether to display the plot (default True)
         title: Optional custom title
+        style: Optional PlotStyle for customizing appearance (default: ATF style)
 
     Returns:
         matplotlib Figure object if matplotlib is available
     """
     _check_matplotlib()
+
+    if style is None:
+        style = DEFAULT_STYLE
 
     # Extract sweep results
     if hasattr(result, 'sweep_results'):
@@ -1580,19 +1696,18 @@ def plot_sweep_analysis(
     elif isinstance(result, dict) and 'config' in result:
         analysis = result['config'].get('analysis', {})
         param_name = analysis.get('sweep_parameter', 'Parameter')
-    
+
     # Format parameter label
     display_param_name = _format_parameter_label(param_name)
 
     # Set up professional style
     plt.rcParams.update({
         'font.family': 'sans-serif',
-        'font.size': 10,
+        'font.size': style.tick_fontsize,
     })
 
     fig, ax = plt.subplots(figsize=figsize)
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
+    fig.patch.set_facecolor(style.facecolor)
 
     # Separate achieved and not achieved
     valid_x = []
@@ -1608,7 +1723,8 @@ def plot_sweep_analysis(
 
     # Plot achieved points
     if valid_x:
-        ax.plot(valid_x, valid_y, 'o-', linewidth=2, markersize=8,
+        ax.plot(valid_x, valid_y, 'o-', linewidth=style.line_width,
+                markersize=style.marker_size, alpha=style.line_alpha,
                 color=COLORS['embodied'], label='Breakeven Value')
 
     # Mark not achieved
@@ -1621,12 +1737,10 @@ def plot_sweep_analysis(
     ax.axhline(1.0, color=COLORS['neutral'], linestyle=':', alpha=0.7, linewidth=1.5,
                label='No oversubscription (R=1.0)')
 
-    ax.set_xlabel(display_param_name, fontsize=11)
-    ax.set_ylabel('Breakeven Value', fontsize=11)
-    ax.legend(loc='best', frameon=True, fontsize=9)
-    ax.grid(True, linestyle='-', alpha=0.2, color='#cccccc')
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+    ax.set_xlabel(display_param_name, fontsize=style.axis_label_fontsize)
+    ax.set_ylabel('Breakeven Value', fontsize=style.axis_label_fontsize)
+    ax.legend(loc='best', frameon=True, fontsize=style.legend_fontsize)
+    _apply_common_style(ax, style)
 
     if title is None:
         config_name = None
@@ -1636,12 +1750,14 @@ def plot_sweep_analysis(
             config_name = result['config'].get('name')
         title = f"Sweep Analysis: {config_name}" if config_name else "Sweep Analysis"
 
-    ax.set_title(title, fontsize=13, fontweight='bold', color='#333333')
+    ax.set_title(title, fontsize=style.title_fontsize, fontweight='bold',
+                 color='#333333')
 
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+        plt.savefig(save_path, dpi=style.dpi, bbox_inches='tight',
+                    facecolor=style.facecolor)
 
     if show:
         plt.show()

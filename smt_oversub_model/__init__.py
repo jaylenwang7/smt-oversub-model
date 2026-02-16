@@ -116,6 +116,7 @@ from .output import (
 # Plotting (optional, requires matplotlib)
 try:
     from .plot import (
+        PlotStyle,
         plot_scenario_comparison,
         plot_sweep_breakeven,
         plot_scenarios,
@@ -128,6 +129,7 @@ try:
     _HAS_PLOT = True
 except ImportError:
     _HAS_PLOT = False
+    PlotStyle = None
     plot_scenario_comparison = None
     plot_sweep_breakeven = None
     plot_scenarios = None
@@ -208,6 +210,7 @@ __all__ = [
     'save_declarative_result',
     'load_declarative_result',
     # Plotting (optional)
+    'PlotStyle',
     'plot_scenario_comparison',
     'plot_sweep_breakeven',
     'plot_scenarios',
