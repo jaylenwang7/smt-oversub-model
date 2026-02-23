@@ -557,6 +557,8 @@ class ScenarioConfig:
     vcpu_demand_multiplier: float = 1.0
     overrides: Optional[Dict[str, Any]] = None  # processor param overrides
     resource_scaling: Optional[ResourceScalingConfig] = None
+    max_vms_per_server: Optional[int] = None
+    avg_vm_size_vcpus: Optional[float] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ScenarioConfig':
@@ -570,6 +572,8 @@ class ScenarioConfig:
             vcpu_demand_multiplier=data.get('vcpu_demand_multiplier', 1.0),
             overrides=data.get('overrides'),
             resource_scaling=resource_scaling,
+            max_vms_per_server=data.get('max_vms_per_server'),
+            avg_vm_size_vcpus=data.get('avg_vm_size_vcpus'),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -583,6 +587,10 @@ class ScenarioConfig:
             d['overrides'] = self.overrides
         if self.resource_scaling:
             d['resource_scaling'] = self.resource_scaling.to_dict()
+        if self.max_vms_per_server is not None:
+            d['max_vms_per_server'] = self.max_vms_per_server
+        if self.avg_vm_size_vcpus is not None:
+            d['avg_vm_size_vcpus'] = self.avg_vm_size_vcpus
         return d
 
 
@@ -1254,12 +1262,14 @@ class WorkloadSpec:
     """Workload configuration."""
     total_vcpus: int = 10000
     avg_util: float = 0.3
+    avg_vm_size_vcpus: float = 1.0
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'WorkloadSpec':
         return cls(
             total_vcpus=data.get('total_vcpus', 10000),
             avg_util=data.get('avg_util', 0.3),
+            avg_vm_size_vcpus=data.get('avg_vm_size_vcpus', 1.0),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1901,6 +1911,7 @@ class DeclarativeAnalysisEngine:
         workload = self._builder.build_workload_params(
             cfg.workload.total_vcpus,
             cfg.workload.avg_util,
+            avg_vm_size_vcpus=cfg.workload.avg_vm_size_vcpus,
         )
         cost_params = self._builder.build_cost_params()
         self._model = OverssubModel(workload, cost_params)
@@ -2006,6 +2017,7 @@ class DeclarativeAnalysisEngine:
         workload = self._builder.build_workload_params(
             cfg.workload.total_vcpus,
             cfg.workload.avg_util,
+            avg_vm_size_vcpus=cfg.workload.avg_vm_size_vcpus,
         )
         cost_params = self._builder.build_cost_params()
         self._model = OverssubModel(workload, cost_params)
@@ -2088,6 +2100,8 @@ class DeclarativeAnalysisEngine:
             oversub_ratio=scenario_cfg.oversub_ratio,
             util_overhead=scenario_cfg.util_overhead,
             vcpu_demand_multiplier=scenario_cfg.vcpu_demand_multiplier,
+            max_vms_per_server=scenario_cfg.max_vms_per_server,
+            avg_vm_size_vcpus=scenario_cfg.avg_vm_size_vcpus,
         )
 
     def _resolve_scenario_cost_overrides(self, name: str) -> Tuple[Dict[str, Any], Optional['ScenarioParams']]:
@@ -2138,6 +2152,13 @@ class DeclarativeAnalysisEngine:
             raw_vcpus = params.processor.available_pcpus * params.oversub_ratio
             # Clamp to at least hw_threads: can't have less than base hardware
             vcpus_per_server = max(float(hw_threads), raw_vcpus)
+
+            # Apply VM cap to vcpus_per_server (same logic as evaluate_scenario)
+            if scenario_cfg.max_vms_per_server is not None:
+                avg_vm_vcpus = scenario_cfg.avg_vm_size_vcpus or self._config.workload.avg_vm_size_vcpus
+                max_vcpus_from_vm_cap = scenario_cfg.max_vms_per_server * avg_vm_vcpus
+                vcpus_per_server = min(vcpus_per_server, max_vcpus_from_vm_cap)
+
             scale_factor = max(1.0, vcpus_per_server / hw_threads)
 
             # Scale embodied carbon breakdown
@@ -3068,6 +3089,8 @@ class DeclarativeAnalysisEngine:
                 self._config.workload.avg_util = value
             elif rest == 'total_vcpus':
                 self._config.workload.total_vcpus = int(value)
+            elif rest == 'avg_vm_size_vcpus':
+                self._config.workload.avg_vm_size_vcpus = value
         elif first_part == 'cost':
             if rest == 'embodied_carbon_kg':
                 self._config.cost.embodied_carbon_kg = value

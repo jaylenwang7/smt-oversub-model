@@ -227,13 +227,16 @@ class ScenarioParams:
     oversub_ratio: float  # vCPU:pCPU ratio (1.0 = no oversub)
     util_overhead: float = 0.0  # Additive overhead to effective utilization
     vcpu_demand_multiplier: float = 1.0  # Multiplier for vCPU demand (e.g., 0.7 = 30% less demand)
+    max_vms_per_server: Optional[int] = None  # Optional cap on VMs per server
+    avg_vm_size_vcpus: Optional[float] = None  # Per-scenario override for avg VM size
 
 
-@dataclass 
+@dataclass
 class WorkloadParams:
     """Parameters defining the VM workload to serve."""
     total_vcpus: int  # Total vCPU demand
     avg_util: float   # Average utilization of VMs [0, 1]
+    avg_vm_size_vcpus: float = 1.0  # Average vCPUs per VM (for VM cap conversion)
 
 
 @dataclass
@@ -399,6 +402,13 @@ class OverssubModel:
 
         # Calculate server count needed (using available pCPUs, excluding host overhead)
         vcpu_capacity_per_server = proc.available_pcpus * scenario.oversub_ratio
+
+        # Apply VM cap if configured
+        if scenario.max_vms_per_server is not None:
+            avg_vm_vcpus = scenario.avg_vm_size_vcpus or self.workload.avg_vm_size_vcpus
+            max_vcpus_from_vm_cap = scenario.max_vms_per_server * avg_vm_vcpus
+            vcpu_capacity_per_server = min(vcpu_capacity_per_server, max_vcpus_from_vm_cap)
+
         num_servers = math.ceil(effective_vcpus / vcpu_capacity_per_server)
 
         # Calculate utilization per server

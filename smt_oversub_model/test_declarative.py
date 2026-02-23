@@ -2084,3 +2084,129 @@ class TestSavingsCurve:
             json.dump(config_data, f)
 
         assert is_valid_analysis_config(config_file) is True
+
+
+class TestMaxVmsPerServerDeclarative:
+    """Tests for max_vms_per_server and avg_vm_size_vcpus in declarative configs."""
+
+    def test_scenario_config_roundtrip(self):
+        """ScenarioConfig serializes/deserializes new fields."""
+        data = {
+            'processor': 'nosmt',
+            'oversub_ratio': 2.0,
+            'max_vms_per_server': 50,
+            'avg_vm_size_vcpus': 4.0,
+        }
+        cfg = ScenarioConfig.from_dict(data)
+        assert cfg.max_vms_per_server == 50
+        assert cfg.avg_vm_size_vcpus == 4.0
+
+        d = cfg.to_dict()
+        assert d['max_vms_per_server'] == 50
+        assert d['avg_vm_size_vcpus'] == 4.0
+
+    def test_scenario_config_defaults(self):
+        """ScenarioConfig defaults to None for new fields."""
+        cfg = ScenarioConfig.from_dict({'processor': 'smt'})
+        assert cfg.max_vms_per_server is None
+        assert cfg.avg_vm_size_vcpus is None
+
+        d = cfg.to_dict()
+        assert 'max_vms_per_server' not in d
+        assert 'avg_vm_size_vcpus' not in d
+
+    def test_integration_vm_cap_increases_servers(self, tmp_path):
+        """Declarative config with max_vms_per_server increases server count."""
+        import math
+        config = {
+            'name': 'vm_cap_test',
+            'processor': {
+                'nosmt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 1,
+                    'power_idle_w': 100,
+                    'power_max_w': 400,
+                    'embodied_carbon': {
+                        'per_core': {'cpu': 5.0},
+                        'per_server': {'chassis': 200.0},
+                    },
+                    'server_cost': {
+                        'per_core': {'cpu': 50.0},
+                        'per_server': {'base': 1000.0},
+                    },
+                },
+            },
+            'workload': {'total_vcpus': 1000, 'avg_util': 0.3},
+            'scenarios': {
+                'uncapped': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                },
+                'capped': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                    'max_vms_per_server': 30,
+                },
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'uncapped',
+            },
+        }
+        config_file = tmp_path / 'vm_cap.json'
+        with open(config_file, 'w') as f:
+            json.dump(config, f)
+
+        result = run_analysis(config_file)
+        uncapped = result.scenario_results['uncapped']
+        capped = result.scenario_results['capped']
+
+        # Natural capacity = 48 * 2.0 = 96 vcpus/server
+        # Capped: 30 VMs * 1 vcpu = 30 vcpus/server
+        assert uncapped['num_servers'] == math.ceil(1000 / 96)  # 11
+        assert capped['num_servers'] == math.ceil(1000 / 30)    # 34
+        assert capped['num_servers'] > uncapped['num_servers']
+
+        # Verify structured costs are used (not defaults)
+        # Per server: cpu=5*48 + chassis=200 = 440 kg
+        expected_carbon_per_server = 5.0 * 48 + 200.0
+        assert abs(uncapped['embodied_carbon_kg'] / uncapped['num_servers'] - expected_carbon_per_server) < 0.01
+
+    def test_integration_vm_cap_with_avg_vm_size(self, tmp_path):
+        """Declarative config with avg_vm_size_vcpus at workload level."""
+        import math
+        config = {
+            'name': 'vm_size_test',
+            'processor': {
+                'nosmt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 1,
+                    'power_idle_w': 100,
+                    'power_max_w': 400,
+                },
+            },
+            'workload': {
+                'total_vcpus': 1000,
+                'avg_util': 0.3,
+                'avg_vm_size_vcpus': 4.0,
+            },
+            'scenarios': {
+                'capped': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                    'max_vms_per_server': 20,
+                },
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'capped',
+            },
+        }
+        config_file = tmp_path / 'vm_size.json'
+        with open(config_file, 'w') as f:
+            json.dump(config, f)
+
+        result = run_analysis(config_file)
+        capped = result.scenario_results['capped']
+        # VM cap: 20 VMs * 4 vcpus = 80 vcpus/server (< 96 natural)
+        assert capped['num_servers'] == math.ceil(1000 / 80)  # 13

@@ -1844,3 +1844,93 @@ class TestEmbodiedBreakdownPerVcpu:
         assert 'per_vcpu.ssd' in fleet
         # memory: 33 * 144 * 5 = 23760
         assert abs(fleet['per_vcpu.memory'] - 23760.0) < 0.01
+
+
+class TestMaxVmsPerServer:
+    """Tests for max_vms_per_server and avg_vm_size_vcpus parameters."""
+
+    def _make_model(self, total_vcpus=1000, avg_util=0.3, avg_vm_size_vcpus=1.0):
+        workload = WorkloadParams(total_vcpus=total_vcpus, avg_util=avg_util,
+                                  avg_vm_size_vcpus=avg_vm_size_vcpus)
+        cost = CostParams(
+            embodied_carbon_kg=1000,
+            server_cost_usd=10000,
+            carbon_intensity_g_kwh=400,
+            electricity_cost_usd_kwh=0.10,
+            lifetime_hours=5 * 8760,
+        )
+        return OverssubModel(workload, cost)
+
+    def _make_scenario(self, cores=48, tpc=1, oversub=2.0,
+                       max_vms=None, avg_vm_vcpus=None):
+        proc = ProcessorConfig(
+            physical_cores=cores,
+            threads_per_core=tpc,
+            power_curve=PowerCurve(p_idle=100, p_max=400),
+        )
+        return ScenarioParams(
+            processor=proc,
+            oversub_ratio=oversub,
+            max_vms_per_server=max_vms,
+            avg_vm_size_vcpus=avg_vm_vcpus,
+        )
+
+    def test_default_preserves_behavior(self):
+        """Without max_vms_per_server, behavior is unchanged."""
+        model = self._make_model()
+        scenario = self._make_scenario()
+        result = model.evaluate_scenario(scenario)
+        # 48 cores, R=2.0, capacity = 96 vcpus/server
+        # 1000 / 96 = ceil(10.42) = 11 servers
+        assert result.num_servers == math.ceil(1000 / (48 * 2.0))
+
+    def test_vm_cap_below_natural_capacity(self):
+        """VM cap that limits capacity below natural increases servers."""
+        model = self._make_model()
+        # Natural capacity = 48 * 2.0 = 96 vcpus/server
+        # VM cap = 40 VMs * 1 vcpu = 40 vcpus/server (much lower)
+        scenario = self._make_scenario(max_vms=40)
+        result = model.evaluate_scenario(scenario)
+        expected_servers = math.ceil(1000 / 40)  # 25 servers
+        assert result.num_servers == expected_servers
+
+    def test_vm_cap_above_natural_no_effect(self):
+        """VM cap above natural capacity has no effect."""
+        model = self._make_model()
+        # Natural capacity = 48 * 2.0 = 96 vcpus/server
+        # VM cap = 200 VMs * 1 vcpu = 200 vcpus/server (higher, no effect)
+        scenario_capped = self._make_scenario(max_vms=200)
+        scenario_uncapped = self._make_scenario()
+        r1 = model.evaluate_scenario(scenario_capped)
+        r2 = model.evaluate_scenario(scenario_uncapped)
+        assert r1.num_servers == r2.num_servers
+
+    def test_vm_cap_with_avg_vm_size(self):
+        """VM cap with larger avg_vm_size_vcpus."""
+        model = self._make_model(avg_vm_size_vcpus=4.0)
+        # Natural capacity = 48 * 2.0 = 96 vcpus/server
+        # VM cap = 20 VMs * 4 vcpus = 80 vcpus/server
+        scenario = self._make_scenario(max_vms=20)
+        result = model.evaluate_scenario(scenario)
+        expected_servers = math.ceil(1000 / 80)  # 13 servers
+        assert result.num_servers == expected_servers
+
+    def test_per_scenario_avg_vm_size_overrides_workload(self):
+        """Per-scenario avg_vm_size_vcpus overrides workload default."""
+        model = self._make_model(avg_vm_size_vcpus=4.0)
+        # Workload says 4 vcpus/VM, but scenario overrides to 2
+        # VM cap = 20 VMs * 2 vcpus = 40 vcpus/server
+        scenario = self._make_scenario(max_vms=20, avg_vm_vcpus=2.0)
+        result = model.evaluate_scenario(scenario)
+        expected_servers = math.ceil(1000 / 40)  # 25 servers
+        assert result.num_servers == expected_servers
+
+    def test_vm_cap_no_effect_at_low_oversub(self):
+        """At low oversubscription, VM cap is not binding."""
+        model = self._make_model()
+        # Natural capacity = 48 * 1.0 = 48 vcpus/server
+        # VM cap = 100 VMs * 1 vcpu = 100 vcpus/server (above natural)
+        scenario = self._make_scenario(oversub=1.0, max_vms=100)
+        result = model.evaluate_scenario(scenario)
+        expected_servers = math.ceil(1000 / 48)  # 21 servers
+        assert result.num_servers == expected_servers

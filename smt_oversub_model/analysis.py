@@ -212,11 +212,13 @@ class ScenarioBuilder:
             lifetime_hours=overrides.get('lifetime_years', self.cost.lifetime_years) * 8760,
         )
 
-    def build_workload_params(self, total_vcpus: int, avg_util: float) -> WorkloadParams:
+    def build_workload_params(self, total_vcpus: int, avg_util: float,
+                               avg_vm_size_vcpus: float = 1.0) -> WorkloadParams:
         """Build workload parameters."""
         return WorkloadParams(
             total_vcpus=total_vcpus,
             avg_util=avg_util,
+            avg_vm_size_vcpus=avg_vm_size_vcpus,
         )
 
 
