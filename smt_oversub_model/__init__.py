@@ -113,6 +113,12 @@ from .output import (
     load_result as load_declarative_result,
 )
 
+# Formatter utilities
+from .formatter import (
+    colorize,
+    supports_color,
+)
+
 # Plotting (optional, requires matplotlib)
 try:
     from .plot import (
@@ -125,6 +131,7 @@ try:
         plot_analysis_result,
         plot_sweep_analysis,
         plot_breakeven_curve,
+        plot_per_server_comparison,
     )
     _HAS_PLOT = True
 except ImportError:
@@ -138,6 +145,7 @@ except ImportError:
     plot_analysis_result = None
     plot_sweep_analysis = None
     plot_breakeven_curve = None
+    plot_per_server_comparison = None
 
 __all__ = [
     # Core model
@@ -209,6 +217,9 @@ __all__ = [
     'OutputWriter',
     'save_declarative_result',
     'load_declarative_result',
+    # Formatter utilities
+    'colorize',
+    'supports_color',
     # Plotting (optional)
     'PlotStyle',
     'plot_scenario_comparison',
@@ -219,6 +230,7 @@ __all__ = [
     'plot_analysis_result',
     'plot_sweep_analysis',
     'plot_breakeven_curve',
+    'plot_per_server_comparison',
 ]
 
 __version__ = '0.1.0'

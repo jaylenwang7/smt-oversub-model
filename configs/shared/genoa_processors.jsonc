@@ -16,6 +16,10 @@
 // Per-thread rates: memory = 59.1*12/160 = 4.43 kgCO2e, $33.00
 //                   ssd    = 103*6/160   = 3.86 kgCO2e, $10.23
 //
+// Capacity per-thread rates (GB):
+//   memory = 768GB / 160 threads = 4.8 GB/thread
+//   ssd    = 12000GB / 160 threads = 75.0 GB/thread
+//
 // Power breakdown: max_w = component TDP from data_sources_paper/ (×1.05 for PSU loss).
 //   idle_w derived from frugal-model spec_derates at spec=0 (×1.05 for PSU).
 //   Derate factors at spec=0: CPU 0.30, DRAM 0.30, SSD 0.20, NIC 0.30, Fan 0.30.
@@ -80,6 +84,14 @@
         // $17,321 total rack / 34 servers (rack.yaml, E4000)
         "rack": 510.0
       }
+    },
+    "capacity": {
+      "per_core": {
+        // 768GB / 160 threads = 4.8 GB/thread (12 × 64GB DIMMs)
+        "memory": 4.8,
+        // 12000GB / 160 threads = 75.0 GB/thread (6 × 2TB SSDs)
+        "ssd": 75.0
+      }
     }
   },
 
@@ -129,6 +141,14 @@
         "server": 1505.0,
         "rack": 510.0
       }
+    },
+    "capacity": {
+      "per_core": {
+        // 384GB / 80 threads = 4.8 GB/thread (6 × 64GB DIMMs)
+        "memory_gb": 4.8,
+        // 6000GB / 80 threads = 75.0 GB/thread (3 × 2TB SSDs)
+        "ssd_gb": 75.0
+      }
     }
   },
 
@@ -167,6 +187,12 @@
         "nic": 1022.0,
         "server": 1505.0,
         "rack": 510.0
+      }
+    },
+    "capacity": {
+      "per_core": {
+        "memory": 4.8,
+        "ssd": 75.0
       }
     }
   },
@@ -211,6 +237,12 @@
         "server": 1505.0,
         "rack": 510.0
       }
+    },
+    "capacity": {
+      "per_core": {
+        "memory": 4.8,
+        "ssd": 75.0
+      }
     }
   },
 
@@ -250,6 +282,12 @@
         "nic": 1022.0,
         "server": 1505.0,
         "rack": 510.0
+      }
+    },
+    "capacity": {
+      "per_core": {
+        "memory": 4.8,
+        "ssd": 75.0
       }
     }
   }

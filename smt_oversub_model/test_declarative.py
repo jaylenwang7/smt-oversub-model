@@ -25,10 +25,12 @@ from .declarative import (
     PowerComponentSpec,
     PowerCurveSpec,
     ProcessorSpec,
+    EmbodiedComponentSpec,
 )
 from .model import (
     PowerCurve, ProcessorConfig, ScenarioParams,
     WorkloadParams, CostParams, OverssubModel, ScenarioResult,
+    ComponentBreakdown, EmbodiedBreakdown,
 )
 
 
@@ -2136,7 +2138,7 @@ class TestMaxVmsPerServerDeclarative:
                     },
                 },
             },
-            'workload': {'total_vcpus': 1000, 'avg_util': 0.3},
+            'workload': {'total_vcpus': 1000, 'avg_util': 0.3, 'avg_vm_size_vcpus': 1.0},
             'scenarios': {
                 'uncapped': {
                     'processor': 'nosmt',
@@ -2210,3 +2212,438 @@ class TestMaxVmsPerServerDeclarative:
         capped = result.scenario_results['capped']
         # VM cap: 20 VMs * 4 vcpus = 80 vcpus/server (< 96 natural)
         assert capped['num_servers'] == math.ceil(1000 / 80)  # 13
+
+
+class TestComponentBreakdownPerServerComponents:
+    """Tests for ComponentBreakdown.per_server_components property."""
+
+    def test_per_core_only(self):
+        """Per-core components resolve correctly."""
+        bd = ComponentBreakdown(
+            per_core={'memory': 4.8, 'ssd': 75.0},
+            per_server={},
+            physical_cores=80,
+            threads_per_core=2,
+        )
+        comps = bd.per_server_components
+        assert comps['memory'] == pytest.approx(4.8 * 160, abs=0.1)
+        assert comps['ssd'] == pytest.approx(75.0 * 160, abs=0.1)
+
+    def test_per_server_only(self):
+        """Per-server components resolve correctly."""
+        bd = ComponentBreakdown(
+            per_core={},
+            per_server={'cpu': 34.2, 'nic': 115.0},
+            physical_cores=80,
+            threads_per_core=1,
+        )
+        comps = bd.per_server_components
+        assert comps['cpu'] == 34.2
+        assert comps['nic'] == 115.0
+
+    def test_per_vcpu_only(self):
+        """Per-vCPU components resolve correctly with vcpus_per_server."""
+        bd = ComponentBreakdown(
+            per_core={},
+            per_server={},
+            per_vcpu={'memory': 4.8},
+            physical_cores=80,
+            threads_per_core=1,
+            vcpus_per_server=144,
+        )
+        comps = bd.per_server_components
+        assert comps['memory'] == pytest.approx(4.8 * 144, abs=0.1)
+
+    def test_per_vcpu_fallback_hw_threads(self):
+        """Per-vCPU falls back to hw_threads when vcpus_per_server is 0."""
+        bd = ComponentBreakdown(
+            per_core={},
+            per_server={},
+            per_vcpu={'memory': 4.8},
+            physical_cores=80,
+            threads_per_core=2,
+            vcpus_per_server=0,
+        )
+        comps = bd.per_server_components
+        assert comps['memory'] == pytest.approx(4.8 * 160, abs=0.1)
+
+    def test_mixed_components(self):
+        """Mix of per_core, per_server, and per_vcpu resolves correctly."""
+        bd = ComponentBreakdown(
+            per_core={'ssd': 75.0},
+            per_server={'cpu': 34.2},
+            per_vcpu={'memory': 4.8},
+            physical_cores=80,
+            threads_per_core=1,
+            vcpus_per_server=144,
+        )
+        comps = bd.per_server_components
+        assert comps['ssd'] == pytest.approx(75.0 * 80, abs=0.1)
+        assert comps['cpu'] == 34.2
+        assert comps['memory'] == pytest.approx(4.8 * 144, abs=0.1)
+
+
+class TestCapacityParsing:
+    """Tests for capacity field in ProcessorSpec."""
+
+    def test_capacity_from_dict(self):
+        """ProcessorSpec with capacity field parses correctly."""
+        data = {
+            'physical_cores': 80,
+            'threads_per_core': 2,
+            'power_idle_w': 100,
+            'power_max_w': 400,
+            'capacity': {
+                'per_core': {'memory': 4.8, 'ssd': 75.0},
+            },
+        }
+        spec = ProcessorSpec.from_dict(data)
+        assert spec.capacity is not None
+        assert spec.capacity.per_core['memory'] == 4.8
+        assert spec.capacity.per_core['ssd'] == 75.0
+
+    def test_capacity_to_dict(self):
+        """ProcessorSpec with capacity serializes correctly."""
+        spec = ProcessorSpec(
+            physical_cores=80,
+            threads_per_core=2,
+            capacity=EmbodiedComponentSpec(
+                per_core={'memory': 4.8, 'ssd': 75.0},
+            ),
+        )
+        d = spec.to_dict()
+        assert 'capacity' in d
+        assert d['capacity']['per_core']['memory'] == 4.8
+
+    def test_capacity_none_by_default(self):
+        """ProcessorSpec without capacity has None."""
+        spec = ProcessorSpec(physical_cores=48, threads_per_core=1)
+        assert spec.capacity is None
+
+    def test_capacity_not_in_dict_when_none(self):
+        """ProcessorSpec without capacity omits it from dict."""
+        spec = ProcessorSpec(physical_cores=48, threads_per_core=1)
+        d = spec.to_dict()
+        assert 'capacity' not in d
+
+    def test_capacity_inline_processor_detection(self):
+        """capacity field detected as inline processor."""
+        from .declarative import ProcessorConfigSpec
+        assert ProcessorConfigSpec._is_inline_processor({
+            'capacity': {'per_core': {'memory': 4.8}},
+        })
+
+
+class TestCapacityResolution:
+    """Tests for capacity resolution in _resolve_scenario_cost_overrides."""
+
+    def test_capacity_in_cost_overrides(self, tmp_path):
+        """Capacity breakdown appears in cost_overrides after resolution."""
+        config = {
+            'name': 'capacity_test',
+            'scenarios': {
+                'test': {'processor': 'proc', 'oversub_ratio': 1.0},
+            },
+            'processor': {
+                'proc': {
+                    'physical_cores': 10,
+                    'threads_per_core': 2,
+                    'power_idle_w': 100,
+                    'power_max_w': 400,
+                    'embodied_carbon': {
+                        'per_core': {'memory': 5.0},
+                        'per_server': {'cpu': 30.0},
+                    },
+                    'server_cost': {
+                        'per_core': {'memory': 40.0},
+                        'per_server': {'cpu': 1000.0},
+                    },
+                    'capacity': {
+                        'per_core': {'memory': 4.0, 'ssd': 100.0},
+                    },
+                },
+            },
+            'analysis': {'type': 'compare'},
+            'workload': {'total_vcpus': 1000, 'avg_util': 0.3},
+        }
+        config_file = tmp_path / 'cap.json'
+        with open(config_file, 'w') as f:
+            json.dump(config, f)
+
+        result = run_analysis(config_file)
+        test_data = result.scenario_results['test']
+        bd = test_data.get('embodied_breakdown')
+        assert bd is not None
+        capacity = bd.get('capacity')
+        assert capacity is not None
+        # 10 cores * 2 tpc = 20 hw threads
+        # per_core memory: 4.0 * 20 = 80 per server
+        assert capacity['per_core']['memory'] == 4.0
+
+    def test_capacity_with_resource_scaling(self, tmp_path):
+        """Capacity components move from per_core to per_vcpu with resource scaling."""
+        config = {
+            'name': 'capacity_scaling_test',
+            'scenarios': {
+                'scaled': {
+                    'processor': 'proc',
+                    'oversub_ratio': 2.0,
+                    'resource_scaling': {
+                        'scale_with_vcpus': ['memory', 'ssd'],
+                    },
+                },
+            },
+            'processor': {
+                'proc': {
+                    'physical_cores': 10,
+                    'threads_per_core': 1,
+                    'power_idle_w': 100,
+                    'power_max_w': 400,
+                    'core_overhead': 0,
+                    'embodied_carbon': {
+                        'per_core': {'memory': 5.0},
+                        'per_server': {'cpu': 30.0},
+                    },
+                    'server_cost': {
+                        'per_core': {'memory': 40.0},
+                        'per_server': {'cpu': 1000.0},
+                    },
+                    'capacity': {
+                        'per_core': {'memory': 4.0, 'ssd': 100.0},
+                    },
+                },
+            },
+            'analysis': {'type': 'compare'},
+            'workload': {'total_vcpus': 1000, 'avg_util': 0.3},
+        }
+        config_file = tmp_path / 'cap_scaled.json'
+        with open(config_file, 'w') as f:
+            json.dump(config, f)
+
+        result = run_analysis(config_file)
+        test_data = result.scenario_results['scaled']
+        bd = test_data.get('embodied_breakdown')
+        assert bd is not None
+        capacity = bd.get('capacity')
+        assert capacity is not None
+        # 10 cores * 1 tpc = 10 hw threads, available_pcpus = 10
+        # R=2.0 -> vcpus_per_server = max(10, 10*2.0) = 20
+        # memory and ssd moved from per_core to per_vcpu
+        assert 'memory' not in capacity.get('per_core', {})
+        assert 'ssd' not in capacity.get('per_core', {})
+        assert capacity['per_vcpu']['memory'] == 4.0
+        assert capacity['per_vcpu']['ssd'] == 100.0
+        assert capacity['vcpus_per_server'] == 20.0
+
+
+class TestPerServerComparisonAnalysis:
+    """Tests for per_server_comparison analysis type."""
+
+    def test_basic_per_server_comparison(self, tmp_path):
+        """Full per_server_comparison analysis produces correct results."""
+        config = {
+            'name': 'per_server_test',
+            'scenarios': {
+                'smt_a': {
+                    'processor': 'smt',
+                    'oversub_ratio': 2.0,
+                    'resource_scaling': {'scale_with_vcpus': ['memory', 'ssd']},
+                },
+                'nosmt_a': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 3.0,
+                    'resource_scaling': {'scale_with_vcpus': ['memory', 'ssd']},
+                },
+            },
+            'processor': {
+                'smt': {
+                    'physical_cores': 10,
+                    'threads_per_core': 2,
+                    'power_idle_w': 100,
+                    'power_max_w': 400,
+                    'core_overhead': 0,
+                    'embodied_carbon': {
+                        'per_core': {'memory': 5.0, 'ssd': 3.0},
+                        'per_server': {'cpu': 30.0},
+                    },
+                    'server_cost': {
+                        'per_core': {'memory': 40.0, 'ssd': 10.0},
+                        'per_server': {'cpu': 1000.0},
+                    },
+                    'capacity': {
+                        'per_core': {'memory': 4.0, 'ssd': 100.0},
+                    },
+                },
+                'nosmt': {
+                    'physical_cores': 10,
+                    'threads_per_core': 1,
+                    'power_idle_w': 90,
+                    'power_max_w': 340,
+                    'core_overhead': 0,
+                    'embodied_carbon': {
+                        'per_core': {'memory': 5.0, 'ssd': 3.0},
+                        'per_server': {'cpu': 30.0},
+                    },
+                    'server_cost': {
+                        'per_core': {'memory': 40.0, 'ssd': 10.0},
+                        'per_server': {'cpu': 1000.0},
+                    },
+                    'capacity': {
+                        'per_core': {'memory': 4.0, 'ssd': 100.0},
+                    },
+                },
+            },
+            'analysis': {
+                'type': 'per_server_comparison',
+                'groups': [
+                    {'label': 'Group A', 'scenarios': ['smt_a', 'nosmt_a']},
+                ],
+                'metrics': ['capacity.memory', 'capacity.ssd',
+                           'embodied_carbon.memory', 'embodied_carbon.ssd'],
+                'metric_labels': {
+                    'capacity.memory': 'Memory (GB)',
+                    'capacity.ssd': 'SSD (GB)',
+                    'embodied_carbon.memory': 'Memory Carbon (kg)',
+                    'embodied_carbon.ssd': 'SSD Carbon (kg)',
+                },
+                'labels': {
+                    'smt_a': 'SMT',
+                    'nosmt_a': 'No-SMT',
+                },
+            },
+            'workload': {'total_vcpus': 1000, 'avg_util': 0.3},
+        }
+        config_file = tmp_path / 'per_server.json'
+        with open(config_file, 'w') as f:
+            json.dump(config, f)
+
+        result = run_analysis(config_file)
+        assert result.analysis_type == 'per_server_comparison'
+        assert result.per_server_comparison_results is not None
+        assert len(result.per_server_comparison_results) == 1
+
+        group = result.per_server_comparison_results[0]
+        assert group['label'] == 'Group A'
+        assert 'smt_a' in group['scenarios']
+        assert 'nosmt_a' in group['scenarios']
+        assert group['scenarios']['smt_a']['label'] == 'SMT'
+        assert group['scenarios']['nosmt_a']['label'] == 'No-SMT'
+
+        # SMT: 10 cores * 2 tpc = 20 hw_threads, available_pcpus = 20
+        # R=2.0 -> vcpus_per_server = max(20, 20*2.0) = 40
+        # capacity memory scaled: 4.0/thread, moved to per_vcpu -> 4.0 * 40 = 160
+        smt_metrics = group['scenarios']['smt_a']['metrics']
+        assert smt_metrics['capacity.memory'] == pytest.approx(160.0, abs=0.1)
+        assert smt_metrics['capacity.ssd'] == pytest.approx(4000.0, abs=0.1)
+
+        # NoSMT: 10 cores * 1 tpc = 10 hw_threads, available_pcpus = 10
+        # R=3.0 -> vcpus_per_server = max(10, 10*3.0) = 30
+        # capacity memory: 4.0 * 30 = 120
+        nosmt_metrics = group['scenarios']['nosmt_a']['metrics']
+        assert nosmt_metrics['capacity.memory'] == pytest.approx(120.0, abs=0.1)
+        assert nosmt_metrics['capacity.ssd'] == pytest.approx(3000.0, abs=0.1)
+
+    def test_per_server_comparison_structured_costs(self, tmp_path):
+        """Per-server comparison uses processor-resolved structured costs (not defaults)."""
+        config = {
+            'name': 'per_server_cost_test',
+            'scenarios': {
+                'proc_a': {
+                    'processor': 'custom',
+                    'oversub_ratio': 1.0,
+                },
+            },
+            'processor': {
+                'custom': {
+                    'physical_cores': 10,
+                    'threads_per_core': 2,
+                    'power_idle_w': 100,
+                    'power_max_w': 400,
+                    'core_overhead': 0,
+                    'embodied_carbon': {
+                        'per_core': {'memory': 7.0},
+                        'per_server': {'cpu': 50.0},
+                    },
+                    'server_cost': {
+                        'per_core': {'memory': 25.0},
+                        'per_server': {'cpu': 800.0},
+                    },
+                    'capacity': {
+                        'per_core': {'memory': 8.0},
+                        'per_server': {'rack_units': 1.0},
+                    },
+                },
+            },
+            'analysis': {
+                'type': 'per_server_comparison',
+                'groups': [
+                    {'label': 'Test', 'scenarios': ['proc_a']},
+                ],
+                'metrics': ['capacity.memory', 'capacity.rack_units',
+                           'embodied_carbon.memory', 'embodied_carbon.cpu'],
+                'labels': {'proc_a': 'Custom'},
+            },
+            'workload': {'total_vcpus': 100, 'avg_util': 0.3},
+        }
+        config_file = tmp_path / 'per_server_cost.json'
+        with open(config_file, 'w') as f:
+            json.dump(config, f)
+
+        result = run_analysis(config_file)
+        assert result.analysis_type == 'per_server_comparison'
+
+        group = result.per_server_comparison_results[0]
+        metrics = group['scenarios']['proc_a']['metrics']
+
+        # 10 cores * 2 tpc = 20 hw_threads
+        # capacity memory: 8.0 * 20 = 160 per server
+        assert metrics['capacity.memory'] == pytest.approx(160.0, abs=0.1)
+        # capacity rack_units: 1.0 per server (flat)
+        assert metrics['capacity.rack_units'] == pytest.approx(1.0, abs=0.1)
+        # embodied_carbon memory: 7.0 * 20 = 140 per server
+        assert metrics['embodied_carbon.memory'] == pytest.approx(140.0, abs=0.1)
+        # embodied_carbon cpu: 50.0 per server (flat)
+        assert metrics['embodied_carbon.cpu'] == pytest.approx(50.0, abs=0.1)
+
+        # Verify structured costs were used (not defaults)
+        proc_a = result.scenario_results['proc_a']
+        # embodied_carbon_kg should be 7.0 * 20 + 50.0 = 190, NOT default 1000
+        import math
+        expected_carbon = 7.0 * 20 + 50.0  # 190 per server
+        num_servers = proc_a['num_servers']
+        assert proc_a['embodied_carbon_kg'] == pytest.approx(expected_carbon * num_servers, abs=1)
+
+    def test_per_server_comparison_to_dict(self, tmp_path):
+        """per_server_comparison_results included in to_dict output."""
+        config = {
+            'name': 'dict_test',
+            'scenarios': {
+                's1': {'processor': 'p1', 'oversub_ratio': 1.0},
+            },
+            'processor': {
+                'p1': {
+                    'physical_cores': 10,
+                    'threads_per_core': 1,
+                    'power_idle_w': 100,
+                    'power_max_w': 400,
+                    'capacity': {
+                        'per_core': {'memory': 4.0},
+                    },
+                },
+            },
+            'analysis': {
+                'type': 'per_server_comparison',
+                'groups': [{'label': 'G1', 'scenarios': ['s1']}],
+                'metrics': ['capacity.memory'],
+                'labels': {'s1': 'S1'},
+            },
+            'workload': {'total_vcpus': 100, 'avg_util': 0.3},
+        }
+        config_file = tmp_path / 'dict.json'
+        with open(config_file, 'w') as f:
+            json.dump(config, f)
+
+        result = run_analysis(config_file)
+        d = result.to_dict()
+        assert 'per_server_comparison_results' in d
+        assert len(d['per_server_comparison_results']) == 1

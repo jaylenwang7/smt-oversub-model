@@ -1755,6 +1755,9 @@ def plot_analysis_result(
     elif analysis_type == 'savings_curve':
         return plot_savings_curve(result, save_path=save_path, show=show, **kwargs)
 
+    elif analysis_type == 'per_server_comparison':
+        return plot_per_server_comparison(result, save_path=save_path, show=show, **kwargs)
+
     return None
 
 
@@ -1874,6 +1877,205 @@ def plot_sweep_analysis(
 
     ax.set_title(title, fontsize=style.title_fontsize, fontweight='bold',
                  color='#333333')
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=style.dpi, bbox_inches='tight',
+                    facecolor=style.facecolor)
+
+    if show:
+        plt.show()
+
+    return fig
+
+
+def _plot_per_server_single_metric(
+    ax,
+    metric_path: str,
+    comparison_data: list,
+    scenario_label_order: list,
+    group_labels: list,
+    metric_labels: dict,
+    bar_colors: list,
+    style: 'PlotStyle',
+):
+    """Plot a single metric on the given axes for per-server comparison."""
+    n_groups = len(group_labels)
+    n_scenarios_per_group = len(scenario_label_order)
+
+    x = np.arange(n_groups)
+    total_width = style.bar_width * style.bar_gap_factor
+    bar_w = total_width / n_scenarios_per_group
+
+    for group_idx, group in enumerate(comparison_data):
+        scenario_idx = 0
+        for scenario_name, sdata in group['scenarios'].items():
+            label = sdata['label']
+            val = sdata['metrics'].get(metric_path, 0)
+            bar_x = x[group_idx] - total_width / 2 + bar_w * scenario_idx + bar_w / 2
+            color = bar_colors[scenario_label_order.index(label) % len(bar_colors)]
+
+            # Only add label on first group to avoid legend duplicates
+            bar_label = label if group_idx == 0 else None
+            ax.bar(bar_x, val, bar_w * 0.9, color=color, alpha=style.bar_alpha,
+                   edgecolor=style.bar_edgecolor, linewidth=style.bar_linewidth,
+                   label=bar_label)
+
+            # Value annotation
+            ax.text(bar_x, val, f'{val:,.0f}', ha='center', va='bottom',
+                    fontsize=style.annotation_fontsize - 1, fontweight='bold')
+
+            scenario_idx += 1
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(group_labels, fontsize=style.tick_fontsize)
+    ax.set_ylabel(metric_labels.get(metric_path, metric_path),
+                  fontsize=style.axis_label_fontsize)
+    ax.legend(fontsize=style.legend_fontsize)
+    _apply_common_style(ax, style)
+
+
+def plot_per_server_comparison(
+    result,
+    save_path: Optional[Union[str, Path]] = None,
+    figsize: Optional[Tuple[float, float]] = None,
+    show: bool = True,
+    title: Optional[str] = None,
+    style: Optional[PlotStyle] = None,
+    metric: Optional[str] = None,
+    **kwargs,
+) -> Optional[Any]:
+    """Plot per-server comparison as grouped bar chart.
+
+    Creates a grid of subplots (one per metric), or a single plot when
+    metric is specified.
+
+    Args:
+        result: AnalysisResult with per_server_comparison_results
+        save_path: Optional path to save the figure
+        figsize: Figure size (width, height) in inches
+        show: Whether to display the plot
+        title: Optional overall title
+        style: Optional PlotStyle for customizing appearance
+        metric: Optional single metric path to plot (for separate_metric_plots)
+    """
+    _check_matplotlib()
+    style = style or DEFAULT_STYLE
+
+    # Extract data
+    if hasattr(result, 'per_server_comparison_results'):
+        comparison_data = result.per_server_comparison_results
+    elif isinstance(result, dict):
+        comparison_data = result.get('per_server_comparison_results', [])
+    else:
+        return None
+
+    if not comparison_data:
+        return None
+
+    # Get config info
+    metrics = []
+    metric_labels = {}
+    config_name = None
+    show_plot_title = True
+    if hasattr(result, 'config'):
+        config = result.config
+        if hasattr(config, 'analysis'):
+            metrics = config.analysis.metrics or []
+            metric_labels = config.analysis.metric_labels or {}
+            if hasattr(config.analysis, 'show_plot_title'):
+                show_plot_title = config.analysis.show_plot_title
+        if hasattr(config, 'name'):
+            config_name = config.name
+    elif isinstance(result, dict):
+        analysis = result.get('config', {}).get('analysis', {})
+        metrics = analysis.get('metrics', [])
+        metric_labels = analysis.get('metric_labels', {})
+        config_name = result.get('config', {}).get('name')
+        show_plot_title = analysis.get('show_plot_title', True)
+
+    if not metrics:
+        return None
+
+    # Collect unique scenario labels across all groups (ordered by first appearance)
+    scenario_label_order = []
+    seen_labels = set()
+    for group in comparison_data:
+        for scenario_name, sdata in group['scenarios'].items():
+            label = sdata['label']
+            if label not in seen_labels:
+                scenario_label_order.append(label)
+                seen_labels.add(label)
+
+    # Color palette for scenarios
+    bar_colors = ['#1a5276', '#e67e22', '#27ae60', '#8e44ad', '#e74c3c', '#3498db']
+
+    group_labels = [g['label'] for g in comparison_data]
+
+    # Single metric mode
+    if metric is not None:
+        if metric not in metrics:
+            return None
+
+        if figsize is None:
+            figsize = (8, 5)
+
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+        _plot_per_server_single_metric(
+            ax, metric, comparison_data, scenario_label_order,
+            group_labels, metric_labels, bar_colors, style,
+        )
+
+        if show_plot_title:
+            metric_title = metric_labels.get(metric, metric)
+            if title:
+                fig.suptitle(title, fontsize=style.title_fontsize, fontweight='bold',
+                             color='#333333')
+            elif config_name:
+                fig.suptitle(f"{metric_title}", fontsize=style.title_fontsize,
+                             fontweight='bold', color='#333333')
+
+        plt.tight_layout()
+
+        if save_path:
+            plt.savefig(save_path, dpi=style.dpi, bbox_inches='tight',
+                        facecolor=style.facecolor)
+        if show:
+            plt.show()
+
+        return fig
+
+    # Multi-metric mode (grid of subplots)
+    n_metrics = len(metrics)
+    n_cols = min(2, n_metrics)
+    n_rows = (n_metrics + n_cols - 1) // n_cols
+
+    if figsize is None:
+        figsize = (6 * n_cols, 4 * n_rows)
+
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize, squeeze=False)
+
+    for idx, metric_path in enumerate(metrics):
+        row = idx // n_cols
+        col = idx % n_cols
+        _plot_per_server_single_metric(
+            axes[row][col], metric_path, comparison_data, scenario_label_order,
+            group_labels, metric_labels, bar_colors, style,
+        )
+
+    # Hide unused axes
+    for idx in range(n_metrics, n_rows * n_cols):
+        row = idx // n_cols
+        col = idx % n_cols
+        axes[row][col].set_visible(False)
+
+    if show_plot_title:
+        if title is None and config_name:
+            title = f"Per-Server Comparison: {config_name}"
+        if title:
+            fig.suptitle(title, fontsize=style.title_fontsize, fontweight='bold',
+                         color='#333333')
 
     plt.tight_layout()
 

@@ -1,0 +1,109 @@
+{
+  "name": "genoa_per_server_capacity_comparison",
+  "description": "Per-server capacity and embodied carbon comparison: SMT vs No-SMT at 5 utilization levels with resource scaling",
+  "scenarios": {
+    // 10% util
+    "smt_10": {
+      "processor": "smt",
+      "oversub_ratio": 2.34,
+      "resource_scaling": {"scale_with_vcpus": ["memory", "ssd"]}
+    },
+    "nosmt_10": {
+      "processor": "nosmt",
+      "oversub_ratio": 5.0,
+      "resource_scaling": {"scale_with_vcpus": ["memory", "ssd"]}
+    },
+    // 20% util
+    "smt_20": {
+      "processor": "smt",
+      "oversub_ratio": 1.33,
+      "resource_scaling": {"scale_with_vcpus": ["memory", "ssd"]}
+    },
+    "nosmt_20": {
+      "processor": "nosmt",
+      "oversub_ratio": 2.34,
+      "resource_scaling": {"scale_with_vcpus": ["memory", "ssd"]}
+    },
+    // 30% util
+    "smt_30": {
+      "processor": "smt",
+      "oversub_ratio": 1.14,
+      "resource_scaling": {"scale_with_vcpus": ["memory", "ssd"]}
+    },
+    "nosmt_30": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.6,
+      "resource_scaling": {"scale_with_vcpus": ["memory", "ssd"]}
+    },
+    // 40% util
+    "smt_40": {
+      "processor": "smt",
+      "oversub_ratio": 1.0,
+      "resource_scaling": {"scale_with_vcpus": ["memory", "ssd"]}
+    },
+    "nosmt_40": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.6,
+      "resource_scaling": {"scale_with_vcpus": ["memory", "ssd"]}
+    },
+    // 50% util
+    "smt_50": {
+      "processor": "smt",
+      "oversub_ratio": 1.0,
+      "resource_scaling": {"scale_with_vcpus": ["memory", "ssd"]}
+    },
+    "nosmt_50": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.33,
+      "resource_scaling": {"scale_with_vcpus": ["memory", "ssd"]}
+    }
+  },
+  "analysis": {
+    "type": "per_server_comparison",
+    "groups": [
+      {"label": "10% util", "scenarios": ["smt_10", "nosmt_10"]},
+      {"label": "20% util", "scenarios": ["smt_20", "nosmt_20"]},
+      {"label": "30% util", "scenarios": ["smt_30", "nosmt_30"]},
+      {"label": "40% util", "scenarios": ["smt_40", "nosmt_40"]},
+      {"label": "50% util", "scenarios": ["smt_50", "nosmt_50"]}
+    ],
+    "metrics": ["vms_per_server", "capacity.memory", "capacity.ssd", "embodied_carbon.memory", "embodied_carbon.ssd"],
+    "metric_labels": {
+      "vms_per_server": "Avg VMs per Server",
+      "capacity.memory": "Memory (GB/server)",
+      "capacity.ssd": "SSD (GB/server)",
+      "embodied_carbon.memory": "Memory Embodied Carbon (kg/server)",
+      "embodied_carbon.ssd": "SSD Embodied Carbon (kg/server)"
+    },
+    "labels": {
+      "smt_10": "SMT", "nosmt_10": "No-SMT",
+      "smt_20": "SMT", "nosmt_20": "No-SMT",
+      "smt_30": "SMT", "nosmt_30": "No-SMT",
+      "smt_40": "SMT", "nosmt_40": "No-SMT",
+      "smt_50": "SMT", "nosmt_50": "No-SMT"
+    },
+    "show_plot_title": false,
+    "separate_metric_plots": true,
+    "plot": {
+      "figsize": [10, 5]
+    }
+  },
+  "processor": {
+    "smt": "configs/shared/genoa_processors.jsonc:genoa_smt",
+    "nosmt": "configs/shared/genoa_processors.jsonc:genoa_nosmt_linear"
+  },
+  "workload": {
+    "total_vcpus": 10000,
+    "avg_util": 0.2,
+    "avg_vm_size_vcpus": 4.0
+  },
+  "cost": {
+    "carbon_intensity_g_kwh": 175,
+    "electricity_cost_usd_kwh": 0.28,
+    "lifetime_years": 6
+  },
+  "power_curve": {
+    "type": "polynomial"
+  },
+  "output_dir": "./results/oversub_analysis/genoa/linear/per_server_capacity_comparison"
+}

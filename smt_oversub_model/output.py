@@ -162,10 +162,13 @@ class OutputWriter:
                 row['has_breakdown'] = True
                 carbon_bd = breakdown.get('carbon')
                 cost_bd = breakdown.get('cost')
+                capacity_bd = breakdown.get('capacity')
                 if carbon_bd:
                     row['carbon_breakdown'] = carbon_bd
                 if cost_bd:
                     row['cost_breakdown'] = cost_bd
+                if capacity_bd:
+                    row['capacity_breakdown'] = capacity_bd
             else:
                 row['has_breakdown'] = False
 
@@ -421,6 +424,27 @@ class OutputWriter:
                         parts.append(f"${per_vcpu_total:,.0f} per-vCPU")
                     lines.append(f"      Total per server: ${total_per_srv:,.0f} ({' + '.join(parts)})")
 
+                capacity_bd = d.get('capacity_breakdown')
+                if capacity_bd:
+                    per_core = capacity_bd.get('per_core', {})
+                    per_server = capacity_bd.get('per_server', {})
+                    per_vcpu = capacity_bd.get('per_vcpu', {})
+                    phys = capacity_bd.get('physical_cores', 0)
+                    tpc = capacity_bd.get('threads_per_core', 1)
+                    hw_threads = phys * tpc
+                    vcpus = capacity_bd.get('vcpus_per_server', 0)
+                    vcpu_mult = vcpus if vcpus > 0 else hw_threads
+
+                    lines.append(f"    Capacity:")
+                    for comp, val in per_core.items():
+                        comp_total = val * hw_threads
+                        lines.append(f"      per_core.{comp}: {val:.1f}/thread x {hw_threads} threads = {comp_total:,.1f}/server")
+                    for comp, val in per_server.items():
+                        lines.append(f"      per_server.{comp}: {val:.1f}/server")
+                    for comp, val in per_vcpu.items():
+                        comp_total = val * vcpu_mult
+                        lines.append(f"      per_vcpu.{comp}: {val:.1f}/vCPU x {vcpu_mult:.1f} vCPUs = {comp_total:,.1f}/server")
+
                 if not carbon_bd and not cost_bd:
                     lines.append("    (no breakdown data)")
 
@@ -519,6 +543,8 @@ class OutputWriter:
             self._plot_breakeven_curve(result, plots_dir)
         elif result.analysis_type == 'savings_curve':
             self._plot_savings_curve(result, plots_dir)
+        elif result.analysis_type == 'per_server_comparison':
+            self._plot_per_server_comparison(result, plots_dir)
 
     def _plot_comparison(
         self,
@@ -806,6 +832,55 @@ class OutputWriter:
                     progressive_order=progressive_order,
                     **common_kwargs,
                 )
+
+
+    def _plot_per_server_comparison(
+        self,
+        result: 'AnalysisResult',
+        plots_dir: Path,
+    ) -> None:
+        """Generate per-server comparison grouped bar chart(s).
+
+        When separate_metric_plots is True, generates one plot per metric.
+        Otherwise generates a single combined plot.
+        """
+        if not result.per_server_comparison_results:
+            return
+
+        try:
+            from .plot import plot_per_server_comparison
+        except ImportError:
+            return
+
+        common_kwargs = self._get_plot_kwargs(result)
+
+        separate_metrics = False
+        if hasattr(result.config, 'analysis') and result.config.analysis.separate_metric_plots:
+            separate_metrics = True
+
+        if separate_metrics:
+            metrics = []
+            if hasattr(result.config, 'analysis') and result.config.analysis.metrics:
+                metrics = result.config.analysis.metrics
+            for metric_path in metrics:
+                # Create filename from metric path: "capacity.memory" -> "per_server_comparison_capacity_memory"
+                safe_name = metric_path.replace('.', '_')
+                metric_save_path = plots_dir / f'per_server_comparison_{safe_name}.png'
+                plot_per_server_comparison(
+                    result,
+                    save_path=str(metric_save_path),
+                    show=False,
+                    metric=metric_path,
+                    **common_kwargs,
+                )
+        else:
+            save_path = plots_dir / 'per_server_comparison.png'
+            plot_per_server_comparison(
+                result,
+                save_path=str(save_path),
+                show=False,
+                **common_kwargs,
+            )
 
 
 def save_result(result: 'AnalysisResult', output_dir: str) -> None:

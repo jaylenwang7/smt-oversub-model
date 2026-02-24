@@ -1065,7 +1065,7 @@ class TestCompareSweep:
         result = engine.run(config)
 
         # Summary should contain key elements
-        assert 'Compare Sweep Analysis' in result.summary
+        assert 'Compare Sweep' in result.summary
         assert 'baseline' in result.summary
         assert 'Carbon %' in result.summary
         assert 'TCO %' in result.summary

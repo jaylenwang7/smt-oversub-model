@@ -17,6 +17,7 @@ from .declarative import (
     run_analysis_batch,
     is_valid_analysis_config,
 )
+from .formatter import colorize, supports_color, title, separator
 
 # Optional: OutputWriter for saving results
 try:
@@ -24,6 +25,11 @@ try:
     _HAS_OUTPUT = True
 except ImportError:
     _HAS_OUTPUT = False
+
+
+def _print_summary(text: str, use_color: bool) -> None:
+    """Print summary with optional ANSI colorization."""
+    print(colorize(text) if use_color else text)
 
 
 def main():
@@ -36,19 +42,21 @@ def main():
         sys.exit(1)
 
     input_path = Path(sys.argv[1])
+    use_color = supports_color()
 
     if input_path.is_dir():
         # Run all configs in directory
         batch_result = run_analysis_batch(input_path)
-        print(batch_result.summary)
+        _print_summary(batch_result.summary, use_color)
 
         # Print individual summaries for successful runs
         if batch_result.results:
-            print("\n" + "=" * 60 + "\n")
+            print("\n" + separator() + "\n")
             for path, result in batch_result.results.items():
-                print(f"## {path}\n")
-                print(result.summary)
-                print("\n" + "-" * 40 + "\n")
+                _print_summary(title(str(path)), use_color)
+                print()
+                _print_summary(result.summary, use_color)
+                print("\n" + separator(40) + "\n")
 
                 # Save results if output_dir specified
                 if result.config.output_dir and _HAS_OUTPUT:
@@ -69,7 +77,7 @@ def main():
         result = run_analysis(input_path)
 
         # Print summary
-        print(result.summary)
+        _print_summary(result.summary, use_color)
 
         # Save results if output_dir specified
         if result.config.output_dir and _HAS_OUTPUT:

@@ -23,6 +23,8 @@ import copy
 import json
 import re
 
+from . import formatter as fmt
+
 try:
     import json5
     _HAS_JSON5 = True
@@ -646,6 +648,7 @@ class AnalysisSpec:
     y_axis_marker_labels: Optional[List[str]] = None  # Labels for y_axis_markers
     # For "savings_curve": extract savings at specific marker values from compare_sweep sub-configs
     configs: Optional[List[str]] = None  # List of config file paths (for savings_curve)
+    config_sets: Optional[List[Dict[str, Any]]] = None  # [{label, configs}] for multi-line savings_curve
     marker_values: Optional[List[float]] = None  # Sweep parameter values to extract savings at
     marker_labels: Optional[List[str]] = None  # Display labels for marker_values
     metrics: Optional[List[str]] = None  # Metrics to extract: ["carbon", "tco"] (same length)
@@ -653,6 +656,9 @@ class AnalysisSpec:
     progressive_save: bool = False  # Save progressive plot snapshots (empty → series added one at a time)
     progressive_order: Optional[List[str]] = None  # Order to reveal series (by marker_labels)
     plot: Optional[PlotSpec] = None  # Plot styling configuration
+    # For "per_server_comparison": grouped bar chart of per-server metrics
+    groups: Optional[List[Dict[str, Any]]] = None  # [{label, scenarios}]
+    metric_labels: Optional[Dict[str, str]] = None  # {metric_path: display_label}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AnalysisSpec':
@@ -689,6 +695,7 @@ class AnalysisSpec:
             y_axis_markers=data.get('y_axis_markers'),
             y_axis_marker_labels=data.get('y_axis_marker_labels'),
             configs=data.get('configs'),
+            config_sets=data.get('config_sets'),
             marker_values=data.get('marker_values'),
             marker_labels=data.get('marker_labels'),
             metrics=data.get('metrics'),
@@ -696,6 +703,8 @@ class AnalysisSpec:
             progressive_save=data.get('progressive_save', False),
             progressive_order=data.get('progressive_order'),
             plot=plot_spec,
+            groups=data.get('groups'),
+            metric_labels=data.get('metric_labels'),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -756,6 +765,8 @@ class AnalysisSpec:
             d['y_axis_marker_labels'] = self.y_axis_marker_labels
         if self.configs:
             d['configs'] = self.configs
+        if self.config_sets:
+            d['config_sets'] = self.config_sets
         if self.marker_values:
             d['marker_values'] = self.marker_values
         if self.marker_labels:
@@ -768,6 +779,10 @@ class AnalysisSpec:
             d['progressive_save'] = True
         if self.progressive_order:
             d['progressive_order'] = self.progressive_order
+        if self.groups:
+            d['groups'] = self.groups
+        if self.metric_labels:
+            d['metric_labels'] = self.metric_labels
         return d
 
 
@@ -901,6 +916,8 @@ class ProcessorSpec:
     power_curve: Optional['PowerCurveSpec'] = None
     # Optional per-component power breakdown - when present, overrides power_idle_w/power_max_w
     power_breakdown: Optional[Dict[str, PowerComponentSpec]] = None
+    # Optional capacity breakdown (e.g., memory_gb, ssd_gb per core/server)
+    capacity: Optional[EmbodiedComponentSpec] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ProcessorSpec':
@@ -925,6 +942,11 @@ class ProcessorSpec:
                 for name, comp in data['power_breakdown'].items()
             }
 
+        # Parse capacity breakdown
+        capacity = None
+        if 'capacity' in data and isinstance(data['capacity'], dict):
+            capacity = EmbodiedComponentSpec.from_dict(data['capacity'])
+
         return cls(
             physical_cores=data.get('physical_cores', 48),
             threads_per_core=data.get('threads_per_core', 1),
@@ -937,6 +959,7 @@ class ProcessorSpec:
             server_cost=server_cost,
             power_curve=power_curve,
             power_breakdown=power_breakdown,
+            capacity=capacity,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -964,6 +987,8 @@ class ProcessorSpec:
                 name: comp.to_dict()
                 for name, comp in self.power_breakdown.items()
             }
+        if self.capacity is not None:
+            d['capacity'] = self.capacity.to_dict()
         return d
 
     @property
@@ -1133,7 +1158,8 @@ class ProcessorConfigSpec:
             return False
         # Check for at least one processor field
         processor_fields = {'physical_cores', 'threads_per_core', 'power_idle_w', 'power_max_w',
-                            'core_overhead', 'embodied_carbon', 'server_cost', 'power_breakdown'}
+                            'core_overhead', 'embodied_carbon', 'server_cost', 'power_breakdown',
+                            'capacity'}
         return bool(processor_fields & set(spec_data.keys()))
 
     @classmethod
@@ -1262,14 +1288,14 @@ class WorkloadSpec:
     """Workload configuration."""
     total_vcpus: int = 10000
     avg_util: float = 0.3
-    avg_vm_size_vcpus: float = 1.0
+    avg_vm_size_vcpus: float = 4.0
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'WorkloadSpec':
         return cls(
             total_vcpus=data.get('total_vcpus', 10000),
             avg_util=data.get('avg_util', 0.3),
-            avg_vm_size_vcpus=data.get('avg_vm_size_vcpus', 1.0),
+            avg_vm_size_vcpus=data.get('avg_vm_size_vcpus', 4.0),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1774,6 +1800,7 @@ class AnalysisResult:
     compare_sweep_results: Optional[List[Dict[str, Any]]] = None  # For compare_sweep analysis
     breakeven_curve_results: Optional[List[Dict[str, Any]]] = None  # For breakeven_curve analysis
     savings_curve_results: Optional[List[Dict[str, Any]]] = None  # For savings_curve analysis
+    per_server_comparison_results: Optional[List[Dict[str, Any]]] = None  # For per_server_comparison analysis
     summary: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1804,6 +1831,8 @@ class AnalysisResult:
             result['breakeven_curve_results'] = self.breakeven_curve_results
         if self.savings_curve_results:
             result['savings_curve_results'] = self.savings_curve_results
+        if self.per_server_comparison_results:
+            result['per_server_comparison_results'] = self.per_server_comparison_results
         return result
 
 
@@ -1861,6 +1890,8 @@ class DeclarativeAnalysisEngine:
             return self._run_sweep()
         elif analysis_type == 'compare_sweep':
             return self._run_compare_sweep()
+        elif analysis_type == 'per_server_comparison':
+            return self._run_per_server_comparison()
         else:
             raise ValueError(f"Unknown analysis type: {analysis_type}")
 
@@ -2145,6 +2176,11 @@ class DeclarativeAnalysisEngine:
             cost_overrides['server_cost_usd'] = self._config.cost.server_cost.resolve_total(phys, tpc)
             cost_breakdown = self._config.cost.server_cost.to_component_breakdown(phys, tpc)
 
+        # Resolve capacity breakdown if present
+        capacity_breakdown = None
+        if proc_spec.capacity is not None:
+            capacity_breakdown = proc_spec.capacity.to_component_breakdown(phys, tpc)
+
         # Apply resource scaling if configured
         if scenario_cfg.resource_scaling:
             scaling = scenario_cfg.resource_scaling
@@ -2175,6 +2211,12 @@ class DeclarativeAnalysisEngine:
                     scaling.per_vcpu_cost, vcpus_per_server)
                 cost_overrides['server_cost_usd'] = cost_breakdown.total_per_server
 
+            # Scale capacity breakdown
+            if capacity_breakdown is not None:
+                capacity_breakdown = self._apply_resource_scaling_to_breakdown(
+                    capacity_breakdown, scaling.scale_with_vcpus,
+                    {}, vcpus_per_server)
+
             # Scale power components
             if scaling.scale_power and scaling.scale_with_vcpus and scale_factor > 1.0:
                 params = self._apply_power_scaling(params, scaling.scale_with_vcpus, scale_factor)
@@ -2185,6 +2227,8 @@ class DeclarativeAnalysisEngine:
             cost_overrides['carbon_breakdown'] = carbon_breakdown
         if cost_breakdown is not None:
             cost_overrides['cost_breakdown'] = cost_breakdown
+        if capacity_breakdown is not None:
+            cost_overrides['capacity_breakdown'] = capacity_breakdown
 
         return cost_overrides, modified_params
 
@@ -2583,6 +2627,118 @@ class DeclarativeAnalysisEngine:
             summary=summary,
         )
 
+    def _run_per_server_comparison(self) -> AnalysisResult:
+        """Run per_server_comparison: grouped bar chart of per-server metrics.
+
+        Evaluates each scenario and extracts per-server component values
+        (capacity, embodied carbon, server cost) using metric paths from config.
+        Groups scenarios for side-by-side comparison.
+        """
+        analysis = self._config.analysis
+        groups = analysis.groups or []
+        metrics = analysis.metrics or []
+        metric_labels = analysis.metric_labels or {}
+        labels = analysis.labels or {}
+
+        # Evaluate all scenarios
+        all_results = {}
+        all_params = {}
+        all_scenario_results = {}
+        for name in self._config.scenarios:
+            params, result = self._evaluate_scenario(name)
+            all_results[name] = result
+            all_params[name] = params
+            all_scenario_results[name] = asdict(result)
+
+        # Extract per-server values for each metric from each scenario
+        per_server_data = []
+        for group in groups:
+            group_label = group['label']
+            group_scenarios = group['scenarios']
+            group_entry = {
+                'label': group_label,
+                'scenarios': {},
+            }
+            for scenario_name in group_scenarios:
+                result = all_results[scenario_name]
+                params = all_params[scenario_name]
+                display_label = labels.get(scenario_name, scenario_name)
+                scenario_metrics = {}
+                for metric_path in metrics:
+                    val = self._extract_per_server_metric(result, metric_path, params)
+                    scenario_metrics[metric_path] = val
+                group_entry['scenarios'][scenario_name] = {
+                    'label': display_label,
+                    'metrics': scenario_metrics,
+                }
+            per_server_data.append(group_entry)
+
+        # Build summary
+        summary_lines = [fmt.title(f"Per-Server Comparison: {self._config.name}"), ""]
+        for group_entry in per_server_data:
+            summary_lines.append(fmt.heading(group_entry['label']))
+            for scenario_name, sdata in group_entry['scenarios'].items():
+                kv_items = []
+                for metric_path, val in sdata['metrics'].items():
+                    display_label = metric_labels.get(metric_path, metric_path)
+                    kv_items.append((display_label, f"{val:,.1f}"))
+                summary_lines.append(f"\n  {sdata['label']}:")
+                summary_lines.append(fmt.kv_block(kv_items, indent=4))
+            summary_lines.append("")
+
+        return AnalysisResult(
+            config=self._config,
+            analysis_type='per_server_comparison',
+            scenario_results=all_scenario_results,
+            comparisons={},
+            per_server_comparison_results=per_server_data,
+            summary="\n".join(summary_lines),
+        )
+
+    def _extract_per_server_metric(
+        self,
+        result: ScenarioResult,
+        metric_path: str,
+        params: Optional[ScenarioParams] = None,
+    ) -> float:
+        """Extract a per-server metric value from a ScenarioResult.
+
+        Supported paths:
+        - capacity.<component> -> embodied_breakdown.capacity.per_server_components[component]
+        - embodied_carbon.<component> -> embodied_breakdown.carbon.per_server_components[component]
+        - server_cost.<component> -> embodied_breakdown.cost.per_server_components[component]
+        - vms_per_server -> computed from vcpu capacity and avg VM size
+        """
+        # Handle computed metrics that don't require breakdown
+        if metric_path == 'vms_per_server' and params is not None:
+            proc = params.processor
+            vcpu_capacity = proc.available_pcpus * params.oversub_ratio
+            # Apply VM cap if configured (same logic as model.evaluate_scenario)
+            if params.max_vms_per_server is not None:
+                avg_vm_vcpus = params.avg_vm_size_vcpus or self._model.workload.avg_vm_size_vcpus
+                max_vcpus_from_vm_cap = params.max_vms_per_server * avg_vm_vcpus
+                vcpu_capacity = min(vcpu_capacity, max_vcpus_from_vm_cap)
+            avg_vm_vcpus = params.avg_vm_size_vcpus or self._model.workload.avg_vm_size_vcpus
+            return vcpu_capacity / avg_vm_vcpus
+
+        parts = metric_path.split('.', 1)
+        if len(parts) != 2:
+            return 0.0
+
+        category, component = parts
+        bd = result.embodied_breakdown
+        if bd is None:
+            return 0.0
+
+        if category == 'capacity' and bd.capacity is not None:
+            return bd.capacity.per_server_components.get(component, 0.0)
+        elif category == 'embodied_carbon' and bd.carbon is not None:
+            return bd.carbon.per_server_components.get(component, 0.0)
+        elif category == 'server_cost' and bd.cost is not None:
+            return bd.cost.per_server_components.get(component, 0.0)
+
+        return 0.0
+
     def _run_breakeven_curve(self) -> AnalysisResult:
         """Run breakeven_curve: aggregate breakeven points from multiple sub-configs.
 
@@ -2718,26 +2874,28 @@ class DeclarativeAnalysisEngine:
     ) -> str:
         """Build summary for breakeven_curve analysis."""
         lines = [
-            f"# Breakeven Curve Analysis",
+            fmt.title("Breakeven Curve Analysis"),
             "",
-            f"## Configuration",
-            f"- X Parameter: {analysis.x_parameter}",
-            f"- Display Multiplier: {analysis.x_display_multiplier}",
-            f"- Breakeven Metric: {analysis.breakeven_metric or 'carbon'}",
+            fmt.heading("Configuration"),
+            fmt.kv_block([
+                ("X Parameter", str(analysis.x_parameter)),
+                ("Display Multiplier", str(analysis.x_display_multiplier)),
+                ("Breakeven Metric", analysis.breakeven_metric or 'carbon'),
+            ]),
             "",
         ]
 
         for series in results:
             label = series['label']
             points = series['points']
-            lines.append(f"## {label}")
-            lines.append("")
-            lines.append(f"| {analysis.x_label or 'X'} | Breakeven Value |")
-            lines.append("|---|---|")
+            lines.append(fmt.heading(label))
+            rows = []
             for pt in points:
                 be_val = pt['breakeven_value']
                 be_str = f"{be_val:.4f}" if be_val is not None else "N/A"
-                lines.append(f"| {pt['x_value']:.1f} | {be_str} |")
+                rows.append([f"{pt['x_value']:.1f}", be_str])
+            x_label = analysis.x_label or 'X'
+            lines.append(fmt.table([x_label, 'Breakeven Value'], rows, ['r', 'r']))
             lines.append("")
 
         return "\n".join(lines)
@@ -2748,71 +2906,97 @@ class DeclarativeAnalysisEngine:
         For each sub-config (a compare_sweep analysis), runs the analysis, then
         interpolates the % diff at each marker value. Produces data for plotting
         savings vs a parameter (e.g., utilization) with one line per marker value.
+
+        Supports two modes:
+        - configs: single list of config paths (one line per marker_value)
+        - config_sets: list of {label, configs} dicts (one line per config_set × marker_value)
         """
         analysis = self._config.analysis
-        config_paths = analysis.configs
         x_parameter = analysis.x_parameter
         x_multiplier = analysis.x_display_multiplier
         marker_values = analysis.marker_values or []
         marker_labels = analysis.marker_labels or [str(v) for v in marker_values]
         metrics = analysis.metrics or ['carbon', 'tco']
 
-        if not config_paths:
-            raise ValueError("savings_curve requires 'configs' with config file paths")
+        # Determine config sets
+        if analysis.config_sets:
+            config_sets = analysis.config_sets
+        elif analysis.configs:
+            # Backward compat: single config set with no label prefix
+            config_sets = [{'label': None, 'configs': analysis.configs}]
+        else:
+            raise ValueError("savings_curve requires 'configs' or 'config_sets'")
+
         if not x_parameter:
             raise ValueError("savings_curve requires 'x_parameter'")
         if not marker_values:
             raise ValueError("savings_curve requires 'marker_values'")
 
-        # For each marker value, collect points across all configs
+        # Build result series: one line per (config_set × marker_value)
         savings_curve_results = []
-        for i, (mv, ml) in enumerate(zip(marker_values, marker_labels)):
-            savings_curve_results.append({
-                'label': f"{ml} ({mv})",
-                'marker_value': mv,
-                'points': [],
-            })
 
-        for config_path_str in config_paths:
-            config_path = Path(config_path_str)
+        for cs in config_sets:
+            cs_label = cs.get('label')
+            cs_configs = cs.get('configs', [])
 
-            # Load raw config to extract x-value
-            with open(config_path, 'r') as f:
-                if _HAS_JSON5:
-                    raw_config = json5.load(f)
+            # Pre-create entries for each marker_value in this config_set
+            series_entries = []
+            for mv, ml in zip(marker_values, marker_labels):
+                if cs_label and len(marker_values) > 1:
+                    label = f"{cs_label} - {ml} ({mv})"
+                elif cs_label:
+                    label = cs_label
                 else:
-                    raw_config = json.load(f)
+                    label = f"{ml} ({mv})"
+                series_entries.append({
+                    'label': label,
+                    'marker_value': mv,
+                    'points': [],
+                })
 
-            x_raw = self._extract_nested_value(raw_config, x_parameter)
-            if x_raw is None:
-                raise ValueError(
-                    f"Could not extract '{x_parameter}' from {config_path_str}"
-                )
-            x_display = float(x_raw) * x_multiplier
+            # Run each config once and extract all marker values
+            for config_path_str in cs_configs:
+                config_path = Path(config_path_str)
 
-            # Run sub-analysis
-            sub_engine = DeclarativeAnalysisEngine()
-            sub_result = sub_engine.run_from_file(config_path)
+                # Load raw config to extract x-value
+                with open(config_path, 'r') as f:
+                    if _HAS_JSON5:
+                        raw_config = json5.load(f)
+                    else:
+                        raw_config = json.load(f)
 
-            if not sub_result.compare_sweep_results:
-                raise ValueError(
-                    f"Sub-config {config_path_str} did not produce compare_sweep_results"
-                )
-
-            # For each marker value, interpolate the savings at that sweep parameter value
-            for i, mv in enumerate(marker_values):
-                point = {
-                    'x_value': x_display,
-                    'x_raw': float(x_raw),
-                    'config_path': str(config_path),
-                }
-                for metric in metrics:
-                    key = f'{metric}_diff_pct'
-                    value = self._interpolate_metric_at_value(
-                        sub_result.compare_sweep_results, key, mv
+                x_raw = self._extract_nested_value(raw_config, x_parameter)
+                if x_raw is None:
+                    raise ValueError(
+                        f"Could not extract '{x_parameter}' from {config_path_str}"
                     )
-                    point[key] = value
-                savings_curve_results[i]['points'].append(point)
+                x_display = float(x_raw) * x_multiplier
+
+                # Run sub-analysis
+                sub_engine = DeclarativeAnalysisEngine()
+                sub_result = sub_engine.run_from_file(config_path)
+
+                if not sub_result.compare_sweep_results:
+                    raise ValueError(
+                        f"Sub-config {config_path_str} did not produce compare_sweep_results"
+                    )
+
+                # For each marker value, interpolate the savings at that sweep parameter value
+                for i, mv in enumerate(marker_values):
+                    point = {
+                        'x_value': x_display,
+                        'x_raw': float(x_raw),
+                        'config_path': str(config_path),
+                    }
+                    for metric in metrics:
+                        key = f'{metric}_diff_pct'
+                        value = self._interpolate_metric_at_value(
+                            sub_result.compare_sweep_results, key, mv
+                        )
+                        point[key] = value
+                    series_entries[i]['points'].append(point)
+
+            savings_curve_results.extend(series_entries)
 
         summary = self._build_savings_curve_summary(
             savings_curve_results, analysis, metrics
@@ -2881,37 +3065,37 @@ class DeclarativeAnalysisEngine:
         metrics: List[str],
     ) -> str:
         """Build summary for savings_curve analysis."""
+        marker_vals_str = ', '.join(str(v) for v in (analysis.marker_values or []))
         lines = [
-            "# Savings Curve Analysis",
+            fmt.title("Savings Curve Analysis"),
             "",
-            "## Configuration",
-            f"- X Parameter: {analysis.x_parameter}",
-            f"- Display Multiplier: {analysis.x_display_multiplier}",
-            f"- Metrics: {', '.join(metrics)}",
-            f"- Marker Values: {analysis.marker_values}",
+            fmt.heading("Configuration"),
+            fmt.kv_block([
+                ("X Parameter", str(analysis.x_parameter)),
+                ("Display Multiplier", str(analysis.x_display_multiplier)),
+                ("Metrics", ', '.join(metrics)),
+                ("Marker Values", marker_vals_str),
+            ]),
             "",
         ]
 
-        # Build table header
-        metric_headers = []
-        for m in metrics:
-            metric_headers.append(f"{m.upper()} Diff %")
-        header = f"| {analysis.x_label or 'X'} | " + " | ".join(metric_headers) + " |"
-        separator = "|---" + "|---" * len(metrics) + "|"
+        x_label = analysis.x_label or 'X'
+        metric_headers = [f"{m.upper()} Diff %" for m in metrics]
+        headers = [x_label] + metric_headers
+        col_aligns = ['r'] + ['r'] * len(metrics)
 
         for series in results:
             label = series['label']
             points = series['points']
-            lines.append(f"## {label}")
-            lines.append("")
-            lines.append(header)
-            lines.append(separator)
+            lines.append(fmt.heading(label))
+            rows = []
             for pt in points:
                 cols = [f"{pt['x_value']:.1f}"]
                 for m in metrics:
                     val = pt.get(f'{m}_diff_pct')
-                    cols.append(f"{val:.2f}" if val is not None else "N/A")
-                lines.append("| " + " | ".join(cols) + " |")
+                    cols.append(f"{val:+.2f}%" if val is not None else "N/A")
+                rows.append(cols)
+            lines.append(fmt.table(headers, rows, col_aligns))
             lines.append("")
 
         return "\n".join(lines)
@@ -2958,37 +3142,34 @@ class DeclarativeAnalysisEngine:
         def get_label(name: str) -> str:
             return labels.get(name, name)
 
-        lines = [
-            f"# Compare Sweep Analysis: {self._config.name}",
-            "",
-            f"## Configuration",
-            f"- Baseline: {get_label(baseline_name)}",
-        ]
-
+        config_items = [("Baseline", get_label(baseline_name))]
         if is_multi:
             scenario_labels = [get_label(s) for s in sweep_scenarios]
-            lines.append(f"- Sweep Scenarios: {', '.join(scenario_labels)}")
+            config_items.append(("Sweep Scenarios", ', '.join(scenario_labels)))
         else:
-            lines.append(f"- Sweep Scenario: {get_label(sweep_scenarios[0])}")
+            config_items.append(("Sweep Scenario", get_label(sweep_scenarios[0])))
+        config_items.append(("Sweep Parameter", param_label))
 
-        lines.extend([
-            f"- Sweep Parameter: {param_label}",
+        lines = [
+            fmt.title(f"Compare Sweep: {self._config.name}"),
             "",
-        ])
+            fmt.heading("Configuration"),
+            fmt.kv_block(config_items),
+            "",
+        ]
 
         # For multi-scenario, create a table per scenario
+        headers = [param_label, "Carbon %", "TCO %", "Servers %"]
+        col_aligns = ['r', 'r', 'r', 'r']
+
         for scenario_name in sweep_scenarios:
             scenario_label = get_label(scenario_name)
             if is_multi:
-                lines.append(f"## Results for {scenario_label}: % Change vs Baseline")
+                lines.append(fmt.heading(f"{scenario_label}: % Change vs Baseline"))
             else:
-                lines.append("## Results: % Change vs Baseline")
-            lines.append("")
-            lines.append("| {:<15} | {:>12} | {:>12} | {:>12} |".format(
-                param_label[:15], "Carbon %", "TCO %", "Servers %"
-            ))
-            lines.append("|{:-<17}|{:->14}|{:->14}|{:->14}|".format("", "", "", ""))
+                lines.append(fmt.heading("% Change vs Baseline"))
 
+            rows = []
             for r in results:
                 value = r['parameter_value']
                 if is_multi:
@@ -3000,29 +3181,30 @@ class DeclarativeAnalysisEngine:
                     carbon_pct = r['carbon_diff_pct']
                     tco_pct = r['tco_diff_pct']
                     server_pct = r['server_diff_pct']
-                lines.append(
-                    "| {:<15.3f} | {:>+11.1f}% | {:>+11.1f}% | {:>+11.1f}% |".format(
-                        value, carbon_pct, tco_pct, server_pct
-                    )
-                )
+                rows.append([
+                    f"{value:.3f}",
+                    f"{carbon_pct:+.1f}%",
+                    f"{tco_pct:+.1f}%",
+                    f"{server_pct:+.1f}%",
+                ])
+            lines.append(fmt.table(headers, rows, col_aligns))
             lines.append("")
 
         # Find and report breakeven points
-        lines.append("## Breakeven Points (where % change crosses 0)")
+        lines.append(fmt.heading("Breakeven Points"))
         for scenario_name in sweep_scenarios:
             scenario_label = get_label(scenario_name)
             breakeven = self._find_breakeven_in_results(results, scenario_name, 'carbon_diff_pct', is_multi)
             if breakeven is not None:
-                lines.append(f"- {scenario_label} Carbon breakeven: {param_label} = {breakeven:.3f}")
+                lines.append(fmt.info_line(f"{scenario_label} Carbon breakeven: {param_label} = {breakeven:.3f}"))
             else:
-                lines.append(f"- {scenario_label} Carbon breakeven: not found in range")
+                lines.append(fmt.info_line(f"{scenario_label} Carbon breakeven: not found in range"))
         lines.append("")
 
-        lines.extend([
-            "## Interpretation",
-            "- Negative % = savings vs baseline (good)",
-            "- Positive % = increase vs baseline (bad)",
-        ])
+        lines.append(fmt.note_block([
+            "Negative % = savings vs baseline",
+            "Positive % = increase vs baseline",
+        ]))
 
         return "\n".join(lines)
 
@@ -3176,43 +3358,49 @@ class DeclarativeAnalysisEngine:
     ) -> str:
         """Build human-readable summary for breakeven analysis."""
         lines = [
-            f"# Breakeven Analysis: {self._config.name}",
+            fmt.title(f"Breakeven Analysis: {self._config.name}"),
             "",
-            f"## Configuration",
-            f"- Baseline: {analysis.baseline}",
-            f"- Reference: {analysis.reference}",
-            f"- Target: {analysis.target}",
-            f"- Vary parameter: {analysis.vary_parameter}",
-            f"- Match metric: {analysis.match_metric}",
+            fmt.heading("Configuration"),
+            fmt.kv_block([
+                ("Baseline", str(analysis.baseline)),
+                ("Reference", str(analysis.reference)),
+                ("Target", str(analysis.target)),
+                ("Vary parameter", str(analysis.vary_parameter)),
+                ("Match metric", str(analysis.match_metric)),
+            ]),
             "",
-            f"## Results",
+            fmt.heading("Results"),
         ]
 
         if breakeven.achieved:
-            lines.append(f"**Breakeven value: {breakeven.breakeven_value:.4f}**")
-            lines.append(f"- Found in {breakeven.iterations} iterations")
+            lines.append(fmt.info_line(f"Breakeven value: {breakeven.breakeven_value:.4f}"))
+            lines.append(fmt.info_line(f"Found in {breakeven.iterations} iterations"))
         else:
-            lines.append(f"**Breakeven not achieved**")
+            lines.append(fmt.info_line("Breakeven not achieved"))
             if breakeven.error_message:
-                lines.append(f"- Reason: {breakeven.error_message}")
+                lines.append(fmt.info_line(f"Reason: {breakeven.error_message}"))
 
         lines.extend([
             "",
-            f"## Scenario Comparison",
-            f"- Baseline carbon: {baseline.total_carbon_kg:,.0f} kg CO2e",
-            f"- Reference carbon: {reference.total_carbon_kg:,.0f} kg CO2e",
-            f"- Baseline TCO: ${baseline.total_cost_usd:,.0f}",
-            f"- Reference TCO: ${reference.total_cost_usd:,.0f}",
+            fmt.heading("Scenario Comparison"),
+            fmt.kv_block([
+                ("Baseline carbon", f"{baseline.total_carbon_kg:,.0f} kg CO2e"),
+                ("Reference carbon", f"{reference.total_carbon_kg:,.0f} kg CO2e"),
+                ("Baseline TCO", f"${baseline.total_cost_usd:,.0f}"),
+                ("Reference TCO", f"${reference.total_cost_usd:,.0f}"),
+            ]),
         ])
 
         if breakeven.final_result:
             final = breakeven.final_result
             lines.extend([
                 "",
-                f"## Target at Breakeven",
-                f"- Carbon: {final['total_carbon_kg']:,.0f} kg CO2e",
-                f"- TCO: ${final['total_cost_usd']:,.0f}",
-                f"- Servers: {final['num_servers']}",
+                fmt.heading("Target at Breakeven"),
+                fmt.kv_block([
+                    ("Carbon", f"{final['total_carbon_kg']:,.0f} kg CO2e"),
+                    ("TCO", f"${final['total_cost_usd']:,.0f}"),
+                    ("Servers", str(final['num_servers'])),
+                ]),
             ])
 
         return "\n".join(lines)
@@ -3225,29 +3413,29 @@ class DeclarativeAnalysisEngine:
     ) -> str:
         """Build summary for comparison analysis."""
         lines = [
-            f"# Scenario Comparison: {self._config.name}",
+            fmt.title(f"Scenario Comparison: {self._config.name}"),
             "",
-            f"## Baseline: {baseline_name}",
+            fmt.heading(f"Baseline: {baseline_name}"),
         ]
 
         baseline = results.get(baseline_name, {})
         if baseline:
-            lines.extend([
-                f"- Carbon: {baseline.get('total_carbon_kg', 0):,.0f} kg CO2e",
-                f"- TCO: ${baseline.get('total_cost_usd', 0):,.0f}",
-                f"- Servers: {baseline.get('num_servers', 0)}",
-            ])
+            lines.append(fmt.kv_block([
+                ("Carbon", f"{baseline.get('total_carbon_kg', 0):,.0f} kg CO2e"),
+                ("TCO", f"${baseline.get('total_cost_usd', 0):,.0f}"),
+                ("Servers", str(baseline.get('num_servers', 0))),
+            ]))
 
         lines.append("")
-        lines.append("## Comparisons vs Baseline")
+        lines.append(fmt.heading("Comparisons vs Baseline"))
 
         for name, comp in comparisons.items():
             lines.extend([
                 "",
-                f"### {name}",
-                f"- Carbon: {comp['carbon_diff_pct']:+.1f}%",
-                f"- TCO: {comp['tco_diff_pct']:+.1f}%",
-                f"- Servers: {comp['server_diff_pct']:+.1f}%",
+                f"  {name}:",
+                fmt.badge("Carbon", f"{comp['carbon_diff_pct']:+.1f}%", indent=4),
+                fmt.badge("TCO", f"{comp['tco_diff_pct']:+.1f}%", indent=4),
+                fmt.badge("Servers", f"{comp['server_diff_pct']:+.1f}%", indent=4),
             ])
 
         return "\n".join(lines)
@@ -3258,21 +3446,25 @@ class DeclarativeAnalysisEngine:
         results: List[Dict[str, Any]],
     ) -> str:
         """Build summary for sweep analysis."""
-        lines = [
-            f"# Sweep Analysis: {self._config.name}",
-            "",
-            f"## Sweep Parameter: {sweep_param}",
-            "",
-            "| Value | Breakeven | Achieved |",
-            "|-------|-----------|----------|",
-        ]
-
+        rows = []
         for r in results:
             value = r['parameter_value']
             be_val = r['breakeven_value']
             achieved = "Yes" if r['achieved'] else "No"
             be_str = f"{be_val:.4f}" if be_val is not None else "N/A"
-            lines.append(f"| {value} | {be_str} | {achieved} |")
+            rows.append([str(value), be_str, achieved])
+
+        lines = [
+            fmt.title(f"Sweep Analysis: {self._config.name}"),
+            "",
+            fmt.heading(f"Sweep Parameter: {sweep_param}"),
+            "",
+            fmt.table(
+                ["Value", "Breakeven", "Achieved"],
+                rows,
+                ['r', 'r', 'c'],
+            ),
+        ]
 
         return "\n".join(lines)
 
@@ -3321,30 +3513,32 @@ class BatchResult:
     def summary(self) -> str:
         """Build summary of batch run."""
         lines = [
-            f"# Batch Analysis Results",
-            f"",
-            f"- Successful: {len(self.results)}",
-            f"- Errors: {len(self.errors)}",
-            f"- Skipped: {len(self.skipped)}",
-            f"",
+            fmt.title("Batch Analysis Results"),
+            "",
+            fmt.kv_block([
+                ("Successful", str(len(self.results))),
+                ("Errors", str(len(self.errors))),
+                ("Skipped", str(len(self.skipped))),
+            ]),
+            "",
         ]
 
         if self.results:
-            lines.append("## Successful Analyses")
+            lines.append(fmt.heading("Successful Analyses"))
             for path, result in self.results.items():
-                lines.append(f"- {path}: {result.config.name}")
+                lines.append(fmt.info_line(f"{path}: {result.config.name}"))
             lines.append("")
 
         if self.errors:
-            lines.append("## Errors")
+            lines.append(fmt.heading("Errors"))
             for path, error in self.errors.items():
-                lines.append(f"- {path}: {error}")
+                lines.append(fmt.info_line(f"{path}: {error}"))
             lines.append("")
 
         if self.skipped:
-            lines.append("## Skipped (not valid analysis configs)")
+            lines.append(fmt.heading("Skipped (not valid analysis configs)"))
             for path in self.skipped:
-                lines.append(f"- {path}")
+                lines.append(fmt.info_line(path))
 
         return "\n".join(lines)
 
@@ -3404,19 +3598,24 @@ if __name__ == '__main__':
         sys.exit(1)
 
     input_path = Path(sys.argv[1])
+    _use_color = fmt.supports_color()
+
+    def _print_summary(text: str) -> None:
+        print(fmt.colorize(text) if _use_color else text)
 
     if input_path.is_dir():
         # Run all configs in directory
         batch_result = run_analysis_batch(input_path)
-        print(batch_result.summary)
+        _print_summary(batch_result.summary)
 
         # Print individual summaries for successful runs
         if batch_result.results:
-            print("\n" + "=" * 60 + "\n")
+            print("\n" + fmt.separator() + "\n")
             for path, result in batch_result.results.items():
-                print(f"## {path}\n")
-                print(result.summary)
-                print("\n" + "-" * 40 + "\n")
+                _print_summary(fmt.title(str(path)))
+                print()
+                _print_summary(result.summary)
+                print("\n" + fmt.separator(40) + "\n")
 
                 # Save results if output_dir specified
                 if result.config.output_dir:
@@ -3429,7 +3628,7 @@ if __name__ == '__main__':
         result = run_analysis(input_path)
 
         # Print summary
-        print(result.summary)
+        _print_summary(result.summary)
 
         # Save results if output_dir specified
         if result.config.output_dir:

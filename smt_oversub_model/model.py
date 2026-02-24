@@ -236,7 +236,7 @@ class WorkloadParams:
     """Parameters defining the VM workload to serve."""
     total_vcpus: int  # Total vCPU demand
     avg_util: float   # Average utilization of VMs [0, 1]
-    avg_vm_size_vcpus: float = 1.0  # Average vCPUs per VM (for VM cap conversion)
+    avg_vm_size_vcpus: float = 4.0  # Average vCPUs per VM (for VM cap conversion)
 
 
 @dataclass
@@ -293,6 +293,23 @@ class ComponentBreakdown:
     def total_per_server(self) -> float:
         return self.per_core_total_per_server + self.per_server_total + self.per_vcpu_total_per_server
 
+    @property
+    def per_server_components(self) -> Dict[str, float]:
+        """Return flat dict of component_name -> per-server contribution.
+
+        Resolves per_core, per_vcpu, and per_server multipliers into a single
+        per-server value for each component.
+        """
+        result = {}
+        for name, val in self.per_core.items():
+            result[name] = val * self.total_hw_threads
+        for name, val in self.per_server.items():
+            result[name] = result.get(name, 0) + val
+        vcpu_mult = self.vcpus_per_server if self.vcpus_per_server > 0 else self.total_hw_threads
+        for name, val in self.per_vcpu.items():
+            result[name] = result.get(name, 0) + val * vcpu_mult
+        return result
+
     def resolve(self, physical_cores: int, threads_per_core: int, vcpus_per_server: float = 0) -> 'ComponentBreakdown':
         """Return a new breakdown with core counts set for computing totals."""
         return ComponentBreakdown(
@@ -311,6 +328,7 @@ class EmbodiedBreakdown:
     carbon: Optional[ComponentBreakdown] = None
     cost: Optional[ComponentBreakdown] = None
     num_servers: int = 0
+    capacity: Optional[ComponentBreakdown] = None
 
     @property
     def carbon_fleet_components(self) -> Dict[str, float]:
@@ -446,11 +464,13 @@ class OverssubModel:
             # Build breakdown if component data is provided
             carbon_bd = cost_overrides.get('carbon_breakdown')
             cost_bd = cost_overrides.get('cost_breakdown')
-            if carbon_bd or cost_bd:
+            capacity_bd = cost_overrides.get('capacity_breakdown')
+            if carbon_bd or cost_bd or capacity_bd:
                 embodied_breakdown = EmbodiedBreakdown(
                     carbon=carbon_bd,
                     cost=cost_bd,
                     num_servers=num_servers,
+                    capacity=capacity_bd,
                 )
 
         # Embodied carbon/cost (amortized over lifetime, but we report total)
