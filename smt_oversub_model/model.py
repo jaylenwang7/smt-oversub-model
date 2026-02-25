@@ -206,7 +206,7 @@ class ProcessorConfig:
     physical_cores: int
     threads_per_core: int  # 2 for SMT, 1 for non-SMT
     power_curve: PowerCurve
-    core_overhead: int = 0  # pCPUs reserved for host (not oversubscribable)
+    thread_overhead: int = 0  # HW threads reserved for host (not oversubscribable)
     power_components: Optional[Dict[str, PowerComponentCurve]] = None
 
     @property
@@ -217,7 +217,7 @@ class ProcessorConfig:
     @property
     def available_pcpus(self) -> int:
         """pCPUs available for VMs (total minus overhead)."""
-        return max(0, self.pcpus - self.core_overhead)
+        return max(0, self.pcpus - self.thread_overhead)
 
 
 @dataclass
@@ -259,13 +259,13 @@ class CostParams:
 
 @dataclass
 class ComponentBreakdown:
-    """Breakdown of per-core, per-server, and per-vCPU cost/carbon components.
+    """Breakdown of per-thread, per-server, and per-vCPU cost/carbon components.
 
-    Per-core components scale with total HW threads (physical_cores * threads_per_core).
+    Per-thread components scale with total HW threads (physical_cores * threads_per_core).
     Per-server components are flat per server.
     Per-vCPU components scale with vcpus_per_server (for resource scaling with oversubscription).
     """
-    per_core: Dict[str, float] = field(default_factory=dict)
+    per_thread: Dict[str, float] = field(default_factory=dict)
     per_server: Dict[str, float] = field(default_factory=dict)
     per_vcpu: Dict[str, float] = field(default_factory=dict)
     physical_cores: int = 0
@@ -277,8 +277,8 @@ class ComponentBreakdown:
         return self.physical_cores * self.threads_per_core
 
     @property
-    def per_core_total_per_server(self) -> float:
-        return sum(self.per_core.values()) * self.total_hw_threads
+    def per_thread_total_per_server(self) -> float:
+        return sum(self.per_thread.values()) * self.total_hw_threads
 
     @property
     def per_server_total(self) -> float:
@@ -291,17 +291,17 @@ class ComponentBreakdown:
 
     @property
     def total_per_server(self) -> float:
-        return self.per_core_total_per_server + self.per_server_total + self.per_vcpu_total_per_server
+        return self.per_thread_total_per_server + self.per_server_total + self.per_vcpu_total_per_server
 
     @property
     def per_server_components(self) -> Dict[str, float]:
         """Return flat dict of component_name -> per-server contribution.
 
-        Resolves per_core, per_vcpu, and per_server multipliers into a single
+        Resolves per_thread, per_vcpu, and per_server multipliers into a single
         per-server value for each component.
         """
         result = {}
-        for name, val in self.per_core.items():
+        for name, val in self.per_thread.items():
             result[name] = val * self.total_hw_threads
         for name, val in self.per_server.items():
             result[name] = result.get(name, 0) + val
@@ -313,7 +313,7 @@ class ComponentBreakdown:
     def resolve(self, physical_cores: int, threads_per_core: int, vcpus_per_server: float = 0) -> 'ComponentBreakdown':
         """Return a new breakdown with core counts set for computing totals."""
         return ComponentBreakdown(
-            per_core=dict(self.per_core),
+            per_thread=dict(self.per_thread),
             per_server=dict(self.per_server),
             per_vcpu=dict(self.per_vcpu),
             physical_cores=physical_cores,
@@ -336,8 +336,8 @@ class EmbodiedBreakdown:
         if not self.carbon:
             return {}
         result = {}
-        for name, val in self.carbon.per_core.items():
-            result[f"per_core.{name}"] = val * self.carbon.total_hw_threads * self.num_servers
+        for name, val in self.carbon.per_thread.items():
+            result[f"per_thread.{name}"] = val * self.carbon.total_hw_threads * self.num_servers
         for name, val in self.carbon.per_server.items():
             result[f"per_server.{name}"] = val * self.num_servers
         vcpu_mult = self.carbon.vcpus_per_server if self.carbon.vcpus_per_server > 0 else self.carbon.total_hw_threads
@@ -351,8 +351,8 @@ class EmbodiedBreakdown:
         if not self.cost:
             return {}
         result = {}
-        for name, val in self.cost.per_core.items():
-            result[f"per_core.{name}"] = val * self.cost.total_hw_threads * self.num_servers
+        for name, val in self.cost.per_thread.items():
+            result[f"per_thread.{name}"] = val * self.cost.total_hw_threads * self.num_servers
         for name, val in self.cost.per_server.items():
             result[f"per_server.{name}"] = val * self.num_servers
         vcpu_mult = self.cost.vcpus_per_server if self.cost.vcpus_per_server > 0 else self.cost.total_hw_threads
@@ -362,23 +362,43 @@ class EmbodiedBreakdown:
 
 
 @dataclass
+class ResourceConstraintDetail:
+    """Per-resource constraint analysis detail."""
+    max_vcpus: float
+    utilization_pct: float    # 0-100, how much of this resource is used
+    stranded_pct: float       # 0-100, unused capacity
+    is_bottleneck: bool
+
+
+@dataclass
+class ResourceConstraintResult:
+    """Result of resource-constrained packing analysis."""
+    requested_oversub_ratio: float
+    effective_oversub_ratio: float
+    effective_vcpus_per_server: float
+    bottleneck_resource: str
+    resource_details: Dict[str, ResourceConstraintDetail]
+    was_constrained: bool     # True if a non-core resource limited packing
+
+
+@dataclass
 class ScenarioResult:
     """Results from evaluating a scenario."""
     num_servers: int
     avg_util_per_server: float
     effective_util_per_server: float  # After overhead
     power_per_server_w: float
-    
+
     # Carbon (kg CO2e over lifetime)
     embodied_carbon_kg: float
     operational_carbon_kg: float
     total_carbon_kg: float
-    
+
     # TCO (USD over lifetime)
     embodied_cost_usd: float
     operational_cost_usd: float
     total_cost_usd: float
-    
+
     # Derived metrics
     carbon_per_vcpu_kg: float
     cost_per_vcpu_usd: float
@@ -386,6 +406,7 @@ class ScenarioResult:
     # Optional breakdowns
     embodied_breakdown: Optional[EmbodiedBreakdown] = None
     power_breakdown: Optional[PowerBreakdown] = None
+    resource_constraint_result: Optional[ResourceConstraintResult] = None
 
 
 class OverssubModel:
@@ -456,11 +477,14 @@ class OverssubModel:
         embodied_carbon_kg = self.cost.embodied_carbon_kg
         server_cost_usd = self.cost.server_cost_usd
         embodied_breakdown = None
+        resource_constraint_result = None
         if cost_overrides:
             if 'embodied_carbon_kg' in cost_overrides:
                 embodied_carbon_kg = cost_overrides['embodied_carbon_kg']
             if 'server_cost_usd' in cost_overrides:
                 server_cost_usd = cost_overrides['server_cost_usd']
+            if 'resource_constraint_result' in cost_overrides:
+                resource_constraint_result = cost_overrides['resource_constraint_result']
             # Build breakdown if component data is provided
             carbon_bd = cost_overrides.get('carbon_breakdown')
             cost_bd = cost_overrides.get('cost_breakdown')
@@ -501,6 +525,7 @@ class OverssubModel:
             cost_per_vcpu_usd=total_cost / self.workload.total_vcpus,
             embodied_breakdown=embodied_breakdown,
             power_breakdown=power_breakdown,
+            resource_constraint_result=resource_constraint_result,
         )
     
     def find_breakeven_oversub(

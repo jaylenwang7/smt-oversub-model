@@ -2087,3 +2087,180 @@ def plot_per_server_comparison(
         plt.show()
 
     return fig
+
+
+def plot_resource_constraints(
+    result,
+    scenario_name: Optional[str] = None,
+    title: Optional[str] = None,
+    save_path: Optional[str] = None,
+    show: bool = True,
+    style: Optional[PlotStyle] = None,
+    figsize: Optional[Tuple[float, float]] = None,
+    show_plot_title: bool = True,
+):
+    """Plot resource constraint analysis showing max vCPUs per resource.
+
+    Creates a horizontal bar chart with resource names on y-axis and max vCPUs
+    on x-axis. The bottleneck resource is highlighted. Stranded capacity is
+    annotated on each bar. A vertical line marks the effective vCPUs.
+
+    Args:
+        result: Either a ScenarioResult (with resource_constraint_result),
+            an AnalysisResult (extracts constraint data from scenario_results),
+            or a ResourceConstraintResult directly.
+        scenario_name: For AnalysisResult, which scenario to plot.
+        title: Plot title.
+        save_path: Path to save the figure.
+        show: Whether to display the plot.
+        style: PlotStyle configuration.
+        figsize: Figure size override.
+        show_plot_title: Whether to show the title.
+
+    Returns:
+        matplotlib Figure object.
+    """
+    if not HAS_MATPLOTLIB:
+        raise ImportError("matplotlib is required for plotting")
+
+    if style is None:
+        style = PlotStyle()
+
+    # Extract ResourceConstraintResult from various input types
+    cr = None
+    from .model import ResourceConstraintResult as RCR
+
+    if isinstance(result, RCR):
+        cr = result
+    elif isinstance(result, dict):
+        # dict from asdict()
+        cr_data = result.get('resource_constraint_result')
+        if cr_data:
+            cr = cr_data  # keep as dict
+    elif hasattr(result, 'resource_constraint_result') and result.resource_constraint_result is not None:
+        # ScenarioResult
+        from dataclasses import asdict as _asdict
+        cr = _asdict(result.resource_constraint_result)
+    elif hasattr(result, 'scenario_results'):
+        # AnalysisResult
+        if scenario_name and scenario_name in result.scenario_results:
+            sr = result.scenario_results[scenario_name]
+            cr_data = sr.get('resource_constraint_result')
+            if cr_data:
+                cr = cr_data
+        else:
+            # Try first scenario with constraint data
+            for sn, sr in result.scenario_results.items():
+                cr_data = sr.get('resource_constraint_result')
+                if cr_data:
+                    cr = cr_data
+                    scenario_name = sn
+                    break
+
+    if cr is None:
+        raise ValueError("No resource constraint data found in result")
+
+    # Handle both dict and dataclass
+    if isinstance(cr, dict):
+        resource_details = cr.get('resource_details', {})
+        effective_vcpus = cr.get('effective_vcpus_per_server', 0)
+    else:
+        from dataclasses import asdict as _asdict
+        cr_dict = _asdict(cr)
+        resource_details = cr_dict.get('resource_details', {})
+        effective_vcpus = cr_dict.get('effective_vcpus_per_server', 0)
+
+    # Sort resources: cores first, then by max_vcpus descending
+    sorted_resources = sorted(
+        resource_details.items(),
+        key=lambda x: (0 if x[0] == 'cores' else 1, -x[1].get('max_vcpus', 0) if isinstance(x[1], dict) else -x[1].max_vcpus),
+    )
+
+    resource_names = [name for name, _ in sorted_resources]
+    max_vcpus_vals = []
+    stranded_vals = []
+    is_bottleneck_list = []
+
+    for name, detail in sorted_resources:
+        if isinstance(detail, dict):
+            mv = detail.get('max_vcpus', 0)
+            sp = detail.get('stranded_pct', 0)
+            ib = detail.get('is_bottleneck', False)
+        else:
+            mv = detail.max_vcpus
+            sp = detail.stranded_pct
+            ib = detail.is_bottleneck
+        max_vcpus_vals.append(mv if mv != float('inf') else 0)
+        stranded_vals.append(sp)
+        is_bottleneck_list.append(ib)
+
+    # Filter out inf resources for plotting
+    plot_data = [
+        (name, mv, sp, ib)
+        for name, mv, sp, ib in zip(resource_names, max_vcpus_vals, stranded_vals, is_bottleneck_list)
+        if mv > 0
+    ]
+
+    if not plot_data:
+        raise ValueError("No plottable resource constraints (all infinite capacity)")
+
+    names = [d[0] for d in plot_data]
+    max_vs = [d[1] for d in plot_data]
+    stranded = [d[2] for d in plot_data]
+    bottlenecks = [d[3] for d in plot_data]
+
+    fig_w, fig_h = figsize or (10, max(4, len(names) * 0.8 + 2))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), facecolor=style.facecolor)
+    ax.set_facecolor(style.facecolor)
+
+    y_pos = np.arange(len(names))
+    bar_colors = [
+        '#e74c3c' if b else '#5dade2'
+        for b in bottlenecks
+    ]
+
+    # Light bars showing full capacity
+    ax.barh(y_pos, max_vs, color=bar_colors, alpha=0.3, edgecolor='white', height=0.6)
+
+    # Dark overlay showing effective usage
+    for i, (mv, b) in enumerate(zip(max_vs, bottlenecks)):
+        used = min(effective_vcpus, mv)
+        ax.barh(i, used, color=bar_colors[i], alpha=0.9, edgecolor='white', height=0.6)
+
+    # Vertical reference line at effective vCPUs
+    ax.axvline(x=effective_vcpus, color='#333333', linestyle='--', linewidth=1.5, alpha=0.8)
+
+    # Annotate stranded %
+    x_max = max(max_vs)
+    for i, (mv, sp) in enumerate(zip(max_vs, stranded)):
+        if sp > 0.1:
+            ax.text(mv + x_max * 0.01, i, f'{sp:.0f}% stranded',
+                    va='center', fontsize=style.annotation_fontsize, color='#666666')
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(names, fontsize=style.label_fontsize)
+    ax.set_xlabel('Max vCPUs per Server', fontsize=style.label_fontsize)
+    ax.invert_yaxis()
+
+    # Legend
+    bottleneck_patch = mpatches.Patch(color='#e74c3c', alpha=0.7, label='Bottleneck')
+    normal_patch = mpatches.Patch(color='#5dade2', alpha=0.7, label='Non-binding')
+    eff_line = plt.Line2D([0], [0], color='#333333', linestyle='--', linewidth=1.5,
+                          label=f'Effective: {effective_vcpus:.0f} vCPUs')
+    ax.legend(handles=[bottleneck_patch, normal_patch, eff_line],
+              fontsize=style.annotation_fontsize, loc='lower right')
+
+    if show_plot_title:
+        if title is None:
+            title = f"Resource Constraints{f': {scenario_name}' if scenario_name else ''}"
+        ax.set_title(title, fontsize=style.title_fontsize, fontweight='bold', color='#333333')
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=style.dpi, bbox_inches='tight', facecolor=style.facecolor)
+
+    if show:
+        plt.show()
+
+    return fig

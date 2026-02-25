@@ -36,6 +36,7 @@ from .model import (
     ScenarioParams, WorkloadParams, CostParams, ScenarioResult,
     ComponentBreakdown, EmbodiedBreakdown,
     PowerComponentCurve, build_composite_power_curve,
+    ResourceConstraintDetail, ResourceConstraintResult,
 )
 from .analysis import ScenarioSpec, ScenarioBuilder, ProcessorDefaults, CostDefaults
 from .config import make_power_curve_fn
@@ -511,9 +512,9 @@ class ResourceScalingConfig:
     some resources (memory, SSD) must scale with actual vCPU count.
 
     Attributes:
-        scale_with_vcpus: Component names to move from per_core to per_vcpu scaling.
+        scale_with_vcpus: Component names to move from per_thread to per_vcpu scaling.
             These components will use vcpus_per_server as their multiplier instead
-            of hw_threads. Components not found in per_core are silently skipped.
+            of hw_threads. Components not found in per_thread are silently skipped.
         per_vcpu_carbon: Custom per-vCPU carbon components (additive, kg CO2e per vCPU).
         per_vcpu_cost: Custom per-vCPU cost components (additive, USD per vCPU).
         scale_power: Whether to also scale matching power_breakdown components
@@ -551,6 +552,73 @@ class ResourceScalingConfig:
 
 
 @dataclass
+class ResourceConstraintSpec:
+    """Specification for a single resource constraint.
+
+    Defines the capacity of a resource and the demand per vCPU. The constraint
+    limits how many vCPUs can be packed onto a server.
+
+    Capacity can be specified per HW thread (capacity_per_thread, consistent with
+    ComponentBreakdown.per_thread) or per server (capacity_per_server). Exactly
+    one must be specified.
+    """
+    capacity_per_thread: Optional[float] = None   # per HW thread
+    capacity_per_server: Optional[float] = None  # flat per server
+    demand_per_vcpu: float = 0.0
+
+    def max_vcpus(self, hw_threads: int) -> float:
+        """Compute max vCPUs this resource can support on a server."""
+        if self.demand_per_vcpu <= 0:
+            return float('inf')
+        if self.capacity_per_thread is not None:
+            capacity = self.capacity_per_thread * hw_threads
+        elif self.capacity_per_server is not None:
+            capacity = self.capacity_per_server
+        else:
+            return float('inf')
+        return capacity / self.demand_per_vcpu
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ResourceConstraintSpec':
+        return cls(
+            capacity_per_thread=data.get('capacity_per_thread'),
+            capacity_per_server=data.get('capacity_per_server'),
+            demand_per_vcpu=data.get('demand_per_vcpu', 0.0),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {}
+        if self.capacity_per_thread is not None:
+            d['capacity_per_thread'] = self.capacity_per_thread
+        if self.capacity_per_server is not None:
+            d['capacity_per_server'] = self.capacity_per_server
+        if self.demand_per_vcpu:
+            d['demand_per_vcpu'] = self.demand_per_vcpu
+        return d
+
+
+@dataclass
+class ResourceConstraintsConfig:
+    """Configuration for resource-constrained packing.
+
+    Servers have fixed capacities and multiple resources independently limit
+    how many vCPUs can be packed. This identifies the effective oversubscription
+    ratio, bottleneck resources, and stranded capacity.
+    """
+    constraints: Dict[str, ResourceConstraintSpec] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ResourceConstraintsConfig':
+        constraints = {}
+        for name, spec_data in data.items():
+            constraints[name] = ResourceConstraintSpec.from_dict(spec_data)
+        return cls(constraints=constraints)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {name: spec.to_dict() for name, spec in self.constraints.items()}
+
+
+@dataclass
 class ScenarioConfig:
     """Configuration for a single scenario."""
     processor: str  # "smt" or "nosmt"
@@ -559,6 +627,7 @@ class ScenarioConfig:
     vcpu_demand_multiplier: float = 1.0
     overrides: Optional[Dict[str, Any]] = None  # processor param overrides
     resource_scaling: Optional[ResourceScalingConfig] = None
+    resource_constraints: Optional[ResourceConstraintsConfig] = None
     max_vms_per_server: Optional[int] = None
     avg_vm_size_vcpus: Optional[float] = None
 
@@ -567,6 +636,13 @@ class ScenarioConfig:
         resource_scaling = None
         if 'resource_scaling' in data and isinstance(data['resource_scaling'], dict):
             resource_scaling = ResourceScalingConfig.from_dict(data['resource_scaling'])
+        resource_constraints = None
+        if 'resource_constraints' in data and isinstance(data['resource_constraints'], dict):
+            resource_constraints = ResourceConstraintsConfig.from_dict(data['resource_constraints'])
+        if resource_scaling and resource_constraints:
+            raise ValueError(
+                "resource_scaling and resource_constraints are mutually exclusive"
+            )
         return cls(
             processor=data.get('processor', 'smt'),
             oversub_ratio=data.get('oversub_ratio', 1.0),
@@ -574,6 +650,7 @@ class ScenarioConfig:
             vcpu_demand_multiplier=data.get('vcpu_demand_multiplier', 1.0),
             overrides=data.get('overrides'),
             resource_scaling=resource_scaling,
+            resource_constraints=resource_constraints,
             max_vms_per_server=data.get('max_vms_per_server'),
             avg_vm_size_vcpus=data.get('avg_vm_size_vcpus'),
         )
@@ -589,6 +666,8 @@ class ScenarioConfig:
             d['overrides'] = self.overrides
         if self.resource_scaling:
             d['resource_scaling'] = self.resource_scaling.to_dict()
+        if self.resource_constraints:
+            d['resource_constraints'] = self.resource_constraints.to_dict()
         if self.max_vms_per_server is not None:
             d['max_vms_per_server'] = self.max_vms_per_server
         if self.avg_vm_size_vcpus is not None:
@@ -791,30 +870,30 @@ class EmbodiedComponentSpec:
     """Config-level specification for per-core/per-server embodied carbon or cost.
 
     Used in processor specs and global cost specs to define structured
-    cost/carbon breakdowns that scale with core count.
+    cost/carbon breakdowns that scale with thread count.
 
     Example JSON:
         {
-            "per_core": {"cpu_die": 10.0, "dram": 2.0},
+            "per_thread": {"cpu_die": 10.0, "dram": 2.0},
             "per_server": {"chassis": 100.0, "network": 50.0}
         }
 
     Result: total_per_server = (10.0 + 2.0) * hw_threads + (100.0 + 50.0)
     """
-    per_core: Dict[str, float] = field(default_factory=dict)
+    per_thread: Dict[str, float] = field(default_factory=dict)
     per_server: Dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'EmbodiedComponentSpec':
         return cls(
-            per_core=dict(data.get('per_core', {})),
+            per_thread=dict(data.get('per_thread', {})),
             per_server=dict(data.get('per_server', {})),
         )
 
     def to_dict(self) -> Dict[str, Any]:
         d = {}
-        if self.per_core:
-            d['per_core'] = dict(self.per_core)
+        if self.per_thread:
+            d['per_thread'] = dict(self.per_thread)
         if self.per_server:
             d['per_server'] = dict(self.per_server)
         return d
@@ -822,12 +901,12 @@ class EmbodiedComponentSpec:
     def resolve_total(self, physical_cores: int, threads_per_core: int) -> float:
         """Compute flat per-server value from components."""
         hw_threads = physical_cores * threads_per_core
-        return sum(self.per_core.values()) * hw_threads + sum(self.per_server.values())
+        return sum(self.per_thread.values()) * hw_threads + sum(self.per_server.values())
 
     def to_component_breakdown(self, physical_cores: int, threads_per_core: int) -> ComponentBreakdown:
         """Convert to a resolved ComponentBreakdown for use in model evaluation."""
         return ComponentBreakdown(
-            per_core=dict(self.per_core),
+            per_thread=dict(self.per_thread),
             per_server=dict(self.per_server),
             physical_cores=physical_cores,
             threads_per_core=threads_per_core,
@@ -896,7 +975,7 @@ class ProcessorSpec:
         threads_per_core: SMT threads per core (1 = no SMT, 2+ = SMT enabled)
         power_idle_w: Idle power consumption in watts
         power_max_w: Maximum power consumption in watts
-        core_overhead: Number of pCPUs reserved for host (not available for VMs)
+        thread_overhead: Number of HW threads reserved for host (not available for VMs)
         embodied_carbon_kg: Optional per-server embodied carbon (overrides cost.embodied_carbon_kg)
         server_cost_usd: Optional per-server cost (overrides cost.server_cost_usd)
         power_curve: Optional per-processor power curve (overrides global power_curve)
@@ -905,7 +984,7 @@ class ProcessorSpec:
     threads_per_core: int = 1  # 1 = no SMT, 2 = SMT (hyperthreading)
     power_idle_w: float = 100.0
     power_max_w: float = 400.0
-    core_overhead: int = 0
+    thread_overhead: int = 0
     # Optional cost overrides - if set, these override the values in CostSpec
     embodied_carbon_kg: Optional[float] = None
     server_cost_usd: Optional[float] = None
@@ -952,7 +1031,7 @@ class ProcessorSpec:
             threads_per_core=data.get('threads_per_core', 1),
             power_idle_w=data.get('power_idle_w', 100.0),
             power_max_w=data.get('power_max_w', 400.0),
-            core_overhead=data.get('core_overhead', 0),
+            thread_overhead=data.get('thread_overhead', 0),
             embodied_carbon_kg=data.get('embodied_carbon_kg'),
             server_cost_usd=data.get('server_cost_usd'),
             embodied_carbon=embodied_carbon,
@@ -968,7 +1047,7 @@ class ProcessorSpec:
             'threads_per_core': self.threads_per_core,
             'power_idle_w': self.power_idle_w,
             'power_max_w': self.power_max_w,
-            'core_overhead': self.core_overhead,
+            'thread_overhead': self.thread_overhead,
         }
         # Only include optional fields if set
         # Structured format takes priority in serialization
@@ -1158,7 +1237,7 @@ class ProcessorConfigSpec:
             return False
         # Check for at least one processor field
         processor_fields = {'physical_cores', 'threads_per_core', 'power_idle_w', 'power_max_w',
-                            'core_overhead', 'embodied_carbon', 'server_cost', 'power_breakdown',
+                            'thread_overhead', 'embodied_carbon', 'server_cost', 'power_breakdown',
                             'capacity'}
         return bool(processor_fields & set(spec_data.keys()))
 
@@ -1917,12 +1996,12 @@ class DeclarativeAnalysisEngine:
             smt_threads_per_core=smt_spec.threads_per_core if smt_spec else 2,
             smt_power_idle_w=smt_spec.power_idle_w if smt_spec else 100.0,
             smt_power_max_w=smt_spec.power_max_w if smt_spec else 400.0,
-            smt_core_overhead=smt_spec.core_overhead if smt_spec else 0,
+            smt_thread_overhead=smt_spec.thread_overhead if smt_spec else 0,
             nosmt_physical_cores=nosmt_spec.physical_cores if nosmt_spec else 48,
             nosmt_threads_per_core=nosmt_spec.threads_per_core if nosmt_spec else 1,
             nosmt_power_idle_w=nosmt_spec.power_idle_w if nosmt_spec else 90.0,
             nosmt_power_max_w=nosmt_spec.power_max_w if nosmt_spec else 340.0,
-            nosmt_core_overhead=nosmt_spec.core_overhead if nosmt_spec else 0,
+            nosmt_thread_overhead=nosmt_spec.thread_overhead if nosmt_spec else 0,
         )
 
         cost_defaults = CostDefaults(
@@ -2022,12 +2101,12 @@ class DeclarativeAnalysisEngine:
             smt_threads_per_core=smt_spec.threads_per_core if smt_spec else 2,
             smt_power_idle_w=smt_spec.power_idle_w if smt_spec else 100.0,
             smt_power_max_w=smt_spec.power_max_w if smt_spec else 400.0,
-            smt_core_overhead=smt_spec.core_overhead if smt_spec else 0,
+            smt_thread_overhead=smt_spec.thread_overhead if smt_spec else 0,
             nosmt_physical_cores=nosmt_spec.physical_cores if nosmt_spec else 48,
             nosmt_threads_per_core=nosmt_spec.threads_per_core if nosmt_spec else 1,
             nosmt_power_idle_w=nosmt_spec.power_idle_w if nosmt_spec else 90.0,
             nosmt_power_max_w=nosmt_spec.power_max_w if nosmt_spec else 340.0,
-            nosmt_core_overhead=nosmt_spec.core_overhead if nosmt_spec else 0,
+            nosmt_thread_overhead=nosmt_spec.thread_overhead if nosmt_spec else 0,
         )
 
         # Use placeholder operational values - we only need server count and power
@@ -2099,7 +2178,7 @@ class DeclarativeAnalysisEngine:
         threads_per_core = overrides.get('threads_per_core', proc_spec.threads_per_core)
         power_idle = overrides.get('power_idle_w', proc_spec.power_idle_w)
         power_max = overrides.get('power_max_w', proc_spec.power_max_w)
-        core_overhead = overrides.get('core_overhead', proc_spec.core_overhead)
+        thread_overhead = overrides.get('thread_overhead', proc_spec.thread_overhead)
 
         # Build power components and composite curve if power_breakdown is present
         # Components without a power_curve use the global power curve; if no global, default to polynomial
@@ -2122,7 +2201,7 @@ class DeclarativeAnalysisEngine:
             physical_cores=physical_cores,
             threads_per_core=threads_per_core,
             power_curve=power_curve,
-            core_overhead=core_overhead,
+            thread_overhead=thread_overhead,
             power_components=power_components,
         )
 
@@ -2222,6 +2301,13 @@ class DeclarativeAnalysisEngine:
                 params = self._apply_power_scaling(params, scaling.scale_with_vcpus, scale_factor)
                 modified_params = params
 
+        # Apply resource constraints if configured
+        if scenario_cfg.resource_constraints:
+            constrained_params, constraint_result = self._apply_resource_constraints(
+                modified_params or params, scenario_cfg.resource_constraints)
+            modified_params = constrained_params
+            cost_overrides['resource_constraint_result'] = constraint_result
+
         # Attach breakdown metadata if available
         if carbon_breakdown is not None:
             cost_overrides['carbon_breakdown'] = carbon_breakdown
@@ -2232,11 +2318,73 @@ class DeclarativeAnalysisEngine:
 
         return cost_overrides, modified_params
 
+    def _apply_resource_constraints(
+        self,
+        params: ScenarioParams,
+        constraints_config: ResourceConstraintsConfig,
+    ) -> Tuple[ScenarioParams, ResourceConstraintResult]:
+        """Apply resource constraints to limit effective oversubscription.
+
+        Servers have fixed capacities and multiple resources independently limit
+        how many vCPUs can be packed. Returns modified params with effective R
+        and a ResourceConstraintResult with per-resource details.
+        """
+        proc = params.processor
+        hw_threads = proc.physical_cores * proc.threads_per_core
+        available_pcpus = proc.available_pcpus
+
+        # Core limit from oversub ratio
+        core_limit = float(available_pcpus * params.oversub_ratio)
+
+        # Compute per-resource limits
+        resource_limits: Dict[str, float] = {'cores': core_limit}
+        for res_name, spec in constraints_config.constraints.items():
+            resource_limits[res_name] = spec.max_vcpus(hw_threads)
+
+        # Find effective vCPUs (minimum across all limits)
+        effective_vcpus = min(resource_limits.values())
+        effective_R = effective_vcpus / available_pcpus if available_pcpus > 0 else 0.0
+
+        # Find bottleneck
+        bottleneck = min(resource_limits, key=resource_limits.get)
+
+        # Build per-resource details
+        resource_details: Dict[str, ResourceConstraintDetail] = {}
+        for res_name, max_v in resource_limits.items():
+            if max_v == float('inf'):
+                utilization = 0.0
+            elif max_v > 0:
+                utilization = min(100.0, (effective_vcpus / max_v) * 100.0)
+            else:
+                utilization = 100.0
+            resource_details[res_name] = ResourceConstraintDetail(
+                max_vcpus=max_v,
+                utilization_pct=utilization,
+                stranded_pct=100.0 - utilization,
+                is_bottleneck=(res_name == bottleneck),
+            )
+
+        was_constrained = (bottleneck != 'cores')
+
+        constraint_result = ResourceConstraintResult(
+            requested_oversub_ratio=params.oversub_ratio,
+            effective_oversub_ratio=effective_R,
+            effective_vcpus_per_server=effective_vcpus,
+            bottleneck_resource=bottleneck,
+            resource_details=resource_details,
+            was_constrained=was_constrained,
+        )
+
+        # Modify params to use effective oversub ratio
+        modified_params = replace(params, oversub_ratio=effective_R)
+
+        return modified_params, constraint_result
+
     def _evaluate_scenario(self, name: str) -> Tuple[ScenarioParams, ScenarioResult]:
         """Evaluate a scenario by name and return params and result.
 
         Resolves embodied carbon and server cost using priority chain:
-        1. Processor-level structured (embodied_carbon: {per_core, per_server})
+        1. Processor-level structured (embodied_carbon: {per_thread, per_server})
         2. Processor-level flat (embodied_carbon_kg)
         3. Global cost structured (cost.embodied_carbon: {...})
         4. Global cost flat (cost.embodied_carbon_kg) - already in model defaults
@@ -2260,35 +2408,35 @@ class DeclarativeAnalysisEngine:
         custom_per_vcpu: Dict[str, float],
         vcpus_per_server: float,
     ) -> ComponentBreakdown:
-        """Move named components from per_core to per_vcpu and add custom per-vCPU values.
+        """Move named components from per_thread to per_vcpu and add custom per-vCPU values.
 
-        Components listed in scale_with_vcpus are removed from per_core and placed
+        Components listed in scale_with_vcpus are removed from per_thread and placed
         in per_vcpu so they scale with vcpus_per_server instead of hw_threads.
-        Components not found in per_core are silently skipped.
+        Components not found in per_thread are silently skipped.
 
         Args:
             breakdown: Original ComponentBreakdown
-            scale_with_vcpus: Component names to move from per_core to per_vcpu
+            scale_with_vcpus: Component names to move from per_thread to per_vcpu
             custom_per_vcpu: Additional per-vCPU components (additive)
             vcpus_per_server: Number of vCPUs per server
 
         Returns:
             New ComponentBreakdown with per_vcpu scaling applied
         """
-        new_per_core = dict(breakdown.per_core)
+        new_per_thread = dict(breakdown.per_thread)
         new_per_vcpu = dict(breakdown.per_vcpu)
 
-        # Move named components from per_core to per_vcpu
+        # Move named components from per_thread to per_vcpu
         for comp_name in scale_with_vcpus:
-            if comp_name in new_per_core:
-                new_per_vcpu[comp_name] = new_per_core.pop(comp_name)
+            if comp_name in new_per_thread:
+                new_per_vcpu[comp_name] = new_per_thread.pop(comp_name)
 
         # Add custom per-vCPU components
         for comp_name, val in custom_per_vcpu.items():
             new_per_vcpu[comp_name] = new_per_vcpu.get(comp_name, 0) + val
 
         return ComponentBreakdown(
-            per_core=new_per_core,
+            per_thread=new_per_thread,
             per_server=dict(breakdown.per_server),
             per_vcpu=new_per_vcpu,
             physical_cores=breakdown.physical_cores,
@@ -2340,7 +2488,7 @@ class DeclarativeAnalysisEngine:
             physical_cores=params.processor.physical_cores,
             threads_per_core=params.processor.threads_per_core,
             power_curve=new_power_curve,
-            core_overhead=params.processor.core_overhead,
+            thread_overhead=params.processor.thread_overhead,
             power_components=new_components,
         )
         return ScenarioParams(
@@ -2581,7 +2729,7 @@ class DeclarativeAnalysisEngine:
                     baseline_dict.get('num_servers', 1),
                 )
 
-                scenario_results[scenario_name] = {
+                scenario_entry = {
                     'result': sweep_dict,
                     'carbon_diff_pct': carbon_diff_pct,
                     'tco_diff_pct': tco_diff_pct,
@@ -2590,6 +2738,15 @@ class DeclarativeAnalysisEngine:
                     'tco_diff_abs': sweep_dict.get('total_cost_usd', 0) - baseline_dict.get('total_cost_usd', 0),
                     'server_diff_abs': sweep_dict.get('num_servers', 0) - baseline_dict.get('num_servers', 0),
                 }
+
+                # Extract resource constraint data if present
+                cr = sweep_result.resource_constraint_result
+                if cr is not None:
+                    scenario_entry['effective_oversub_ratio'] = cr.effective_oversub_ratio
+                    scenario_entry['bottleneck_resource'] = cr.bottleneck_resource
+                    scenario_entry['was_constrained'] = cr.was_constrained
+
+                scenario_results[scenario_name] = scenario_entry
 
             result_entry = {
                 'parameter_value': value,
@@ -3158,9 +3315,19 @@ class DeclarativeAnalysisEngine:
             "",
         ]
 
+        # Check if any scenario has resource constraint data
+        has_constraints = any(
+            r.get('scenarios', {}).get(s, {}).get('effective_oversub_ratio') is not None
+            for r in results
+            for s in sweep_scenarios
+        )
+
         # For multi-scenario, create a table per scenario
         headers = [param_label, "Carbon %", "TCO %", "Servers %"]
         col_aligns = ['r', 'r', 'r', 'r']
+        if has_constraints:
+            headers.extend(["Eff. R", "Bottleneck"])
+            col_aligns.extend(['r', 'l'])
 
         for scenario_name in sweep_scenarios:
             scenario_label = get_label(scenario_name)
@@ -3181,12 +3348,19 @@ class DeclarativeAnalysisEngine:
                     carbon_pct = r['carbon_diff_pct']
                     tco_pct = r['tco_diff_pct']
                     server_pct = r['server_diff_pct']
-                rows.append([
+                    scenario_data = r.get('scenarios', {}).get(scenario_name, {})
+                row = [
                     f"{value:.3f}",
                     f"{carbon_pct:+.1f}%",
                     f"{tco_pct:+.1f}%",
                     f"{server_pct:+.1f}%",
-                ])
+                ]
+                if has_constraints:
+                    eff_r = scenario_data.get('effective_oversub_ratio')
+                    bottleneck = scenario_data.get('bottleneck_resource', '')
+                    row.append(f"{eff_r:.2f}" if eff_r is not None else "--")
+                    row.append(bottleneck if bottleneck else "--")
+                rows.append(row)
             lines.append(fmt.table(headers, rows, col_aligns))
             lines.append("")
 

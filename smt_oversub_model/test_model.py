@@ -315,28 +315,28 @@ class TestCoreOverhead:
     def test_available_pcpus_with_overhead(self):
         """With overhead, available_pcpus is reduced."""
         power = PowerCurve(100, 300)
-        proc = ProcessorConfig(physical_cores=64, threads_per_core=2, power_curve=power, core_overhead=8)
+        proc = ProcessorConfig(physical_cores=64, threads_per_core=2, power_curve=power, thread_overhead=8)
         assert proc.pcpus == 128
         assert proc.available_pcpus == 120
 
     def test_available_pcpus_nosmt_with_overhead(self):
         """Non-SMT processor with overhead."""
         power = PowerCurve(100, 300)
-        proc = ProcessorConfig(physical_cores=48, threads_per_core=1, power_curve=power, core_overhead=4)
+        proc = ProcessorConfig(physical_cores=48, threads_per_core=1, power_curve=power, thread_overhead=4)
         assert proc.pcpus == 48
         assert proc.available_pcpus == 44
 
     def test_available_pcpus_clamps_to_zero(self):
         """available_pcpus should not go negative."""
         power = PowerCurve(100, 300)
-        proc = ProcessorConfig(physical_cores=8, threads_per_core=1, power_curve=power, core_overhead=100)
+        proc = ProcessorConfig(physical_cores=8, threads_per_core=1, power_curve=power, thread_overhead=100)
         assert proc.available_pcpus == 0
 
     def test_server_count_with_overhead(self):
         """Server count should increase when cores are reserved for host."""
         power = PowerCurve(100, 300)
         # 64 physical * 2 threads = 128 pCPUs, minus 8 overhead = 120 available
-        proc = ProcessorConfig(physical_cores=64, threads_per_core=2, power_curve=power, core_overhead=8)
+        proc = ProcessorConfig(physical_cores=64, threads_per_core=2, power_curve=power, thread_overhead=8)
         workload = WorkloadParams(total_vcpus=1000, avg_util=0.3)
         cost = CostParams(1000, 15000, 400, 0.10, 4 * 8760)
 
@@ -350,7 +350,7 @@ class TestCoreOverhead:
     def test_server_count_without_overhead_for_comparison(self):
         """Baseline: same config without overhead needs fewer servers."""
         power = PowerCurve(100, 300)
-        proc = ProcessorConfig(physical_cores=64, threads_per_core=2, power_curve=power, core_overhead=0)
+        proc = ProcessorConfig(physical_cores=64, threads_per_core=2, power_curve=power, thread_overhead=0)
         workload = WorkloadParams(total_vcpus=1000, avg_util=0.3)
         cost = CostParams(1000, 15000, 400, 0.10, 4 * 8760)
 
@@ -364,8 +364,8 @@ class TestCoreOverhead:
     def test_overhead_affects_utilization_calculation(self):
         """Utilization should be calculated based on available pCPUs."""
         power = PowerCurve(100, 300)
-        proc_no_overhead = ProcessorConfig(64, 2, power, core_overhead=0)
-        proc_with_overhead = ProcessorConfig(64, 2, power, core_overhead=8)
+        proc_no_overhead = ProcessorConfig(64, 2, power, thread_overhead=0)
+        proc_with_overhead = ProcessorConfig(64, 2, power, thread_overhead=8)
 
         # Use exact vCPU count to avoid rounding differences
         workload = WorkloadParams(total_vcpus=120, avg_util=0.5)
@@ -1565,7 +1565,7 @@ class TestComponentBreakdown:
     def test_resolve_sets_core_counts(self):
         """resolve() should produce a breakdown with correct core counts."""
         bd = ComponentBreakdown(
-            per_core={'cpu_die': 10.0},
+            per_thread={'cpu_die': 10.0},
             per_server={'chassis': 100.0},
         )
         resolved = bd.resolve(48, 2)
@@ -1574,15 +1574,15 @@ class TestComponentBreakdown:
         assert resolved.total_hw_threads == 96
 
     def test_total_per_server_math(self):
-        """total_per_server should be per_core_total + per_server_total."""
+        """total_per_server should be per_thread_total + per_server_total."""
         bd = ComponentBreakdown(
-            per_core={'cpu_die': 10.0, 'dram': 2.0},
+            per_thread={'cpu_die': 10.0, 'dram': 2.0},
             per_server={'chassis': 100.0, 'network': 50.0},
             physical_cores=48,
             threads_per_core=2,
         )
-        # per_core: (10 + 2) * 96 = 1152
-        assert bd.per_core_total_per_server == 1152.0
+        # per_thread: (10 + 2) * 96 = 1152
+        assert bd.per_thread_total_per_server == 1152.0
         # per_server: 100 + 50 = 150
         assert bd.per_server_total == 150.0
         # total: 1152 + 150 = 1302
@@ -1591,22 +1591,22 @@ class TestComponentBreakdown:
     def test_empty_breakdown(self):
         """Empty breakdown should have zero totals."""
         bd = ComponentBreakdown(physical_cores=48, threads_per_core=2)
-        assert bd.per_core_total_per_server == 0.0
+        assert bd.per_thread_total_per_server == 0.0
         assert bd.per_server_total == 0.0
         assert bd.total_per_server == 0.0
 
     def test_embodied_breakdown_fleet_components(self):
         """Fleet components should scale by num_servers."""
         carbon_bd = ComponentBreakdown(
-            per_core={'cpu_die': 10.0},
+            per_thread={'cpu_die': 10.0},
             per_server={'chassis': 20.0},
             physical_cores=48,
             threads_per_core=2,
         )
         eb = EmbodiedBreakdown(carbon=carbon_bd, num_servers=5)
         fleet = eb.carbon_fleet_components
-        # per_core.cpu_die: 10 * 96 * 5 = 4800
-        assert fleet['per_core.cpu_die'] == 4800.0
+        # per_thread.cpu_die: 10 * 96 * 5 = 4800
+        assert fleet['per_thread.cpu_die'] == 4800.0
         # per_server.chassis: 20 * 5 = 100
         assert fleet['per_server.chassis'] == 100.0
 
@@ -1627,7 +1627,7 @@ class TestComponentBreakdown:
         scenario = ScenarioParams(proc, oversub_ratio=1.0)
 
         carbon_bd = ComponentBreakdown(
-            per_core={'cpu_die': 10.0},
+            per_thread={'cpu_die': 10.0},
             per_server={'chassis': 20.0},
             physical_cores=48,
             threads_per_core=2,
@@ -1756,7 +1756,7 @@ class TestComponentBreakdownPerVcpu:
     def test_per_vcpu_total_per_server_with_vcpus_set(self):
         """per_vcpu components scale with vcpus_per_server when set."""
         bd = ComponentBreakdown(
-            per_core={'cpu': 10.0},
+            per_thread={'cpu': 10.0},
             per_server={'chassis': 100.0},
             per_vcpu={'memory': 4.0, 'ssd': 3.0},
             physical_cores=80, threads_per_core=1,
@@ -1776,15 +1776,15 @@ class TestComponentBreakdownPerVcpu:
         assert abs(bd.per_vcpu_total_per_server - 480.0) < 0.01
 
     def test_total_per_server_includes_per_vcpu(self):
-        """total_per_server includes per_core + per_server + per_vcpu."""
+        """total_per_server includes per_thread + per_server + per_vcpu."""
         bd = ComponentBreakdown(
-            per_core={'cpu': 10.0},
+            per_thread={'cpu': 10.0},
             per_server={'chassis': 200.0},
             per_vcpu={'memory': 4.0},
             physical_cores=80, threads_per_core=1,
             vcpus_per_server=144.0,
         )
-        # per_core: 10 * 80 = 800
+        # per_thread: 10 * 80 = 800
         # per_server: 200
         # per_vcpu: 4 * 144 = 576
         expected = 800.0 + 200.0 + 576.0
@@ -1804,7 +1804,7 @@ class TestComponentBreakdownPerVcpu:
     def test_empty_per_vcpu_is_zero(self):
         """Empty per_vcpu contributes zero to total."""
         bd = ComponentBreakdown(
-            per_core={'cpu': 10.0},
+            per_thread={'cpu': 10.0},
             per_server={'chassis': 100.0},
             physical_cores=48, threads_per_core=2,
         )
@@ -1819,7 +1819,7 @@ class TestEmbodiedBreakdownPerVcpu:
     def test_carbon_fleet_includes_per_vcpu(self):
         """Fleet carbon includes per_vcpu components."""
         carbon_bd = ComponentBreakdown(
-            per_core={'cpu': 10.0},
+            per_thread={'cpu': 10.0},
             per_server={'chassis': 200.0},
             per_vcpu={'memory': 4.0},
             physical_cores=80, threads_per_core=1,

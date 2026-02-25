@@ -12,11 +12,11 @@
 //
 // SMT baseline: 12 DIMMs (768GB) + 6 SSDs (12TB) for 160 HW threads
 // no-SMT:        6 DIMMs (384GB) + 3 SSDs (6TB)  for  80 HW threads
-// Memory and SSD scale linearly with HW thread count (per_core).
-// Per-thread rates: memory = 59.1*12/160 = 4.43 kgCO2e, $33.00
-//                   ssd    = 103*6/160   = 3.86 kgCO2e, $10.23
+// Memory and SSD scale linearly with HW thread count (per_thread).
+// Per thread: memory = 59.1*12/160 = 4.43 kgCO2e, $33.00
+//             ssd    = 103*6/160   = 3.86 kgCO2e, $10.23
 //
-// Capacity per-thread rates (GB):
+// Capacity per thread:
 //   memory = 768GB / 160 threads = 4.8 GB/thread
 //   ssd    = 12000GB / 160 threads = 75.0 GB/thread
 //
@@ -27,7 +27,7 @@
 //     NIC 102W, DC-SCM 35W (constant), Fan 75W (C2195 1U).
 //   The smt-oversub-model power curves handle utilization-based scaling from idle to TDP.
 //
-// core_overhead: 10% of pCPUs, matching Genoa-default-1S "overhead: 10%"
+// thread_overhead: 10% of pCPUs, matching Genoa-default-1S "overhead: 10%"
 //   SMT: 10% of 160 = 16 pCPUs
 //   no-SMT: 10% of 80 = 8 pCPUs
 {
@@ -35,7 +35,7 @@
     // AMD Genoa 80-core, SMT enabled (2 threads/core = 160 HW threads)
     "physical_cores": 80,
     "threads_per_core": 2,
-    "core_overhead": 16,
+    "thread_overhead": 16,
     // Per-component power: max_w = TDP × 1.05 PSU, idle_w = TDP × spec_derate(0) × 1.05 PSU.
     // CPU 300W TDP: idle = 300×0.30×1.05 = 94W, max = 300×1.05 = 315W
     // Memory 12×10.4W = 124.8W TDP: idle = 124.8×0.30×1.05 = 39W, max = 124.8×1.05 = 131W
@@ -50,7 +50,7 @@
       "chassis": {"idle_w": 60, "max_w": 116}
     },
     "embodied_carbon": {
-      "per_core": {
+      "per_thread": {
         // 59.1 kgCO2e/DIMM * 12 DIMMs / 160 threads (DRAM.yaml)
         "memory": 4.43,
         // 103 kgCO2e/SSD * 6 SSDs / 160 threads (SSD.yaml)
@@ -68,7 +68,7 @@
       }
     },
     "server_cost": {
-      "per_core": {
+      "per_thread": {
         // $440/DIMM * 12 DIMMs / 160 threads (DRAM.yaml)
         "memory": 33.0,
         // $272.71/SSD * 6 SSDs / 160 threads (SSD.yaml, incl. latch)
@@ -86,7 +86,7 @@
       }
     },
     "capacity": {
-      "per_core": {
+      "per_thread": {
         // 768GB / 160 threads = 4.8 GB/thread (12 × 64GB DIMMs)
         "memory": 4.8,
         // 12000GB / 160 threads = 75.0 GB/thread (6 × 2TB SSDs)
@@ -99,10 +99,10 @@
     // AMD Genoa 80-core, SMT disabled (same CPU, 1 thread/core = 80 HW threads)
     // Same physical CPU as genoa_smt, just with SMT turned off.
     // Memory/SSD halved (6 DIMMs, 3 SSDs) since HW threads halved.
-    // Same per-thread rates, same per-server fixed costs.
+    // Same per thread values, same per-server fixed costs.
     "physical_cores": 80,
     "threads_per_core": 1,
-    "core_overhead": 8,
+    "thread_overhead": 8,
     // Per-component power: CPU same as SMT, memory/SSD halved (6 DIMMs, 3 SSDs).
     // Same chassis since same physical server (C2195 1U).
     "power_breakdown": {
@@ -113,10 +113,10 @@
       "chassis": {"idle_w": 60, "max_w": 116}
     },
     "embodied_carbon": {
-      "per_core": {
-        // Same per-thread rate: 59.1 * 6 DIMMs / 80 threads = 4.43
+      "per_thread": {
+        // Same per thread: 59.1 * 6 DIMMs / 80 threads = 4.43
         "memory": 4.43,
-        // Same per-thread rate: 103 * 3 SSDs / 80 threads = 3.86
+        // Same per thread: 103 * 3 SSDs / 80 threads = 3.86
         "ssd": 3.86
       },
       "per_server": {
@@ -128,10 +128,10 @@
       }
     },
     "server_cost": {
-      "per_core": {
-        // Same per-thread rate: $440 * 6 / 80 = $33.00
+      "per_thread": {
+        // Same per thread: $440 * 6 / 80 = $33.00
         "memory": 33.0,
-        // Same per-thread rate: $272.71 * 3 / 80 = $10.23
+        // Same per thread: $272.71 * 3 / 80 = $10.23
         "ssd": 10.23
       },
       "per_server": {
@@ -143,11 +143,11 @@
       }
     },
     "capacity": {
-      "per_core": {
+      "per_thread": {
         // 384GB / 80 threads = 4.8 GB/thread (6 × 64GB DIMMs)
-        "memory_gb": 4.8,
+        "memory": 4.8,
         // 6000GB / 80 threads = 75.0 GB/thread (3 × 2TB SSDs)
-        "ssd_gb": 75.0
+        "ssd": 75.0
       }
     }
   },
@@ -157,7 +157,7 @@
     // Uses flat power_idle_w/power_max_w (no per-component breakdown).
     "physical_cores": 80,
     "threads_per_core": 1,
-    "core_overhead": 8,
+    "thread_overhead": 8,
     "power_breakdown": {
       "cpu":     {"idle_w": 94, "max_w": 315, "power_curve": {"type": "linear"}},
       "memory":  {"idle_w": 20, "max_w": 66},
@@ -166,7 +166,7 @@
       "chassis": {"idle_w": 60, "max_w": 116}
     },
     "embodied_carbon": {
-      "per_core": {
+      "per_thread": {
         "memory": 4.43,
         "ssd": 3.86
       },
@@ -178,7 +178,7 @@
       }
     },
     "server_cost": {
-      "per_core": {
+      "per_thread": {
         "memory": 33.0,
         "ssd": 10.23
       },
@@ -190,7 +190,7 @@
       }
     },
     "capacity": {
-      "per_core": {
+      "per_thread": {
         "memory": 4.8,
         "ssd": 75.0
       }
@@ -204,7 +204,7 @@
     // All other components identical to genoa_nosmt.
     "physical_cores": 80,
     "threads_per_core": 1,
-    "core_overhead": 8,
+    "thread_overhead": 8,
     "power_breakdown": {
       "cpu":     {"idle_w": 94, "max_w": 315},
       "memory":  {"idle_w": 20, "max_w": 66},
@@ -213,7 +213,7 @@
       "chassis": {"idle_w": 60, "max_w": 116}
     },
     "embodied_carbon": {
-      "per_core": {
+      "per_thread": {
         "memory": 4.43,
         "ssd": 3.86
       },
@@ -226,7 +226,7 @@
       }
     },
     "server_cost": {
-      "per_core": {
+      "per_thread": {
         "memory": 33.0,
         "ssd": 10.23
       },
@@ -239,7 +239,7 @@
       }
     },
     "capacity": {
-      "per_core": {
+      "per_thread": {
         "memory": 4.8,
         "ssd": 75.0
       }
@@ -251,7 +251,7 @@
     // Uses flat power_idle_w/power_max_w (no per-component breakdown).
     "physical_cores": 80,
     "threads_per_core": 1,
-    "core_overhead": 8,
+    "thread_overhead": 8,
     "power_breakdown": {
       "cpu":     {"idle_w": 94, "max_w": 315, "power_curve": {"type": "linear"}},
       "memory":  {"idle_w": 20, "max_w": 66},
@@ -260,7 +260,7 @@
       "chassis": {"idle_w": 60, "max_w": 116}
     },
     "embodied_carbon": {
-      "per_core": {
+      "per_thread": {
         "memory": 4.43,
         "ssd": 3.86
       },
@@ -273,7 +273,7 @@
       }
     },
     "server_cost": {
-      "per_core": {
+      "per_thread": {
         "memory": 33.0,
         "ssd": 10.23
       },
@@ -285,7 +285,7 @@
       }
     },
     "capacity": {
-      "per_core": {
+      "per_thread": {
         "memory": 4.8,
         "ssd": 75.0
       }

@@ -125,14 +125,14 @@ Processors are defined with arbitrary names and explicit `threads_per_core` (1 =
       "threads_per_core": 2,
       "power_idle_w": 100.0,
       "power_max_w": 400.0,
-      "core_overhead": 0
+      "thread_overhead": 0
     },
     "nosmt": {
       "physical_cores": 48,
       "threads_per_core": 1,
       "power_idle_w": 90.0,
       "power_max_w": 340.0,
-      "core_overhead": 0
+      "thread_overhead": 0
     }
   },
   "workload": {"total_vcpus": 10000, "avg_util": 0.3}
@@ -185,9 +185,9 @@ Each processor can optionally specify its own power curve, overriding the global
 
 **Fallback behavior:** If a processor doesn't specify `power_curve`, the global `power_curve` setting is used. If no global power curve is specified, `"specpower"` is the default.
 
-### Per-Core/Per-Server Embodied Carbon & Cost Breakdown
+### Per-Thread/Per-Server Embodied Carbon & Cost Breakdown
 
-Embodied carbon and server cost can be specified as structured breakdowns with per-core (scaling with HW threads) and per-server (flat) components. This replaces or supplements the flat `embodied_carbon_kg` and `server_cost_usd` values.
+Embodied carbon and server cost can be specified as structured breakdowns with per-thread (scaling with HW threads) and per-server (flat) components. This replaces or supplements the flat `embodied_carbon_kg` and `server_cost_usd` values.
 
 **Structured format in processor spec:**
 ```json
@@ -196,11 +196,11 @@ Embodied carbon and server cost can be specified as structured breakdowns with p
     "physical_cores": 48,
     "threads_per_core": 2,
     "embodied_carbon": {
-      "per_core": { "cpu_die": 10.0 },
+      "per_thread": { "cpu_die": 10.0 },
       "per_server": { "chassis": 20.0 }
     },
     "server_cost": {
-      "per_core": { "cpu": 73.0 },
+      "per_thread": { "cpu": 73.0 },
       "per_server": { "base": 32.0 }
     }
   }
@@ -218,7 +218,7 @@ Result: `embodied_carbon_kg = 10.0 * 96 + 20.0 = 980 per server` (96 = 48 cores 
 {
   "cost": {
     "embodied_carbon": {
-      "per_core": { "cpu_die": 10.0 },
+      "per_thread": { "cpu_die": 10.0 },
       "per_server": { "chassis": 100.0 }
     }
   }
@@ -227,7 +227,7 @@ Result: `embodied_carbon_kg = 10.0 * 96 + 20.0 = 980 per server` (96 = 48 cores 
 Global structured values are resolved per-processor using that processor's core count.
 
 **Priority chain** (highest to lowest):
-1. Processor-level structured (`embodied_carbon: {per_core, per_server}`)
+1. Processor-level structured (`embodied_carbon: {per_thread, per_server}`)
 2. Processor-level flat (`embodied_carbon_kg: 980`)
 3. Global cost structured (`cost.embodied_carbon: {...}`)
 4. Global cost flat (`cost.embodied_carbon_kg: 1000`)
@@ -235,7 +235,7 @@ Global structured values are resolved per-processor using that processor's core 
 **Sub-component tracking:** When structured format is used, the `ScenarioResult` includes an `embodied_breakdown` field with fleet-level component totals. The comparison output (`comparison.txt`) shows per-core vs per-server contributions.
 
 **Key classes:**
-- `ComponentBreakdown` (model.py): Per-core/per-server breakdown with `resolve()` method
+- `ComponentBreakdown` (model.py): Per-thread/per-server breakdown with `resolve()` method
 - `EmbodiedBreakdown` (model.py): Fleet-level carbon and cost breakdowns
 - `EmbodiedComponentSpec` (declarative.py): Config-level spec with `resolve_total()` and `to_component_breakdown()`
 
@@ -299,7 +299,7 @@ Mix inline definitions with selective imports from external files. Each processo
       "threads_per_core": 1,
       "power_idle_w": 40.0,
       "power_max_w": 200.0,
-      "core_overhead": 2
+      "thread_overhead": 2
     }
   }
 }
@@ -319,14 +319,14 @@ This allows you to:
     "threads_per_core": 2,
     "power_idle_w": 50.0,
     "power_max_w": 300.0,
-    "core_overhead": 4
+    "thread_overhead": 4
   },
   "nosmt": {
     "physical_cores": 52,
     "threads_per_core": 1,
     "power_idle_w": 50.0,
     "power_max_w": 300.0,
-    "core_overhead": 5
+    "thread_overhead": 5
   }
 }
 ```
@@ -485,7 +485,7 @@ Output includes:
 
 When oversubscription packs more vCPUs onto a server than HW threads, resources like memory and SSD must scale with the actual vCPU count. The `resource_scaling` option on a scenario makes specified components scale with `vcpus_per_server` instead of `hw_threads`.
 
-**Mode 1 — Borrow from per_core** (components use vcpus_per_server as multiplier):
+**Mode 1 — Borrow from per_thread** (components use vcpus_per_server as multiplier):
 ```json
 {
   "nosmt_oversub_scaled": {
@@ -499,7 +499,7 @@ When oversubscription packs more vCPUs onto a server than HW threads, resources 
 }
 ```
 
-**Mode 2 — Custom per-vCPU values** (additive, on top of existing per_core):
+**Mode 2 — Custom per-vCPU values** (additive, on top of existing per_thread):
 ```json
 {
   "resource_scaling": {
@@ -514,21 +514,78 @@ When oversubscription packs more vCPUs onto a server than HW threads, resources 
 Both modes can be combined. `scale_power` defaults to `true`.
 
 **Behavior:**
-- `scale_with_vcpus` moves named components from `per_core` to `per_vcpu` (no double-counting). Components not found in `per_core` are silently skipped.
+- `scale_with_vcpus` moves named components from `per_thread` to `per_vcpu` (no double-counting). Components not found in `per_thread` are silently skipped.
 - `vcpus_per_server = max(hw_threads, available_pcpus * oversub_ratio)` — never below base hardware.
 - `scale_factor = vcpus_per_server / hw_threads` — used for power scaling.
 - When `scale_power` is true (default), matching `power_breakdown` components have their idle_w/max_w multiplied by `scale_factor`. Composite power curve is rebuilt.
 - Backward compatible — all fields have safe defaults. Existing configs unaffected.
 
-**Math example** (Genoa nosmt, 80 cores, 1 tpc, core_overhead=8):
+**Math example** (Genoa nosmt, 80 cores, 1 tpc, thread_overhead=8):
 - `hw_threads = 80`, `available_pcpus = 72`
 - At R=2.0: `vcpus_per_server = max(80, 72 * 2.0) = 144`, `scale_factor = 1.8`
-- CAPEX: memory `per_core=4.43` moves to `per_vcpu` → `4.43 * 144 = 637.9 kg/server` (was `4.43 * 80 = 354.4`)
+- CAPEX: memory `per_thread=4.43` moves to `per_vcpu` → `4.43 * 144 = 637.9 kg/server` (was `4.43 * 80 = 354.4`)
 - OPEX: memory power `idle=20W, max=66W` scaled by 1.8 → `idle=36W, max=119W`
 
 **Key classes:**
 - `ResourceScalingConfig` (declarative.py): Config-level dataclass with `scale_with_vcpus`, `per_vcpu_carbon`, `per_vcpu_cost`, `scale_power`
 - `ComponentBreakdown` (model.py): Extended with `per_vcpu` dict and `vcpus_per_server` field
+
+### Resource-Constrained Packing
+
+The opposite of `resource_scaling`: servers have **fixed capacities** and multiple resources independently limit how many vCPUs can be packed. This identifies the effective oversubscription ratio, bottleneck resources, and stranded capacity. Mutually exclusive with `resource_scaling`.
+
+**Config:**
+```json
+{
+  "nosmt_constrained": {
+    "processor": "nosmt",
+    "oversub_ratio": 2.0,
+    "resource_constraints": {
+      "memory_gb": {
+        "capacity_per_thread": 4.8,
+        "demand_per_vcpu": 4.0
+      },
+      "ssd_gb": {
+        "capacity_per_server": 6000,
+        "demand_per_vcpu": 50.0
+      }
+    }
+  }
+}
+```
+
+**Fields:**
+- `capacity_per_thread`: Capacity per HW thread (consistent with `ComponentBreakdown.per_thread`). Multiplied by `physical_cores * threads_per_core`.
+- `capacity_per_server`: Flat capacity per server. Mutually exclusive with `capacity_per_thread`.
+- `demand_per_vcpu`: How much of this resource each vCPU requires.
+
+**Behavior:**
+1. `core_limit = available_pcpus * oversub_ratio`
+2. For each resource: `max_vcpus = capacity / demand_per_vcpu`
+3. `effective_vcpus = min(core_limit, all resource limits)`
+4. `effective_R = effective_vcpus / available_pcpus`
+5. `bottleneck = resource with lowest max_vcpus`
+6. `was_constrained = (bottleneck != 'cores')`
+7. Per-resource: `utilization_pct = effective_vcpus / max_vcpus * 100`, `stranded_pct = 100 - utilization_pct`
+
+The effective R replaces the requested R for scenario evaluation. All existing analysis types (compare, compare_sweep, etc.) work with resource constraints since they are applied in `_resolve_scenario_cost_overrides()`.
+
+**Result fields** (on `ScenarioResult.resource_constraint_result`):
+- `ResourceConstraintResult`: requested/effective R, bottleneck resource, per-resource details, was_constrained flag
+- `ResourceConstraintDetail`: max_vcpus, utilization_pct, stranded_pct, is_bottleneck
+
+**Compare sweep enhancement:** When sweeping `oversub_ratio` on a constrained scenario, constraints are re-evaluated at each sweep point (since `_resolve_scenario_cost_overrides` is called per evaluation). The summary table shows "Eff. R" and "Bottleneck" columns when constraint data is present.
+
+**Known limitation:** `find_breakeven` with `vary_parameter: "oversub_ratio"` on a constrained target does not re-apply constraints at each search iteration. For sweeping oversub_ratio with constraints, use `compare_sweep` instead.
+
+**Key classes:**
+- `ResourceConstraintSpec` (declarative.py): Per-resource config with `capacity_per_thread`/`capacity_per_server` and `demand_per_vcpu`
+- `ResourceConstraintsConfig` (declarative.py): Dict of resource name -> `ResourceConstraintSpec`
+- `ResourceConstraintResult` (model.py): Result with effective R, bottleneck, per-resource details
+- `ResourceConstraintDetail` (model.py): Per-resource utilization and stranded capacity
+
+**Plotting:**
+- `plot_resource_constraints()`: Horizontal bar chart showing max vCPUs per resource, bottleneck highlighting, stranded % annotations
 
 **Math (Embodied Anchor)**:
 ```
@@ -557,7 +614,7 @@ The declarative engine has two layers: `OverssubModel.evaluate_scenario()` (core
 1. Call `_evaluate_scenario()`, or
 2. Call `_resolve_scenario_cost_overrides()` and pass the result to `model.evaluate_scenario()`
 
-**Rule: Tests for any analysis type must include a variant with per-processor structured costs** (e.g., `embodied_carbon: {per_core, per_server}`) that differ from the global defaults. If a test only uses flat defaults (no processor-level cost overrides), it cannot catch this class of bug. Specifically:
+**Rule: Tests for any analysis type must include a variant with per-processor structured costs** (e.g., `embodied_carbon: {per_thread, per_server}`) that differ from the global defaults. If a test only uses flat defaults (no processor-level cost overrides), it cannot catch this class of bug. Specifically:
 - Use structured `embodied_carbon` and `server_cost` on the processor specs
 - Choose values that are clearly different from the defaults (1000 kg / $10,000)
 - Assert that the per-server values in the result match the structured calculation, NOT the defaults
@@ -566,7 +623,7 @@ The declarative engine has two layers: `OverssubModel.evaluate_scenario()` (core
 
 When adding a new analysis type or modifying an existing evaluation path:
 
-1. **Structured cost test**: Include processors with `embodied_carbon: {per_core, per_server}` and verify per-server values in results match the structured calculation
+1. **Structured cost test**: Include processors with `embodied_carbon: {per_thread, per_server}` and verify per-server values in results match the structured calculation
 2. **Resource scaling test**: If the path involves scenario evaluation, test with `resource_scaling` configured and verify scaled costs propagate correctly
 3. **Cross-path consistency**: If a feature has both a "direct evaluation" path and an "iterative search" path (like breakeven), verify both produce the same per-server costs for identical inputs
 4. **Feature combination tests**: Test combinations of features (structured costs + breakeven, resource scaling + breakeven, ratio-based costs + structured costs) — bugs hide at feature intersections

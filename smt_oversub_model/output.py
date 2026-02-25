@@ -156,6 +156,10 @@ class OutputWriter:
                 'total_cost_usd': scenario.get('total_cost_usd', 0),
             }
 
+            # Extract resource constraint data if present
+            if scenario.get('resource_constraint_result'):
+                row['resource_constraint_result'] = scenario['resource_constraint_result']
+
             # Extract breakdown data if present
             breakdown = scenario.get('embodied_breakdown')
             if breakdown:
@@ -348,7 +352,7 @@ class OutputWriter:
         if has_breakdown:
             lines.append("")
             lines.append("-" * 80)
-            lines.append("EMBODIED BREAKDOWN (per-core vs per-server)")
+            lines.append("EMBODIED BREAKDOWN (per-thread vs per-server)")
             lines.append("-" * 80)
             lines.append("")
 
@@ -358,7 +362,7 @@ class OutputWriter:
 
                 carbon_bd = d.get('carbon_breakdown')
                 if carbon_bd:
-                    per_core = carbon_bd.get('per_core', {})
+                    per_thread = carbon_bd.get('per_thread', {})
                     per_server = carbon_bd.get('per_server', {})
                     per_vcpu = carbon_bd.get('per_vcpu', {})
                     phys = carbon_bd.get('physical_cores', 0)
@@ -369,11 +373,11 @@ class OutputWriter:
                     servers = d.get('servers', 0)
 
                     lines.append(f"    Embodied Carbon:")
-                    per_core_total = 0.0
-                    for comp, val in per_core.items():
+                    per_thread_total = 0.0
+                    for comp, val in per_thread.items():
                         comp_fleet = val * hw_threads * servers
-                        per_core_total += val * hw_threads
-                        lines.append(f"      per_core.{comp}: {val:.1f}/thread x {hw_threads} threads x {servers} servers = {comp_fleet:,.0f} kg")
+                        per_thread_total += val * hw_threads
+                        lines.append(f"      per_thread.{comp}: {val:.1f}/thread x {hw_threads} threads x {servers} servers = {comp_fleet:,.0f} kg")
                     per_server_total = 0.0
                     for comp, val in per_server.items():
                         comp_fleet = val * servers
@@ -384,15 +388,15 @@ class OutputWriter:
                         comp_fleet = val * vcpu_mult * servers
                         per_vcpu_total += val * vcpu_mult
                         lines.append(f"      per_vcpu.{comp}: {val:.1f}/vCPU x {vcpu_mult:.1f} vCPUs x {servers} servers = {comp_fleet:,.0f} kg")
-                    total_per_srv = per_core_total + per_server_total + per_vcpu_total
-                    parts = [f"{per_core_total:,.0f} per-core", f"{per_server_total:,.0f} per-server"]
+                    total_per_srv = per_thread_total + per_server_total + per_vcpu_total
+                    parts = [f"{per_thread_total:,.0f} per-thread", f"{per_server_total:,.0f} per-server"]
                     if per_vcpu_total > 0:
                         parts.append(f"{per_vcpu_total:,.0f} per-vCPU")
                     lines.append(f"      Total per server: {total_per_srv:,.0f} kg ({' + '.join(parts)})")
 
                 cost_bd = d.get('cost_breakdown')
                 if cost_bd:
-                    per_core = cost_bd.get('per_core', {})
+                    per_thread = cost_bd.get('per_thread', {})
                     per_server = cost_bd.get('per_server', {})
                     per_vcpu = cost_bd.get('per_vcpu', {})
                     phys = cost_bd.get('physical_cores', 0)
@@ -403,11 +407,11 @@ class OutputWriter:
                     servers = d.get('servers', 0)
 
                     lines.append(f"    Server Cost:")
-                    per_core_total = 0.0
-                    for comp, val in per_core.items():
+                    per_thread_total = 0.0
+                    for comp, val in per_thread.items():
                         comp_fleet = val * hw_threads * servers
-                        per_core_total += val * hw_threads
-                        lines.append(f"      per_core.{comp}: ${val:.1f}/thread x {hw_threads} threads x {servers} servers = ${comp_fleet:,.0f}")
+                        per_thread_total += val * hw_threads
+                        lines.append(f"      per_thread.{comp}: ${val:.1f}/thread x {hw_threads} threads x {servers} servers = ${comp_fleet:,.0f}")
                     per_server_total = 0.0
                     for comp, val in per_server.items():
                         comp_fleet = val * servers
@@ -418,15 +422,15 @@ class OutputWriter:
                         comp_fleet = val * vcpu_mult * servers
                         per_vcpu_total += val * vcpu_mult
                         lines.append(f"      per_vcpu.{comp}: ${val:.1f}/vCPU x {vcpu_mult:.1f} vCPUs x {servers} servers = ${comp_fleet:,.0f}")
-                    total_per_srv = per_core_total + per_server_total + per_vcpu_total
-                    parts = [f"${per_core_total:,.0f} per-core", f"${per_server_total:,.0f} per-server"]
+                    total_per_srv = per_thread_total + per_server_total + per_vcpu_total
+                    parts = [f"${per_thread_total:,.0f} per-thread", f"${per_server_total:,.0f} per-server"]
                     if per_vcpu_total > 0:
                         parts.append(f"${per_vcpu_total:,.0f} per-vCPU")
                     lines.append(f"      Total per server: ${total_per_srv:,.0f} ({' + '.join(parts)})")
 
                 capacity_bd = d.get('capacity_breakdown')
                 if capacity_bd:
-                    per_core = capacity_bd.get('per_core', {})
+                    per_thread = capacity_bd.get('per_thread', {})
                     per_server = capacity_bd.get('per_server', {})
                     per_vcpu = capacity_bd.get('per_vcpu', {})
                     phys = capacity_bd.get('physical_cores', 0)
@@ -436,9 +440,9 @@ class OutputWriter:
                     vcpu_mult = vcpus if vcpus > 0 else hw_threads
 
                     lines.append(f"    Capacity:")
-                    for comp, val in per_core.items():
+                    for comp, val in per_thread.items():
                         comp_total = val * hw_threads
-                        lines.append(f"      per_core.{comp}: {val:.1f}/thread x {hw_threads} threads = {comp_total:,.1f}/server")
+                        lines.append(f"      per_thread.{comp}: {val:.1f}/thread x {hw_threads} threads = {comp_total:,.1f}/server")
                     for comp, val in per_server.items():
                         lines.append(f"      per_server.{comp}: {val:.1f}/server")
                     for comp, val in per_vcpu.items():
@@ -448,6 +452,54 @@ class OutputWriter:
                 if not carbon_bd and not cost_bd:
                     lines.append("    (no breakdown data)")
 
+                lines.append("")
+
+        # Section 5: Resource Constraints (if any scenario has constraint data)
+        has_constraints = any(
+            d.get('resource_constraint_result') is not None
+            for d in data
+        )
+        if has_constraints:
+            lines.append("")
+            lines.append("-" * 80)
+            lines.append("RESOURCE CONSTRAINTS")
+            lines.append("-" * 80)
+            lines.append("")
+
+            # Summary table
+            lines.append(f"{'Scenario':<30}{'Req. R':>10}{'Eff. R':>10}{'Bottleneck':>15}{'Constrained?':>15}")
+            lines.append("-" * 80)
+            for d in data:
+                cr = d.get('resource_constraint_result')
+                if cr is None:
+                    continue
+                name = d['scenario']
+                lines.append(
+                    f"{name:<30}{cr['requested_oversub_ratio']:>10.2f}"
+                    f"{cr['effective_oversub_ratio']:>10.2f}"
+                    f"{cr['bottleneck_resource']:>15}"
+                    f"{'Yes' if cr['was_constrained'] else 'No':>15}"
+                )
+
+            lines.append("")
+
+            # Detailed per-scenario resource tables
+            for d in data:
+                cr = d.get('resource_constraint_result')
+                if cr is None:
+                    continue
+                name = d['scenario']
+                lines.append(f"  Resource Details ({name}):")
+                lines.append(f"    {'Resource':<20}{'Max vCPUs':>12}{'Utilization':>14}{'Stranded':>12}")
+                for res_name, detail in cr.get('resource_details', {}).items():
+                    max_v = detail['max_vcpus']
+                    max_v_str = f"{max_v:.1f}" if max_v != float('inf') else "inf"
+                    marker = "  ** BOTTLENECK **" if detail['is_bottleneck'] else ""
+                    lines.append(
+                        f"    {res_name:<20}{max_v_str:>12}"
+                        f"{detail['utilization_pct']:>13.1f}%"
+                        f"{detail['stranded_pct']:>11.1f}%{marker}"
+                    )
                 lines.append("")
 
         lines.append("=" * 80)

@@ -136,7 +136,7 @@ class Runner:
             physical_cores=smt_spec.physical_cores,
             threads_per_core=smt_spec.threads_per_core,
             power_curve=smt_power,
-            core_overhead=smt_spec.core_overhead,
+            thread_overhead=smt_spec.thread_overhead,
         )
 
         # Non-SMT processor
@@ -149,7 +149,7 @@ class Runner:
             physical_cores=nosmt_spec.physical_cores,
             threads_per_core=nosmt_spec.threads_per_core,
             power_curve=nosmt_power,
-            core_overhead=nosmt_spec.core_overhead,
+            thread_overhead=nosmt_spec.thread_overhead,
         )
 
         # Workload

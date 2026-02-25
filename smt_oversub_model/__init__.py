@@ -38,6 +38,8 @@ from .model import (
     CostParams,
     ComponentBreakdown,
     EmbodiedBreakdown,
+    ResourceConstraintDetail,
+    ResourceConstraintResult,
     ScenarioResult,
     OverssubModel,
     polynomial_power_curve_fn,
@@ -95,6 +97,8 @@ from .declarative import (
     EmbodiedComponentSpec,
     PowerComponentSpec,
     ResourceScalingConfig,
+    ResourceConstraintSpec,
+    ResourceConstraintsConfig,
     ScenarioConfig,
     AnalysisSpec,
     AnalysisConfig,
@@ -132,6 +136,7 @@ try:
         plot_sweep_analysis,
         plot_breakeven_curve,
         plot_per_server_comparison,
+        plot_resource_constraints,
     )
     _HAS_PLOT = True
 except ImportError:
@@ -146,6 +151,7 @@ except ImportError:
     plot_sweep_analysis = None
     plot_breakeven_curve = None
     plot_per_server_comparison = None
+    plot_resource_constraints = None
 
 __all__ = [
     # Core model
@@ -159,6 +165,8 @@ __all__ = [
     'CostParams',
     'ComponentBreakdown',
     'EmbodiedBreakdown',
+    'ResourceConstraintDetail',
+    'ResourceConstraintResult',
     'ScenarioResult',
     'OverssubModel',
     'polynomial_power_curve_fn',
@@ -204,6 +212,8 @@ __all__ = [
     'EmbodiedComponentSpec',
     'PowerComponentSpec',
     'ResourceScalingConfig',
+    'ResourceConstraintSpec',
+    'ResourceConstraintsConfig',
     'ScenarioConfig',
     'AnalysisSpec',
     'AnalysisConfig',
@@ -231,6 +241,7 @@ __all__ = [
     'plot_sweep_analysis',
     'plot_breakeven_curve',
     'plot_per_server_comparison',
+    'plot_resource_constraints',
 ]
 
 __version__ = '0.1.0'

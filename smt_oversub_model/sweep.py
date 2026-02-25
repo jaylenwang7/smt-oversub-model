@@ -39,8 +39,8 @@ class ParameterSweeper:
         smt_threads_per_core: int = 2,  # SMT thread count (2 = hyperthreading)
         nosmt_physical_cores: int = 48,  # Parameterized
         nosmt_threads_per_core: int = 1,  # Non-SMT thread count (1 = no SMT)
-        smt_core_overhead: int = 0,  # pCPUs reserved for host on SMT servers
-        nosmt_core_overhead: int = 0,  # pCPUs reserved for host on non-SMT servers
+        smt_thread_overhead: int = 0,  # HW threads reserved for host on SMT servers
+        nosmt_thread_overhead: int = 0,  # HW threads reserved for host on non-SMT servers
 
         # Power curves
         smt_p_idle: float = 100.0,
@@ -71,8 +71,8 @@ class ParameterSweeper:
         self.smt_threads_per_core = smt_threads_per_core
         self.nosmt_physical_cores = nosmt_physical_cores
         self.nosmt_threads_per_core = nosmt_threads_per_core
-        self.smt_core_overhead = smt_core_overhead
-        self.nosmt_core_overhead = nosmt_core_overhead
+        self.smt_thread_overhead = smt_thread_overhead
+        self.nosmt_thread_overhead = nosmt_thread_overhead
         self.smt_p_idle = smt_p_idle
         self.smt_p_max = smt_p_max
         self.nosmt_power_ratio = nosmt_power_ratio
@@ -106,13 +106,13 @@ class ParameterSweeper:
             physical_cores=self.smt_physical_cores,
             threads_per_core=self.smt_threads_per_core,
             power_curve=smt_power,
-            core_overhead=self.smt_core_overhead,
+            thread_overhead=self.smt_thread_overhead,
         )
         nosmt_proc = ProcessorConfig(
             physical_cores=self.nosmt_physical_cores,
             threads_per_core=self.nosmt_threads_per_core,
             power_curve=nosmt_power,
-            core_overhead=self.nosmt_core_overhead,
+            thread_overhead=self.nosmt_thread_overhead,
         )
         
         workload = WorkloadParams(

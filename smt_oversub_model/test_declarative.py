@@ -19,6 +19,8 @@ from .declarative import (
     AnalysisConfig,
     ScenarioConfig,
     ResourceScalingConfig,
+    ResourceConstraintSpec,
+    ResourceConstraintsConfig,
     DeclarativeAnalysisEngine,
     run_analysis,
     is_valid_analysis_config,
@@ -31,6 +33,7 @@ from .model import (
     PowerCurve, ProcessorConfig, ScenarioParams,
     WorkloadParams, CostParams, OverssubModel, ScenarioResult,
     ComponentBreakdown, EmbodiedBreakdown,
+    ResourceConstraintDetail, ResourceConstraintResult,
 )
 
 
@@ -484,33 +487,33 @@ class TestDeclarativeAnalysisEngine:
                 'smt': {
                     'physical_cores': 48,
                     'threads_per_core': 2,
-                    'core_overhead': 0,
+                    'thread_overhead': 0,
                     'power_idle_w': 100,
                     'power_max_w': 400,
                     # Structured costs that differ from defaults (1000/$10000)
                     'embodied_carbon': {
-                        'per_core': {'memory': 5.0},
+                        'per_thread': {'memory': 5.0},
                         'per_server': {'chassis': 200.0},
                     },
                     'server_cost': {
-                        'per_core': {'memory': 40.0},
+                        'per_thread': {'memory': 40.0},
                         'per_server': {'chassis': 3000.0},
                     },
                 },
                 'nosmt': {
                     'physical_cores': 48,
                     'threads_per_core': 1,
-                    'core_overhead': 0,
+                    'thread_overhead': 0,
                     'power_idle_w': 90,
                     'power_max_w': 340,
                     # Per-server: 5*48 + 200 = 440 kg, 40*48 + 3000 = $4920
                     # Very different from defaults of 1000/$10000
                     'embodied_carbon': {
-                        'per_core': {'memory': 5.0},
+                        'per_thread': {'memory': 5.0},
                         'per_server': {'chassis': 200.0},
                     },
                     'server_cost': {
-                        'per_core': {'memory': 40.0},
+                        'per_thread': {'memory': 40.0},
                         'per_server': {'chassis': 3000.0},
                     },
                 },
@@ -639,11 +642,11 @@ class TestEmbodiedComponentSpec:
         from .declarative import EmbodiedComponentSpec
 
         data = {
-            'per_core': {'cpu_die': 10.0, 'dram': 2.0},
+            'per_thread': {'cpu_die': 10.0, 'dram': 2.0},
             'per_server': {'chassis': 100.0},
         }
         spec = EmbodiedComponentSpec.from_dict(data)
-        assert spec.per_core == {'cpu_die': 10.0, 'dram': 2.0}
+        assert spec.per_thread == {'cpu_die': 10.0, 'dram': 2.0}
         assert spec.per_server == {'chassis': 100.0}
 
     def test_resolve_total(self):
@@ -651,7 +654,7 @@ class TestEmbodiedComponentSpec:
         from .declarative import EmbodiedComponentSpec
 
         spec = EmbodiedComponentSpec(
-            per_core={'cpu_die': 10.0},
+            per_thread={'cpu_die': 10.0},
             per_server={'chassis': 20.0},
         )
         # 48 cores * 2 threads = 96 hw threads
@@ -663,7 +666,7 @@ class TestEmbodiedComponentSpec:
         from .declarative import EmbodiedComponentSpec
 
         spec = EmbodiedComponentSpec(
-            per_core={'cpu_die': 10.0},
+            per_thread={'cpu_die': 10.0},
             per_server={'chassis': 50.0},
         )
         # 52 cores * 1 thread = 52 hw threads
@@ -675,7 +678,7 @@ class TestEmbodiedComponentSpec:
         from .declarative import EmbodiedComponentSpec
 
         spec = EmbodiedComponentSpec(
-            per_core={'cpu_die': 10.0},
+            per_thread={'cpu_die': 10.0},
             per_server={'chassis': 20.0},
         )
         bd = spec.to_component_breakdown(48, 2)
@@ -688,11 +691,11 @@ class TestEmbodiedComponentSpec:
         from .declarative import EmbodiedComponentSpec
 
         spec = EmbodiedComponentSpec(
-            per_core={'cpu_die': 10.0},
+            per_thread={'cpu_die': 10.0},
             per_server={'chassis': 20.0},
         )
         d = spec.to_dict()
-        assert d == {'per_core': {'cpu_die': 10.0}, 'per_server': {'chassis': 20.0}}
+        assert d == {'per_thread': {'cpu_die': 10.0}, 'per_server': {'chassis': 20.0}}
 
     def test_empty_spec(self):
         """Empty spec should resolve to 0."""
@@ -715,13 +718,13 @@ class TestProcessorSpecStructured:
             'power_idle_w': 90.0,
             'power_max_w': 600.0,
             'embodied_carbon': {
-                'per_core': {'cpu_die': 10.0},
+                'per_thread': {'cpu_die': 10.0},
                 'per_server': {'chassis': 20.0},
             },
         }
         spec = ProcessorSpec.from_dict(data)
         assert spec.embodied_carbon is not None
-        assert spec.embodied_carbon.per_core == {'cpu_die': 10.0}
+        assert spec.embodied_carbon.per_thread == {'cpu_die': 10.0}
         assert spec.embodied_carbon_kg is None  # flat not set
 
     def test_from_dict_with_flat_carbon(self):
@@ -748,7 +751,7 @@ class TestProcessorSpecStructured:
             threads_per_core=2,
             embodied_carbon_kg=980.0,  # flat
             embodied_carbon=EmbodiedComponentSpec(
-                per_core={'cpu_die': 10.0},
+                per_thread={'cpu_die': 10.0},
                 per_server={'chassis': 20.0},
             ),
         )
@@ -766,13 +769,13 @@ class TestProcessorSpecStructured:
             'power_idle_w': 90.0,
             'power_max_w': 600.0,
             'server_cost': {
-                'per_core': {'cpu': 73.0},
+                'per_thread': {'cpu': 73.0},
                 'per_server': {'base': 32.0},
             },
         }
         spec = ProcessorSpec.from_dict(data)
         assert spec.server_cost is not None
-        assert spec.server_cost.per_core == {'cpu': 73.0}
+        assert spec.server_cost.per_thread == {'cpu': 73.0}
         assert spec.server_cost_usd is None
 
 
@@ -826,7 +829,7 @@ class TestPriorityChain:
         config = self._make_config(
             proc_kwargs={
                 'embodied_carbon': EmbodiedComponentSpec(
-                    per_core={'cpu_die': 5.0},
+                    per_thread={'cpu_die': 5.0},
                     per_server={'chassis': 10.0},
                 ),
                 'embodied_carbon_kg': 9999.0,  # should be ignored
@@ -861,7 +864,7 @@ class TestPriorityChain:
         config = self._make_config(
             cost_kwargs={
                 'embodied_carbon': EmbodiedComponentSpec(
-                    per_core={'cpu_die': 8.0},
+                    per_thread={'cpu_die': 8.0},
                     per_server={'chassis': 32.0},
                 ),
             },
@@ -893,7 +896,7 @@ class TestPriorityChain:
         config = self._make_config(
             proc_kwargs={
                 'embodied_carbon': EmbodiedComponentSpec(
-                    per_core={'cpu_die': 10.0},
+                    per_thread={'cpu_die': 10.0},
                     per_server={'chassis': 20.0},
                 ),
             },
@@ -920,11 +923,11 @@ class TestStructuredEndToEnd:
                     'power_idle_w': 100.0,
                     'power_max_w': 400.0,
                     'embodied_carbon': {
-                        'per_core': {'cpu_die': 10.0},
+                        'per_thread': {'cpu_die': 10.0},
                         'per_server': {'chassis': 20.0},
                     },
                     'server_cost': {
-                        'per_core': {'cpu': 73.0},
+                        'per_thread': {'cpu': 73.0},
                         'per_server': {'base': 32.0},
                     },
                 },
@@ -934,11 +937,11 @@ class TestStructuredEndToEnd:
                     'power_idle_w': 90.0,
                     'power_max_w': 340.0,
                     'embodied_carbon': {
-                        'per_core': {'cpu_die': 10.0},
+                        'per_thread': {'cpu_die': 10.0},
                         'per_server': {'chassis': 50.0},
                     },
                     'server_cost': {
-                        'per_core': {'cpu': 72.0},
+                        'per_thread': {'cpu': 72.0},
                         'per_server': {'base': 16.0},
                     },
                 },
@@ -1258,7 +1261,7 @@ class TestResourceScaling:
 
     def test_scale_factor_clamped_at_1(self):
         """At R=1.0, scale_factor should be 1.0 (no downscaling)."""
-        # Genoa nosmt: 80 cores, 1 tpc, core_overhead=8
+        # Genoa nosmt: 80 cores, 1 tpc, thread_overhead=8
         # available_pcpus = 72, at R=1.0: vcpus = 72
         # hw_threads = 80, scale_factor = max(1.0, 72/80) = 1.0
         config_data = {
@@ -1285,13 +1288,13 @@ class TestResourceScaling:
                     'threads_per_core': 1,
                     'power_idle_w': 200,
                     'power_max_w': 500,
-                    'core_overhead': 8,
+                    'thread_overhead': 8,
                     'embodied_carbon': {
-                        'per_core': {'memory': 4.43, 'ssd': 3.86},
+                        'per_thread': {'memory': 4.43, 'ssd': 3.86},
                         'per_server': {'cpu': 34.2},
                     },
                     'server_cost': {
-                        'per_core': {'memory': 33.0, 'ssd': 10.23},
+                        'per_thread': {'memory': 33.0, 'ssd': 10.23},
                         'per_server': {'cpu': 1487.0},
                     },
                 },
@@ -1332,9 +1335,9 @@ class TestResourceScaling:
                     'threads_per_core': 1,
                     'power_idle_w': 200,
                     'power_max_w': 500,
-                    'core_overhead': 8,
+                    'thread_overhead': 8,
                     'embodied_carbon': {
-                        'per_core': {'memory': 4.43, 'ssd': 3.86},
+                        'per_thread': {'memory': 4.43, 'ssd': 3.86},
                         'per_server': {'cpu': 34.2},
                     },
                 },
@@ -1347,14 +1350,14 @@ class TestResourceScaling:
         scaled = result.scenario_results['scaled']
         bd = scaled['embodied_breakdown']['carbon']
         # memory should be in per_vcpu, not per_core
-        assert 'memory' not in bd['per_core']
+        assert 'memory' not in bd['per_thread']
         assert 'memory' in bd['per_vcpu']
         # ssd should remain in per_core
-        assert 'ssd' in bd['per_core']
+        assert 'ssd' in bd['per_thread']
 
     def test_end_to_end_genoa_nosmt_r2(self):
         """End-to-end math verification for Genoa nosmt at R=2.0 with memory/SSD scaling."""
-        # Genoa nosmt: 80 cores, 1 tpc, core_overhead=8
+        # Genoa nosmt: 80 cores, 1 tpc, thread_overhead=8
         # available_pcpus = 72, at R=2.0: vcpus_per_server = 144
         # hw_threads = 80, scale_factor = 144/80 = 1.8
         config_data = {
@@ -1381,13 +1384,13 @@ class TestResourceScaling:
                     'threads_per_core': 1,
                     'power_idle_w': 200,
                     'power_max_w': 500,
-                    'core_overhead': 8,
+                    'thread_overhead': 8,
                     'embodied_carbon': {
-                        'per_core': {'memory': 4.43, 'ssd': 3.86},
+                        'per_thread': {'memory': 4.43, 'ssd': 3.86},
                         'per_server': {'cpu': 34.2},
                     },
                     'server_cost': {
-                        'per_core': {'memory': 33.0, 'ssd': 10.23},
+                        'per_thread': {'memory': 33.0, 'ssd': 10.23},
                         'per_server': {'cpu': 1487.0},
                     },
                 },
@@ -1449,7 +1452,7 @@ class TestResourceScaling:
                     'threads_per_core': 1,
                     'power_idle_w': 200,
                     'power_max_w': 500,
-                    'core_overhead': 8,
+                    'thread_overhead': 8,
                     'power_breakdown': {
                         'cpu': {'idle_w': 94, 'max_w': 315},
                         'memory': {'idle_w': 20, 'max_w': 66},
@@ -1510,7 +1513,7 @@ class TestResourceScaling:
                     'threads_per_core': 1,
                     'power_idle_w': 200,
                     'power_max_w': 500,
-                    'core_overhead': 8,
+                    'thread_overhead': 8,
                     'power_breakdown': {
                         'cpu': {'idle_w': 94, 'max_w': 315},
                         'memory': {'idle_w': 20, 'max_w': 66},
@@ -1556,9 +1559,9 @@ class TestResourceScaling:
                     'threads_per_core': 1,
                     'power_idle_w': 200,
                     'power_max_w': 500,
-                    'core_overhead': 8,
+                    'thread_overhead': 8,
                     'embodied_carbon': {
-                        'per_core': {'memory': 4.0},
+                        'per_thread': {'memory': 4.0},
                         'per_server': {'cpu': 30.0},
                     },
                 },
@@ -1601,26 +1604,26 @@ class TestResourceScaling:
                 'smt': {
                     'physical_cores': 48, 'threads_per_core': 2,
                     'power_idle_w': 100, 'power_max_w': 400,
-                    'core_overhead': 4,
+                    'thread_overhead': 4,
                     'embodied_carbon': {
-                        'per_core': {'memory': 5.0, 'ssd': 3.0},
+                        'per_thread': {'memory': 5.0, 'ssd': 3.0},
                         'per_server': {'cpu': 50.0},
                     },
                     'server_cost': {
-                        'per_core': {'memory': 30.0, 'ssd': 10.0},
+                        'per_thread': {'memory': 30.0, 'ssd': 10.0},
                         'per_server': {'cpu': 1500.0},
                     },
                 },
                 'nosmt': {
                     'physical_cores': 48, 'threads_per_core': 1,
                     'power_idle_w': 90, 'power_max_w': 340,
-                    'core_overhead': 4,
+                    'thread_overhead': 4,
                     'embodied_carbon': {
-                        'per_core': {'memory': 5.0, 'ssd': 3.0},
+                        'per_thread': {'memory': 5.0, 'ssd': 3.0},
                         'per_server': {'cpu': 50.0},
                     },
                     'server_cost': {
-                        'per_core': {'memory': 30.0, 'ssd': 10.0},
+                        'per_thread': {'memory': 30.0, 'ssd': 10.0},
                         'per_server': {'cpu': 1500.0},
                     },
                 },
@@ -2129,11 +2132,11 @@ class TestMaxVmsPerServerDeclarative:
                     'power_idle_w': 100,
                     'power_max_w': 400,
                     'embodied_carbon': {
-                        'per_core': {'cpu': 5.0},
+                        'per_thread': {'cpu': 5.0},
                         'per_server': {'chassis': 200.0},
                     },
                     'server_cost': {
-                        'per_core': {'cpu': 50.0},
+                        'per_thread': {'cpu': 50.0},
                         'per_server': {'base': 1000.0},
                     },
                 },
@@ -2220,7 +2223,7 @@ class TestComponentBreakdownPerServerComponents:
     def test_per_core_only(self):
         """Per-core components resolve correctly."""
         bd = ComponentBreakdown(
-            per_core={'memory': 4.8, 'ssd': 75.0},
+            per_thread={'memory': 4.8, 'ssd': 75.0},
             per_server={},
             physical_cores=80,
             threads_per_core=2,
@@ -2232,7 +2235,7 @@ class TestComponentBreakdownPerServerComponents:
     def test_per_server_only(self):
         """Per-server components resolve correctly."""
         bd = ComponentBreakdown(
-            per_core={},
+            per_thread={},
             per_server={'cpu': 34.2, 'nic': 115.0},
             physical_cores=80,
             threads_per_core=1,
@@ -2244,7 +2247,7 @@ class TestComponentBreakdownPerServerComponents:
     def test_per_vcpu_only(self):
         """Per-vCPU components resolve correctly with vcpus_per_server."""
         bd = ComponentBreakdown(
-            per_core={},
+            per_thread={},
             per_server={},
             per_vcpu={'memory': 4.8},
             physical_cores=80,
@@ -2257,7 +2260,7 @@ class TestComponentBreakdownPerServerComponents:
     def test_per_vcpu_fallback_hw_threads(self):
         """Per-vCPU falls back to hw_threads when vcpus_per_server is 0."""
         bd = ComponentBreakdown(
-            per_core={},
+            per_thread={},
             per_server={},
             per_vcpu={'memory': 4.8},
             physical_cores=80,
@@ -2270,7 +2273,7 @@ class TestComponentBreakdownPerServerComponents:
     def test_mixed_components(self):
         """Mix of per_core, per_server, and per_vcpu resolves correctly."""
         bd = ComponentBreakdown(
-            per_core={'ssd': 75.0},
+            per_thread={'ssd': 75.0},
             per_server={'cpu': 34.2},
             per_vcpu={'memory': 4.8},
             physical_cores=80,
@@ -2294,13 +2297,13 @@ class TestCapacityParsing:
             'power_idle_w': 100,
             'power_max_w': 400,
             'capacity': {
-                'per_core': {'memory': 4.8, 'ssd': 75.0},
+                'per_thread': {'memory': 4.8, 'ssd': 75.0},
             },
         }
         spec = ProcessorSpec.from_dict(data)
         assert spec.capacity is not None
-        assert spec.capacity.per_core['memory'] == 4.8
-        assert spec.capacity.per_core['ssd'] == 75.0
+        assert spec.capacity.per_thread['memory'] == 4.8
+        assert spec.capacity.per_thread['ssd'] == 75.0
 
     def test_capacity_to_dict(self):
         """ProcessorSpec with capacity serializes correctly."""
@@ -2308,12 +2311,12 @@ class TestCapacityParsing:
             physical_cores=80,
             threads_per_core=2,
             capacity=EmbodiedComponentSpec(
-                per_core={'memory': 4.8, 'ssd': 75.0},
+                per_thread={'memory': 4.8, 'ssd': 75.0},
             ),
         )
         d = spec.to_dict()
         assert 'capacity' in d
-        assert d['capacity']['per_core']['memory'] == 4.8
+        assert d['capacity']['per_thread']['memory'] == 4.8
 
     def test_capacity_none_by_default(self):
         """ProcessorSpec without capacity has None."""
@@ -2330,7 +2333,7 @@ class TestCapacityParsing:
         """capacity field detected as inline processor."""
         from .declarative import ProcessorConfigSpec
         assert ProcessorConfigSpec._is_inline_processor({
-            'capacity': {'per_core': {'memory': 4.8}},
+            'capacity': {'per_thread': {'memory': 4.8}},
         })
 
 
@@ -2351,15 +2354,15 @@ class TestCapacityResolution:
                     'power_idle_w': 100,
                     'power_max_w': 400,
                     'embodied_carbon': {
-                        'per_core': {'memory': 5.0},
+                        'per_thread': {'memory': 5.0},
                         'per_server': {'cpu': 30.0},
                     },
                     'server_cost': {
-                        'per_core': {'memory': 40.0},
+                        'per_thread': {'memory': 40.0},
                         'per_server': {'cpu': 1000.0},
                     },
                     'capacity': {
-                        'per_core': {'memory': 4.0, 'ssd': 100.0},
+                        'per_thread': {'memory': 4.0, 'ssd': 100.0},
                     },
                 },
             },
@@ -2378,7 +2381,7 @@ class TestCapacityResolution:
         assert capacity is not None
         # 10 cores * 2 tpc = 20 hw threads
         # per_core memory: 4.0 * 20 = 80 per server
-        assert capacity['per_core']['memory'] == 4.0
+        assert capacity['per_thread']['memory'] == 4.0
 
     def test_capacity_with_resource_scaling(self, tmp_path):
         """Capacity components move from per_core to per_vcpu with resource scaling."""
@@ -2399,17 +2402,17 @@ class TestCapacityResolution:
                     'threads_per_core': 1,
                     'power_idle_w': 100,
                     'power_max_w': 400,
-                    'core_overhead': 0,
+                    'thread_overhead': 0,
                     'embodied_carbon': {
-                        'per_core': {'memory': 5.0},
+                        'per_thread': {'memory': 5.0},
                         'per_server': {'cpu': 30.0},
                     },
                     'server_cost': {
-                        'per_core': {'memory': 40.0},
+                        'per_thread': {'memory': 40.0},
                         'per_server': {'cpu': 1000.0},
                     },
                     'capacity': {
-                        'per_core': {'memory': 4.0, 'ssd': 100.0},
+                        'per_thread': {'memory': 4.0, 'ssd': 100.0},
                     },
                 },
             },
@@ -2429,8 +2432,8 @@ class TestCapacityResolution:
         # 10 cores * 1 tpc = 10 hw threads, available_pcpus = 10
         # R=2.0 -> vcpus_per_server = max(10, 10*2.0) = 20
         # memory and ssd moved from per_core to per_vcpu
-        assert 'memory' not in capacity.get('per_core', {})
-        assert 'ssd' not in capacity.get('per_core', {})
+        assert 'memory' not in capacity.get('per_thread', {})
+        assert 'ssd' not in capacity.get('per_thread', {})
         assert capacity['per_vcpu']['memory'] == 4.0
         assert capacity['per_vcpu']['ssd'] == 100.0
         assert capacity['vcpus_per_server'] == 20.0
@@ -2461,17 +2464,17 @@ class TestPerServerComparisonAnalysis:
                     'threads_per_core': 2,
                     'power_idle_w': 100,
                     'power_max_w': 400,
-                    'core_overhead': 0,
+                    'thread_overhead': 0,
                     'embodied_carbon': {
-                        'per_core': {'memory': 5.0, 'ssd': 3.0},
+                        'per_thread': {'memory': 5.0, 'ssd': 3.0},
                         'per_server': {'cpu': 30.0},
                     },
                     'server_cost': {
-                        'per_core': {'memory': 40.0, 'ssd': 10.0},
+                        'per_thread': {'memory': 40.0, 'ssd': 10.0},
                         'per_server': {'cpu': 1000.0},
                     },
                     'capacity': {
-                        'per_core': {'memory': 4.0, 'ssd': 100.0},
+                        'per_thread': {'memory': 4.0, 'ssd': 100.0},
                     },
                 },
                 'nosmt': {
@@ -2479,17 +2482,17 @@ class TestPerServerComparisonAnalysis:
                     'threads_per_core': 1,
                     'power_idle_w': 90,
                     'power_max_w': 340,
-                    'core_overhead': 0,
+                    'thread_overhead': 0,
                     'embodied_carbon': {
-                        'per_core': {'memory': 5.0, 'ssd': 3.0},
+                        'per_thread': {'memory': 5.0, 'ssd': 3.0},
                         'per_server': {'cpu': 30.0},
                     },
                     'server_cost': {
-                        'per_core': {'memory': 40.0, 'ssd': 10.0},
+                        'per_thread': {'memory': 40.0, 'ssd': 10.0},
                         'per_server': {'cpu': 1000.0},
                     },
                     'capacity': {
-                        'per_core': {'memory': 4.0, 'ssd': 100.0},
+                        'per_thread': {'memory': 4.0, 'ssd': 100.0},
                     },
                 },
             },
@@ -2559,17 +2562,17 @@ class TestPerServerComparisonAnalysis:
                     'threads_per_core': 2,
                     'power_idle_w': 100,
                     'power_max_w': 400,
-                    'core_overhead': 0,
+                    'thread_overhead': 0,
                     'embodied_carbon': {
-                        'per_core': {'memory': 7.0},
+                        'per_thread': {'memory': 7.0},
                         'per_server': {'cpu': 50.0},
                     },
                     'server_cost': {
-                        'per_core': {'memory': 25.0},
+                        'per_thread': {'memory': 25.0},
                         'per_server': {'cpu': 800.0},
                     },
                     'capacity': {
-                        'per_core': {'memory': 8.0},
+                        'per_thread': {'memory': 8.0},
                         'per_server': {'rack_units': 1.0},
                     },
                 },
@@ -2627,7 +2630,7 @@ class TestPerServerComparisonAnalysis:
                     'power_idle_w': 100,
                     'power_max_w': 400,
                     'capacity': {
-                        'per_core': {'memory': 4.0},
+                        'per_thread': {'memory': 4.0},
                     },
                 },
             },
@@ -2647,3 +2650,429 @@ class TestPerServerComparisonAnalysis:
         d = result.to_dict()
         assert 'per_server_comparison_results' in d
         assert len(d['per_server_comparison_results']) == 1
+
+
+class TestResourceConstraints:
+    """Tests for resource-constrained packing."""
+
+    # --- Unit tests ---
+
+    def test_resource_constraint_spec_max_vcpus_per_core(self):
+        """capacity_per_thread with demand_per_vcpu computes max vCPUs correctly."""
+        spec = ResourceConstraintSpec(capacity_per_thread=2.0, demand_per_vcpu=4.0)
+        # 48 threads * 2.0 GB per thread = 96 GB total, / 4.0 GB per vCPU = 24
+        assert spec.max_vcpus(48) == 24.0
+
+    def test_resource_constraint_spec_max_vcpus_per_server(self):
+        """capacity_per_server with demand_per_vcpu computes max vCPUs correctly."""
+        spec = ResourceConstraintSpec(capacity_per_server=2000, demand_per_vcpu=20.0)
+        # 2000 / 20 = 100 regardless of hw_threads
+        assert spec.max_vcpus(48) == 100.0
+        assert spec.max_vcpus(96) == 100.0
+
+    def test_resource_constraint_spec_zero_demand(self):
+        """Zero demand means infinite capacity."""
+        spec = ResourceConstraintSpec(capacity_per_thread=2.0, demand_per_vcpu=0.0)
+        assert spec.max_vcpus(48) == float('inf')
+
+    def test_resource_constraint_spec_no_capacity(self):
+        """No capacity specified means infinite."""
+        spec = ResourceConstraintSpec(demand_per_vcpu=4.0)
+        assert spec.max_vcpus(48) == float('inf')
+
+    def test_resource_constraint_spec_from_dict_to_dict(self):
+        """from_dict -> to_dict preserves data."""
+        data = {'capacity_per_thread': 2.0, 'demand_per_vcpu': 4.0}
+        spec = ResourceConstraintSpec.from_dict(data)
+        d = spec.to_dict()
+        assert d == data
+        assert ResourceConstraintSpec.from_dict(d).max_vcpus(48) == spec.max_vcpus(48)
+
+    def test_resource_constraints_config_from_dict_to_dict(self):
+        """ResourceConstraintsConfig roundtrips through dict."""
+        data = {
+            'memory_gb': {'capacity_per_thread': 2.0, 'demand_per_vcpu': 4.0},
+            'ssd_gb': {'capacity_per_server': 2000, 'demand_per_vcpu': 20.0},
+        }
+        cfg = ResourceConstraintsConfig.from_dict(data)
+        assert len(cfg.constraints) == 2
+        assert 'memory_gb' in cfg.constraints
+        d = cfg.to_dict()
+        assert d['memory_gb']['capacity_per_thread'] == 2.0
+        assert d['ssd_gb']['capacity_per_server'] == 2000
+
+    def test_scenario_config_parses_resource_constraints(self):
+        """ScenarioConfig parses resource_constraints field."""
+        data = {
+            'processor': 'nosmt',
+            'oversub_ratio': 2.0,
+            'resource_constraints': {
+                'memory_gb': {'capacity_per_thread': 2.0, 'demand_per_vcpu': 4.0},
+            },
+        }
+        cfg = ScenarioConfig.from_dict(data)
+        assert cfg.resource_constraints is not None
+        assert 'memory_gb' in cfg.resource_constraints.constraints
+
+    def test_scenario_config_to_dict_includes_resource_constraints(self):
+        """ScenarioConfig.to_dict includes resource_constraints."""
+        cfg = ScenarioConfig(
+            processor='nosmt',
+            oversub_ratio=2.0,
+            resource_constraints=ResourceConstraintsConfig(
+                constraints={'memory_gb': ResourceConstraintSpec(capacity_per_thread=2.0, demand_per_vcpu=4.0)}
+            ),
+        )
+        d = cfg.to_dict()
+        assert 'resource_constraints' in d
+        assert d['resource_constraints']['memory_gb']['capacity_per_thread'] == 2.0
+
+    # --- Mutual exclusion ---
+
+    def test_mutual_exclusion_with_resource_scaling(self):
+        """resource_scaling + resource_constraints raises ValueError."""
+        data = {
+            'processor': 'nosmt',
+            'oversub_ratio': 2.0,
+            'resource_scaling': {'scale_with_vcpus': ['memory']},
+            'resource_constraints': {
+                'memory_gb': {'capacity_per_thread': 2.0, 'demand_per_vcpu': 4.0},
+            },
+        }
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            ScenarioConfig.from_dict(data)
+
+    # --- Integration tests with structured costs ---
+
+    def _make_config_with_constraints(self, constraints, oversub_ratio=2.0):
+        """Helper to build a config with resource constraints and structured costs."""
+        return {
+            'name': 'test_constraints',
+            'scenarios': {
+                'baseline': {
+                    'processor': 'smt',
+                    'oversub_ratio': 1.0,
+                },
+                'constrained': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': oversub_ratio,
+                    'resource_constraints': constraints,
+                },
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'baseline',
+            },
+            'processor': {
+                'smt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 2,
+                    'power_idle_w': 100.0,
+                    'power_max_w': 400.0,
+                    'thread_overhead': 0,
+                    'embodied_carbon': {
+                        'per_thread': {'cpu_die': 5.0},
+                        'per_server': {'chassis': 50.0},
+                    },
+                    'server_cost': {
+                        'per_thread': {'cpu': 50.0},
+                        'per_server': {'base': 500.0},
+                    },
+                },
+                'nosmt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 1,
+                    'power_idle_w': 90.0,
+                    'power_max_w': 340.0,
+                    'thread_overhead': 0,
+                    'embodied_carbon': {
+                        'per_thread': {'cpu_die': 5.0},
+                        'per_server': {'chassis': 50.0},
+                    },
+                    'server_cost': {
+                        'per_thread': {'cpu': 50.0},
+                        'per_server': {'base': 500.0},
+                    },
+                },
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+            'cost': {
+                'carbon_intensity_g_kwh': 400.0,
+                'electricity_cost_usd_kwh': 0.10,
+                'lifetime_years': 5.0,
+            },
+        }
+
+    def test_memory_bottleneck(self, tmp_path):
+        """Memory constraint limits effective R below requested R."""
+        constraints = {
+            'memory_gb': {
+                'capacity_per_thread': 2.0,   # 48 * 2.0 = 96 GB per server
+                'demand_per_vcpu': 4.0,     # max 24 vCPUs from memory
+            },
+        }
+        config_data = self._make_config_with_constraints(constraints, oversub_ratio=2.0)
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        constrained = result.scenario_results['constrained']
+
+        cr = constrained.get('resource_constraint_result')
+        assert cr is not None
+        assert cr['was_constrained'] is True
+        assert cr['bottleneck_resource'] == 'memory_gb'
+        # nosmt: 48 cores, 1 tpc, 48 hw_threads, available_pcpus=48
+        # core_limit = 48 * 2.0 = 96
+        # memory max_vcpus = 96 / 4.0 = 24
+        # effective_vcpus = 24, effective_R = 24 / 48 = 0.5
+        assert cr['effective_oversub_ratio'] == pytest.approx(0.5, abs=0.01)
+        assert cr['effective_vcpus_per_server'] == pytest.approx(24.0, abs=0.1)
+        assert cr['requested_oversub_ratio'] == pytest.approx(2.0)
+
+        # Verify structured costs are correct (not defaults)
+        # nosmt: 48 cores * 1 tpc = 48 hw_threads
+        # embodied_carbon = 5.0 * 48 + 50.0 = 290 per server
+        per_server_carbon = 5.0 * 48 + 50.0  # 290
+        num_servers = constrained['num_servers']
+        assert constrained['embodied_carbon_kg'] == pytest.approx(num_servers * per_server_carbon, rel=0.01)
+
+    def test_no_binding_constraint(self, tmp_path):
+        """Generous capacity means cores are the bottleneck."""
+        constraints = {
+            'memory_gb': {
+                'capacity_per_thread': 100.0,   # 48 * 100 = 4800 GB
+                'demand_per_vcpu': 4.0,       # max 1200 vCPUs
+            },
+            'ssd_gb': {
+                'capacity_per_server': 100000,  # 100 TB
+                'demand_per_vcpu': 20.0,        # max 5000 vCPUs
+            },
+        }
+        config_data = self._make_config_with_constraints(constraints, oversub_ratio=2.0)
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        constrained = result.scenario_results['constrained']
+
+        cr = constrained.get('resource_constraint_result')
+        assert cr is not None
+        assert cr['was_constrained'] is False
+        assert cr['bottleneck_resource'] == 'cores'
+        # effective R should equal requested R
+        assert cr['effective_oversub_ratio'] == pytest.approx(2.0, abs=0.01)
+
+    def test_multiple_constraints_tightest_wins(self, tmp_path):
+        """With multiple constraints, the tightest resource wins."""
+        constraints = {
+            'memory_gb': {
+                'capacity_per_thread': 2.0,     # 48 * 2 = 96 / 4 = 24 max vCPUs
+                'demand_per_vcpu': 4.0,
+            },
+            'ssd_gb': {
+                'capacity_per_server': 200,   # 200 / 20 = 10 max vCPUs (tightest!)
+                'demand_per_vcpu': 20.0,
+            },
+        }
+        config_data = self._make_config_with_constraints(constraints, oversub_ratio=3.0)
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        constrained = result.scenario_results['constrained']
+
+        cr = constrained.get('resource_constraint_result')
+        assert cr is not None
+        assert cr['bottleneck_resource'] == 'ssd_gb'
+        assert cr['effective_vcpus_per_server'] == pytest.approx(10.0, abs=0.1)
+        # effective_R = 10 / 48 ~ 0.208
+        assert cr['effective_oversub_ratio'] == pytest.approx(10.0 / 48.0, abs=0.01)
+
+        # Verify resource details
+        details = cr['resource_details']
+        assert details['cores']['is_bottleneck'] is False
+        assert details['memory_gb']['is_bottleneck'] is False
+        assert details['ssd_gb']['is_bottleneck'] is True
+
+        # ssd: 10 used / 10 max = 100% utilization
+        assert details['ssd_gb']['utilization_pct'] == pytest.approx(100.0, abs=0.1)
+        # memory: 10 used / 24 max = 41.7% utilization
+        assert details['memory_gb']['utilization_pct'] == pytest.approx(10.0 / 24.0 * 100, abs=0.1)
+
+    def test_compare_sweep_with_constraints(self, tmp_path):
+        """Sweep oversub_ratio with constraints: carbon/TCO flatten after binding."""
+        config_data = {
+            'name': 'test_constraint_sweep',
+            'scenarios': {
+                'baseline': {
+                    'processor': 'smt',
+                    'oversub_ratio': 1.0,
+                },
+                'constrained': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 1.0,
+                    'resource_constraints': {
+                        'memory_gb': {
+                            'capacity_per_thread': 2.0,   # 48 * 2 = 96 GB / 4 = 24 max vCPUs
+                            'demand_per_vcpu': 4.0,
+                        },
+                    },
+                },
+            },
+            'analysis': {
+                'type': 'compare_sweep',
+                'baseline': 'baseline',
+                'sweep_scenario': 'constrained',
+                'sweep_parameter': 'oversub_ratio',
+                'sweep_values': [0.5, 1.0, 1.5, 2.0, 3.0, 4.0],
+            },
+            'processor': {
+                'smt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 2,
+                    'power_idle_w': 100.0,
+                    'power_max_w': 400.0,
+                    'thread_overhead': 0,
+                    'embodied_carbon': {
+                        'per_thread': {'cpu_die': 5.0},
+                        'per_server': {'chassis': 50.0},
+                    },
+                    'server_cost': {
+                        'per_thread': {'cpu': 50.0},
+                        'per_server': {'base': 500.0},
+                    },
+                },
+                'nosmt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 1,
+                    'power_idle_w': 90.0,
+                    'power_max_w': 340.0,
+                    'thread_overhead': 0,
+                    'embodied_carbon': {
+                        'per_thread': {'cpu_die': 5.0},
+                        'per_server': {'chassis': 50.0},
+                    },
+                    'server_cost': {
+                        'per_thread': {'cpu': 50.0},
+                        'per_server': {'base': 500.0},
+                    },
+                },
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+            'cost': {
+                'carbon_intensity_g_kwh': 400.0,
+                'electricity_cost_usd_kwh': 0.10,
+                'lifetime_years': 5.0,
+            },
+        }
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        assert result.analysis_type == 'compare_sweep'
+        sweep_results = result.compare_sweep_results
+        assert len(sweep_results) == 6
+
+        # At R=0.5, constraint shouldn't bind (core limit = 24, memory limit = 24)
+        r05 = sweep_results[0]  # R=0.5
+        r05_data = r05['scenarios']['constrained']
+        # core limit at R=0.5 = 48*0.5 = 24, memory = 24, cores is bottleneck (or tied)
+        assert r05_data.get('effective_oversub_ratio') is not None
+
+        # At R=3.0 and R=4.0, effective R should be same (memory limits at 24 vCPUs)
+        r30 = sweep_results[4]  # R=3.0
+        r40 = sweep_results[5]  # R=4.0
+        r30_data = r30['scenarios']['constrained']
+        r40_data = r40['scenarios']['constrained']
+        assert r30_data.get('was_constrained') is True
+        assert r40_data.get('was_constrained') is True
+        # Effective R should be same since memory limits both
+        assert r30_data['effective_oversub_ratio'] == pytest.approx(
+            r40_data['effective_oversub_ratio'], abs=0.01)
+        # Carbon/TCO should also flatten
+        assert r30_data['carbon_diff_pct'] == pytest.approx(
+            r40_data['carbon_diff_pct'], abs=0.1)
+
+        # Verify summary contains constraint columns
+        assert 'Eff. R' in result.summary
+        assert 'Bottleneck' in result.summary
+
+    def test_structured_cost_verification(self, tmp_path):
+        """Ensure per-server carbon matches structured calculation, not defaults."""
+        constraints = {
+            'memory_gb': {
+                'capacity_per_thread': 2.0,
+                'demand_per_vcpu': 4.0,
+            },
+        }
+        config_data = self._make_config_with_constraints(constraints, oversub_ratio=2.0)
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+
+        # Check baseline (smt) structured costs
+        baseline = result.scenario_results['baseline']
+        # smt: 48 cores * 2 tpc = 96 hw_threads
+        # embodied = 5.0 * 96 + 50.0 = 530 per server
+        smt_per_server = 5.0 * 96 + 50.0  # 530
+        baseline_servers = baseline['num_servers']
+        assert baseline['embodied_carbon_kg'] == pytest.approx(
+            baseline_servers * smt_per_server, rel=0.01)
+        # NOT the default 1000 kg
+        assert baseline['embodied_carbon_kg'] != pytest.approx(
+            baseline_servers * 1000, rel=0.1)
+
+        # Check constrained (nosmt) structured costs
+        constrained = result.scenario_results['constrained']
+        nosmt_per_server = 5.0 * 48 + 50.0  # 290
+        constrained_servers = constrained['num_servers']
+        assert constrained['embodied_carbon_kg'] == pytest.approx(
+            constrained_servers * nosmt_per_server, rel=0.01)
+        assert constrained['embodied_carbon_kg'] != pytest.approx(
+            constrained_servers * 1000, rel=0.1)
+
+    def test_asdict_serialization(self):
+        """ResourceConstraintResult survives asdict() roundtrip."""
+        cr = ResourceConstraintResult(
+            requested_oversub_ratio=2.0,
+            effective_oversub_ratio=0.5,
+            effective_vcpus_per_server=24.0,
+            bottleneck_resource='memory_gb',
+            resource_details={
+                'cores': ResourceConstraintDetail(
+                    max_vcpus=96.0, utilization_pct=25.0, stranded_pct=75.0, is_bottleneck=False,
+                ),
+                'memory_gb': ResourceConstraintDetail(
+                    max_vcpus=24.0, utilization_pct=100.0, stranded_pct=0.0, is_bottleneck=True,
+                ),
+            },
+            was_constrained=True,
+        )
+        d = asdict(cr)
+        assert d['requested_oversub_ratio'] == 2.0
+        assert d['effective_oversub_ratio'] == 0.5
+        assert d['bottleneck_resource'] == 'memory_gb'
+        assert d['resource_details']['cores']['max_vcpus'] == 96.0
+        assert d['resource_details']['memory_gb']['is_bottleneck'] is True
+        assert d['was_constrained'] is True
+
+    def test_baseline_has_no_constraint_result(self, tmp_path):
+        """Baseline without constraints has no resource_constraint_result."""
+        constraints = {
+            'memory_gb': {'capacity_per_thread': 2.0, 'demand_per_vcpu': 4.0},
+        }
+        config_data = self._make_config_with_constraints(constraints, oversub_ratio=2.0)
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        baseline = result.scenario_results['baseline']
+        assert baseline.get('resource_constraint_result') is None

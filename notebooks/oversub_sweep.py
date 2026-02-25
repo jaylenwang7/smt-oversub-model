@@ -134,11 +134,11 @@ processor_defaults = ProcessorDefaults(
     smt_physical_cores=84,
     smt_power_idle_w=300.0,
     smt_power_max_w=800.0,
-    smt_core_overhead=8,
+    smt_thread_overhead=8,
     nosmt_physical_cores=96,
     nosmt_power_ratio=1.0,
     nosmt_idle_ratio=1.0,
-    nosmt_core_overhead=9,
+    nosmt_thread_overhead=9,
 )
 
 cost_defaults = CostDefaults(

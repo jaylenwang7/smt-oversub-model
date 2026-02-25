@@ -8,10 +8,10 @@
     "threads_per_core": 2,
     "power_idle_w": 90.0,
     "power_max_w": 600.0,
-    "core_overhead": 4, // 10% core overhead
+    "thread_overhead": 4, // 10% thread overhead
     // Structured embodied carbon: 10kg/thread * 96 threads + 20kg chassis = 980 total
     "embodied_carbon": {
-      "per_core": {
+      "per_thread": {
         "cpu_die": 10.0
       },
       "per_server": {
@@ -20,7 +20,7 @@
     },
     // Structured server cost: $73/thread * 96 threads + $32 base = $7040 total
     "server_cost": {
-      "per_core": {
+      "per_thread": {
         "cpu": 73.0
       },
       "per_server": {
@@ -34,10 +34,10 @@
     "threads_per_core": 1,
     "power_idle_w": 90.0,
     "power_max_w": 600.0,
-    "core_overhead": 5, // 10% core overhead
+    "thread_overhead": 5, // 10% thread overhead
     // Structured embodied carbon: 10kg/thread * 52 threads + 50kg chassis = 570 total
     "embodied_carbon": {
-      "per_core": {
+      "per_thread": {
         "cpu_die":10.0
       },
       "per_server": {
@@ -46,7 +46,7 @@
     },
     // Structured server cost: $72/thread * 52 threads + $16 base = $3760 total
     "server_cost": {
-      "per_core": {
+      "per_thread": {
         "cpu": 72.0
       },
       "per_server": {
@@ -60,10 +60,10 @@
     "threads_per_core": 1,
     "power_idle_w": 90.0,
     "power_max_w": 600.0,
-    "core_overhead": 5,
+    "thread_overhead": 5,
     // Structured embodied carbon: 10kg/thread * 52 threads + 50kg chassis = 570 total
     "embodied_carbon": {
-      "per_core": {
+      "per_thread": {
         "cpu_die": 10.0
       },
       "per_server": {
@@ -72,7 +72,7 @@
     },
     // Structured server cost: $72/thread * 52 threads + $16 base = $3760 total
     "server_cost": {
-      "per_core": {
+      "per_thread": {
         "cpu": 72.0
       },
       "per_server": {

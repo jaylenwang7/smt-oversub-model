@@ -99,14 +99,14 @@ class ProcessorSpec:
         threads_per_core: SMT threads per core (1 = no SMT, 2+ = SMT enabled)
         power_idle_w: Idle power consumption in watts
         power_max_w: Maximum power consumption in watts
-        core_overhead: Number of pCPUs reserved for host (not available for VMs)
+        thread_overhead: Number of HW threads reserved for host (not available for VMs)
         power_curve: Optional per-processor power curve (overrides global power_curve)
     """
     physical_cores: int = 48
     threads_per_core: int = 1  # 1 = no SMT, 2 = SMT (hyperthreading)
     power_idle_w: float = 100.0
     power_max_w: float = 400.0
-    core_overhead: int = 0
+    thread_overhead: int = 0
     power_curve: Optional[PowerCurveSpec] = None
 
     def to_dict(self) -> dict:
@@ -115,7 +115,7 @@ class ProcessorSpec:
             "threads_per_core": self.threads_per_core,
             "power_idle_w": self.power_idle_w,
             "power_max_w": self.power_max_w,
-            "core_overhead": self.core_overhead,
+            "thread_overhead": self.thread_overhead,
         }
         if self.power_curve is not None:
             d["power_curve"] = self.power_curve.to_dict()
@@ -131,7 +131,7 @@ class ProcessorSpec:
             threads_per_core=data.get("threads_per_core", 1),
             power_idle_w=data.get("power_idle_w", 100.0),
             power_max_w=data.get("power_max_w", 400.0),
-            core_overhead=data.get("core_overhead", 0),
+            thread_overhead=data.get("thread_overhead", 0),
             power_curve=power_curve,
         )
 
