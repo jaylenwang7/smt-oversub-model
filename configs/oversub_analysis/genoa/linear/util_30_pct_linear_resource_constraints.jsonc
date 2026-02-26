@@ -1,6 +1,6 @@
 {
-  "name": "util_30pct_smt_vs_nosmt_linear_resource_constraints",
-  "description": "At 30% utilization: Compare SMT (R=1.0, resource_scaling) vs No-SMT Linear (R=1.67, resource_constraints). Resource constraints model fixed server capacities limiting vCPU packing.",
+  "name": "util_30pct_smt_vs_nosmt_linear_same_hw",
+  "description": "At 30% utilization: Compare SMT (R=1.0, resource_scaling) vs No-SMT Linear on same SMT hardware (R=1.67, resource_constraints). Models disabling SMT on an existing SMT server (keeping 12 DIMMs, 6 SSDs) rather than purpose-building a no-SMT server.",
   "scenarios": {
     "smt_oversub": {
       "processor": "smt",
@@ -11,21 +11,21 @@
       }
     },
     "nosmt_oversub": {
-      "processor": "nosmt_linear",
+      "processor": "nosmt_smt_hw_linear",
       "oversub_ratio": 1.67,
       "vcpu_demand_multiplier": 1.0,
-      // Fixed server capacities limit packing.
-      // nosmt_linear: 80 cores × 1 tpc = 80 HW threads
-      //   memory: 4.8 × 80 = 384 GB → 384/4.0 = 96 max vCPUs
-      //   SSD: 75.0 × 80 = 6000 GB → 6000/50.0 = 120 max vCPUs
-      //   core limit at R=1.67 = 72 × 1.67 = 120.2 → memory bottleneck at 96
+      // Same physical server as SMT (768GB memory, 12TB SSD), SMT disabled.
+      // 80 HW threads → doubled capacity per thread vs purpose-built no-SMT.
+      //   memory: 9.6 × 80 = 768 GB → 768/4.0 = 192 max vCPUs
+      //   SSD: 150 × 80 = 12000 GB → 12000/50.0 = 240 max vCPUs
+      //   core limit at R=1.67 = 72 × 1.67 = 120.2 → cores are bottleneck (not constrained)
       "resource_constraints": {
         "memory_gb": {
-          "capacity_per_thread": 4.8,
+          "capacity_per_thread": 9.6,
           "demand_per_vcpu": 4.0
         },
         "ssd_gb": {
-          "capacity_per_thread": 75.0,
+          "capacity_per_thread": 150.0,
           "demand_per_vcpu": 50.0
         }
       }
@@ -49,12 +49,12 @@
     "x_axis_marker_labels": ["low", "geomean", "high"],
     "labels": {
       "smt_oversub": "SMT (R=1.0, scaled)",
-      "nosmt_oversub": "No-SMT Linear (R=1.67, constrained)"
+      "nosmt_oversub": "No-SMT Linear (R=1.67, same HW)"
     }
   },
   "processor": {
     "smt": "configs/shared/genoa_processors.jsonc:genoa_smt",
-    "nosmt_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_linear"
+    "nosmt_smt_hw_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_smt_hw_linear"
   },
   "cost": {
     "carbon_intensity_g_kwh": 175,

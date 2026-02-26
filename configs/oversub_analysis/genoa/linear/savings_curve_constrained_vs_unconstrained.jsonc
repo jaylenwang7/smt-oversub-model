@@ -1,6 +1,6 @@
 {
   "name": "savings_curve_constrained_vs_unconstrained",
-  "description": "Geomean savings comparison: unconstrained (resource_scaling) vs constrained (resource_constraints) across utilization levels (10-30%). Shows how fixed server capacities limit the benefits of high oversub ratios.",
+  "description": "Geomean savings comparison: unconstrained (purpose-built servers with resource_scaling) vs same-hardware (SMT server with SMT disabled, resource_constraints) across utilization levels (10-30%). Shows how reusing SMT hardware with SMT off differs from purpose-building no-SMT servers.",
   "analysis": {
     "type": "savings_curve",
     "config_sets": [
@@ -13,7 +13,7 @@
         ]
       },
       {
-        "label": "Constrained (resource_constraints)",
+        "label": "Same HW, SMT off (resource_constraints)",
         "configs": [
           "configs/oversub_analysis/genoa/linear/util_10_pct_linear_resource_constraints.jsonc",
           "configs/oversub_analysis/genoa/linear/util_20_pct_linear_resource_constraints.jsonc",

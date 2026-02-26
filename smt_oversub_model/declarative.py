@@ -738,6 +738,10 @@ class AnalysisSpec:
     # For "per_server_comparison": grouped bar chart of per-server metrics
     groups: Optional[List[Dict[str, Any]]] = None  # [{label, scenarios}]
     metric_labels: Optional[Dict[str, str]] = None  # {metric_path: display_label}
+    # For "resource_packing": per-resource capacity/demand visualization
+    resources: Optional[Dict[str, Dict[str, Any]]] = None  # {resource_name: {demand_per_vcpu, label, ...}}
+    include_cores: bool = True  # Auto-include cores as a resource
+    show_bottleneck_markers: bool = True  # Show downward triangle on bottleneck resource bar
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AnalysisSpec':
@@ -784,6 +788,9 @@ class AnalysisSpec:
             plot=plot_spec,
             groups=data.get('groups'),
             metric_labels=data.get('metric_labels'),
+            resources=data.get('resources'),
+            include_cores=data.get('include_cores', True),
+            show_bottleneck_markers=data.get('show_bottleneck_markers', True),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -862,6 +869,12 @@ class AnalysisSpec:
             d['groups'] = self.groups
         if self.metric_labels:
             d['metric_labels'] = self.metric_labels
+        if self.resources:
+            d['resources'] = self.resources
+        if not self.include_cores:
+            d['include_cores'] = False
+        if not self.show_bottleneck_markers:
+            d['show_bottleneck_markers'] = False
         return d
 
 
@@ -1880,6 +1893,7 @@ class AnalysisResult:
     breakeven_curve_results: Optional[List[Dict[str, Any]]] = None  # For breakeven_curve analysis
     savings_curve_results: Optional[List[Dict[str, Any]]] = None  # For savings_curve analysis
     per_server_comparison_results: Optional[List[Dict[str, Any]]] = None  # For per_server_comparison analysis
+    resource_packing_results: Optional[List[Dict[str, Any]]] = None  # For resource_packing analysis
     summary: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1912,6 +1926,8 @@ class AnalysisResult:
             result['savings_curve_results'] = self.savings_curve_results
         if self.per_server_comparison_results:
             result['per_server_comparison_results'] = self.per_server_comparison_results
+        if self.resource_packing_results:
+            result['resource_packing_results'] = self.resource_packing_results
         return result
 
 
@@ -1951,6 +1967,8 @@ class DeclarativeAnalysisEngine:
             return self._run_breakeven_curve()
         if analysis_type == 'savings_curve':
             return self._run_savings_curve()
+        if analysis_type == 'resource_packing':
+            return self._run_resource_packing()
 
         # Resolve ratio-based costs if needed (except for sweeps over ratio params)
         if analysis_type == 'sweep' and self._is_ratio_sweep_param(config.analysis.sweep_parameter):
@@ -3257,6 +3275,509 @@ class DeclarativeAnalysisEngine:
 
         return "\n".join(lines)
 
+    # ---- resource_packing analysis ----
+
+    def _run_resource_packing(self) -> AnalysisResult:
+        """Run resource_packing analysis: visualize per-server capacity vs demand.
+
+        Two modes:
+        - config_sets: reference existing sub-configs, extract per-scenario data
+        - scenarios + sweep_parameter: sweep a parameter on inline scenarios
+        """
+        analysis = self._config.analysis
+        if analysis.config_sets:
+            return self._run_resource_packing_from_configs()
+        elif analysis.scenarios and analysis.sweep_parameter:
+            return self._run_resource_packing_sweep()
+        else:
+            raise ValueError(
+                "resource_packing requires either 'config_sets' (config-derived mode) "
+                "or 'scenarios' + 'sweep_parameter' (direct sweep mode)"
+            )
+
+    def _run_resource_packing_from_configs(self) -> AnalysisResult:
+        """Config-derived resource_packing: load sub-configs and extract packing data."""
+        analysis = self._config.analysis
+        x_parameter = analysis.x_parameter
+        x_multiplier = analysis.x_display_multiplier
+        resource_defs = analysis.resources or {}
+        include_cores = analysis.include_cores
+
+        if not x_parameter:
+            raise ValueError("resource_packing config-derived mode requires 'x_parameter'")
+        if not analysis.config_sets:
+            raise ValueError("resource_packing config-derived mode requires 'config_sets'")
+
+        # Collect all unique x_values across all config_sets
+        # Structure: {x_raw: {x_value, x_raw, scenarios: {}}}
+        x_points = {}
+
+        for cs in analysis.config_sets:
+            cs_label = cs.get('label', 'unnamed')
+            cs_configs = cs.get('configs', [])
+            cs_scenario = cs.get('scenario')
+
+            if not cs_scenario:
+                raise ValueError(
+                    f"config_set '{cs_label}' requires 'scenario' field"
+                )
+
+            for config_path_str in cs_configs:
+                config_path = Path(config_path_str)
+
+                # Load raw config to extract x-value and scenario data
+                with open(config_path, 'r') as f:
+                    if _HAS_JSON5:
+                        raw_config = json5.load(f)
+                    else:
+                        raw_config = json.load(f)
+
+                x_raw = self._extract_nested_value(raw_config, x_parameter)
+                if x_raw is None:
+                    raise ValueError(
+                        f"Could not extract '{x_parameter}' from {config_path_str}"
+                    )
+                x_display = float(x_raw) * x_multiplier
+
+                # Get scenario config from the sub-config
+                scenarios_data = raw_config.get('scenarios', {})
+                if cs_scenario not in scenarios_data:
+                    raise ValueError(
+                        f"Scenario '{cs_scenario}' not found in {config_path_str}"
+                    )
+                scenario_data = dict(scenarios_data[cs_scenario])
+
+                # Apply scenario_overrides if present
+                cs_overrides = cs.get('scenario_overrides')
+                if cs_overrides:
+                    for key, value in cs_overrides.items():
+                        if value is None:
+                            scenario_data.pop(key, None)
+                        else:
+                            scenario_data[key] = value
+
+                scenario_cfg = ScenarioConfig.from_dict(scenario_data)
+
+                # Resolve processor for this scenario
+                proc_data = raw_config.get('processor', {})
+                proc_name = scenario_cfg.processor
+
+                # Resolve the processor spec (handle file refs, inline, mixed)
+                proc_spec = self._resolve_processor_from_raw_config(
+                    proc_data, proc_name, config_path.parent
+                )
+
+                phys = proc_spec.physical_cores
+                tpc = proc_spec.threads_per_core
+                hw_threads = phys * tpc
+                thread_overhead = proc_spec.thread_overhead
+                available_pcpus = phys * tpc - thread_overhead
+
+                # Extract processor capacity for capacity_per_thread fallback
+                p_capacity = {}
+                if proc_spec.capacity and proc_spec.capacity.per_thread:
+                    p_capacity = proc_spec.capacity.per_thread
+
+                # Compute packing for this scenario at this x-value
+                packing = self._compute_resource_packing(
+                    scenario_cfg=scenario_cfg,
+                    hw_threads=hw_threads,
+                    available_pcpus=available_pcpus,
+                    oversub_ratio=scenario_cfg.oversub_ratio,
+                    resource_defs=resource_defs,
+                    include_cores=include_cores,
+                    proc_capacity=p_capacity,
+                )
+                packing['processor'] = proc_name
+                packing['label'] = cs_label
+
+                # Add to x_points
+                x_key = round(float(x_raw), 10)  # avoid float key issues
+                if x_key not in x_points:
+                    x_points[x_key] = {
+                        'x_value': x_display,
+                        'x_raw': float(x_raw),
+                        'scenarios': {},
+                    }
+                x_points[x_key]['scenarios'][cs_label] = packing
+
+        # Sort by x_value and convert to list
+        resource_packing_results = [
+            x_points[k] for k in sorted(x_points.keys())
+        ]
+
+        summary = self._build_resource_packing_summary(resource_packing_results, analysis)
+
+        return AnalysisResult(
+            config=self._config,
+            analysis_type='resource_packing',
+            scenario_results={},
+            comparisons={},
+            resource_packing_results=resource_packing_results,
+            summary=summary,
+        )
+
+    def _run_resource_packing_sweep(self) -> AnalysisResult:
+        """Direct sweep resource_packing: sweep a parameter on inline scenarios."""
+        analysis = self._config.analysis
+        resource_defs = analysis.resources or {}
+        include_cores = analysis.include_cores
+        sweep_param = analysis.sweep_parameter
+        sweep_values = analysis.sweep_values or []
+        scenario_names = analysis.scenarios or []
+
+        if not sweep_param:
+            raise ValueError("resource_packing sweep mode requires 'sweep_parameter'")
+        if not sweep_values:
+            raise ValueError("resource_packing sweep mode requires 'sweep_values'")
+        if not scenario_names:
+            raise ValueError("resource_packing sweep mode requires 'scenarios'")
+
+        # Need builder for processor resolution
+        self._setup_builder()
+
+        # Save original scenario configs for reset
+        original_scenarios = {
+            name: copy.deepcopy(self._config.scenarios[name])
+            for name in scenario_names
+        }
+
+        resource_packing_results = []
+        labels = analysis.labels or {}
+
+        for sv in sweep_values:
+            # Reset scenarios to original
+            for name in scenario_names:
+                self._config.scenarios[name] = copy.deepcopy(original_scenarios[name])
+
+            # Apply sweep value
+            for name in scenario_names:
+                self._apply_scenario_sweep_value(name, sweep_param, sv)
+
+            # Re-setup builder to pick up changes
+            self._setup_builder()
+
+            point = {
+                'x_value': sv,
+                'x_raw': sv,
+                'scenarios': {},
+            }
+
+            for name in scenario_names:
+                scenario_cfg = self._config.scenarios[name]
+                proc_name = scenario_cfg.processor
+                proc_spec = self._processor_config.get(proc_name)
+
+                phys = proc_spec.physical_cores
+                tpc = proc_spec.threads_per_core
+                hw_threads = phys * tpc
+                thread_overhead = proc_spec.thread_overhead
+                available_pcpus = hw_threads - thread_overhead
+
+                # Extract processor capacity for capacity_per_thread fallback
+                p_capacity = {}
+                if proc_spec.capacity and proc_spec.capacity.per_thread:
+                    p_capacity = proc_spec.capacity.per_thread
+
+                packing = self._compute_resource_packing(
+                    scenario_cfg=scenario_cfg,
+                    hw_threads=hw_threads,
+                    available_pcpus=available_pcpus,
+                    oversub_ratio=scenario_cfg.oversub_ratio,
+                    resource_defs=resource_defs,
+                    include_cores=include_cores,
+                    proc_capacity=p_capacity,
+                )
+                packing['processor'] = proc_name
+                display_label = labels.get(name, name)
+                packing['label'] = display_label
+
+                point['scenarios'][display_label] = packing
+
+            resource_packing_results.append(point)
+
+        # Restore original scenarios
+        for name in scenario_names:
+            self._config.scenarios[name] = original_scenarios[name]
+
+        summary = self._build_resource_packing_summary(resource_packing_results, analysis)
+
+        return AnalysisResult(
+            config=self._config,
+            analysis_type='resource_packing',
+            scenario_results={},
+            comparisons={},
+            resource_packing_results=resource_packing_results,
+            summary=summary,
+        )
+
+    @staticmethod
+    def _match_proc_capacity(res_name: str, proc_capacity: Dict[str, float]) -> float:
+        """Look up capacity_per_thread from processor capacity, handling name mapping.
+
+        Tries exact match first (e.g., 'memory_gb' in proc_capacity), then
+        strips the last _suffix (e.g., 'memory_gb' -> 'memory').
+        """
+        if not proc_capacity:
+            return 0.0
+        if res_name in proc_capacity:
+            return proc_capacity[res_name]
+        # Strip last _suffix (e.g., memory_gb -> memory, ssd_gb -> ssd)
+        parts = res_name.rsplit('_', 1)
+        if len(parts) == 2 and parts[0] in proc_capacity:
+            return proc_capacity[parts[0]]
+        return 0.0
+
+    @staticmethod
+    def _compute_resource_packing(
+        scenario_cfg: 'ScenarioConfig',
+        hw_threads: int,
+        available_pcpus: int,
+        oversub_ratio: float,
+        resource_defs: Dict[str, Dict[str, Any]],
+        include_cores: bool = True,
+        proc_capacity: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, Any]:
+        """Compute per-resource capacity, demand, and stranding for a single scenario.
+
+        Core capacity = available_pcpus (fixed hardware threads available for vCPUs).
+        Core demand = effective_vcpus / oversub_ratio (oversub discounts vCPU demand).
+
+        For non-core resources, capacity_per_thread is looked up from:
+        1. resource_defs (analysis-level config)
+        2. proc_capacity (processor spec's capacity.per_thread, with name mapping)
+
+        Returns dict with oversub_ratio, hw_threads, available_pcpus, vcpus_per_server,
+        was_constrained, bottleneck_resource, and resources dict.
+        """
+        has_constraints = scenario_cfg.resource_constraints is not None
+        has_scaling = scenario_cfg.resource_scaling is not None
+        if proc_capacity is None:
+            proc_capacity = {}
+
+        # Core limit (max vCPUs that cores can support)
+        core_limit = float(available_pcpus * oversub_ratio)
+
+        # For constrained scenarios, compute resource limits
+        resource_limits = {'cores': core_limit}
+        if has_constraints:
+            for res_name, spec in scenario_cfg.resource_constraints.constraints.items():
+                resource_limits[res_name] = spec.max_vcpus(hw_threads)
+
+        # Effective vCPUs (constrained = min of all limits, otherwise = core limit)
+        if has_constraints:
+            effective_vcpus = min(resource_limits.values())
+        else:
+            effective_vcpus = core_limit
+
+        effective_R = effective_vcpus / available_pcpus if available_pcpus > 0 else 0.0
+
+        # For scaled scenarios, vcpus_per_server grows
+        if has_scaling:
+            vcpus_per_server = max(float(hw_threads), core_limit)
+        else:
+            vcpus_per_server = effective_vcpus
+
+        # Determine bottleneck from constraints
+        if has_constraints:
+            bottleneck = min(resource_limits, key=resource_limits.get)
+            was_constrained = (bottleneck != 'cores')
+        else:
+            bottleneck = None
+            was_constrained = False
+
+        # Build per-resource details
+        resources = {}
+
+        if include_cores:
+            # Core capacity = fixed hardware (available pCPUs)
+            # Core demand = vCPUs placed / oversub_ratio (oversub discounts demand)
+            core_cap = float(available_pcpus)
+            core_demand = effective_vcpus / oversub_ratio if oversub_ratio > 0 else 0.0
+
+            core_util = (core_demand / core_cap * 100.0) if core_cap > 0 else 0.0
+            resources['cores'] = {
+                'capacity': core_cap,
+                'demand': core_demand,
+                'utilization_pct': min(100.0, core_util),
+                'stranded_pct': max(0.0, 100.0 - core_util),
+                'label': 'Cores',
+            }
+
+        for res_name, res_def in resource_defs.items():
+            demand_per_vcpu = res_def.get('demand_per_vcpu', 0)
+            label = res_def.get('label', res_name)
+
+            # Resolve capacity_per_thread: resource_defs first, then processor capacity
+            cap_per_thread = res_def.get('capacity_per_thread', 0)
+            if cap_per_thread == 0:
+                cap_per_thread = DeclarativeAnalysisEngine._match_proc_capacity(
+                    res_name, proc_capacity
+                )
+
+            if has_constraints and scenario_cfg.resource_constraints:
+                # Capacity is fixed hardware
+                spec = scenario_cfg.resource_constraints.constraints.get(res_name)
+                if spec:
+                    if spec.capacity_per_thread is not None:
+                        capacity = spec.capacity_per_thread * hw_threads
+                    elif spec.capacity_per_server is not None:
+                        capacity = spec.capacity_per_server
+                    else:
+                        capacity = 0
+                else:
+                    capacity = 0
+                demand = demand_per_vcpu * effective_vcpus
+            elif has_scaling and scenario_cfg.resource_scaling:
+                # Capacity grows with vcpus_per_server if this resource is in scale_with_vcpus
+                scale_resources = scenario_cfg.resource_scaling.scale_with_vcpus
+                # Handle name variants (memory_gb matches 'memory' in scale_with_vcpus)
+                should_scale = (res_name in scale_resources)
+                if not should_scale:
+                    parts = res_name.rsplit('_', 1)
+                    if len(parts) == 2:
+                        should_scale = (parts[0] in scale_resources)
+                if should_scale:
+                    capacity = cap_per_thread * vcpus_per_server
+                else:
+                    capacity = cap_per_thread * hw_threads
+                demand = demand_per_vcpu * vcpus_per_server
+            else:
+                # Unscaled: fixed capacity, demand may exceed
+                capacity = cap_per_thread * hw_threads
+                demand = demand_per_vcpu * core_limit
+
+            util_pct = (demand / capacity * 100.0) if capacity > 0 else 0.0
+            stranded_pct = max(0.0, 100.0 - util_pct)
+
+            resources[res_name] = {
+                'capacity': capacity,
+                'demand': demand,
+                'utilization_pct': min(100.0, util_pct),
+                'stranded_pct': stranded_pct,
+                'label': label,
+            }
+
+        # Determine bottleneck resource (highest utilization across all resources)
+        if resources:
+            bottleneck_by_util = max(resources.keys(),
+                                     key=lambda r: resources[r]['utilization_pct'])
+        else:
+            bottleneck_by_util = None
+
+        return {
+            'oversub_ratio': oversub_ratio,
+            'effective_oversub_ratio': effective_R,
+            'hw_threads': hw_threads,
+            'available_pcpus': available_pcpus,
+            'vcpus_per_server': vcpus_per_server,
+            'was_constrained': was_constrained,
+            'bottleneck_resource': bottleneck if has_constraints else bottleneck_by_util,
+            'resources': resources,
+        }
+
+    @staticmethod
+    def _build_resource_packing_summary(
+        results: List[Dict[str, Any]],
+        analysis: 'AnalysisSpec',
+    ) -> str:
+        """Build summary for resource_packing analysis."""
+        x_label = analysis.x_label or analysis.sweep_parameter or 'X'
+
+        lines = [
+            fmt.title("Resource Packing Analysis"),
+            "",
+        ]
+
+        for point in results:
+            x_val = point['x_value']
+            lines.append(fmt.heading(f"{x_label} = {x_val}"))
+
+            for scenario_label, sdata in point['scenarios'].items():
+                R = sdata['oversub_ratio']
+                eff_R = sdata['effective_oversub_ratio']
+                hw = sdata['hw_threads']
+                vcpus = sdata['vcpus_per_server']
+
+                lines.append(f"  {scenario_label}:")
+                lines.append(f"    R={R:.2f} (effective={eff_R:.2f}), "
+                           f"HW threads={hw}, vCPUs/server={vcpus:.0f}")
+
+                if sdata.get('was_constrained'):
+                    lines.append(f"    Bottleneck: {sdata['bottleneck_resource']}")
+
+                # Resource table
+                headers = ['Resource', 'Capacity', 'Demand', 'Util %', 'Stranded %']
+                rows = []
+                for res_name, rdata in sdata['resources'].items():
+                    rows.append([
+                        rdata.get('label', res_name),
+                        f"{rdata['capacity']:.1f}",
+                        f"{rdata['demand']:.1f}",
+                        f"{rdata['utilization_pct']:.1f}%",
+                        f"{rdata['stranded_pct']:.1f}%",
+                    ])
+                lines.append(fmt.table(headers, rows, ['l', 'r', 'r', 'r', 'r']))
+                lines.append("")
+
+        return "\n".join(lines)
+
+    def _resolve_processor_from_raw_config(
+        self,
+        proc_data: Any,
+        proc_name: str,
+        base_path: Path,
+    ) -> 'ProcessorSpec':
+        """Resolve a processor spec from raw config data.
+
+        Handles all three processor loading modes:
+        1. String path (load all from file)
+        2. Inline definitions
+        3. Mixed mode (file refs + inline)
+        """
+        # Mode 1: proc_data is a string → load all from file
+        if isinstance(proc_data, str):
+            file_path = ProcessorConfigSpec._resolve_path(proc_data, base_path)
+            all_procs = ProcessorConfigSpec._load_external_file(file_path)
+            if proc_name not in all_procs:
+                raise ValueError(
+                    f"Processor '{proc_name}' not found in {proc_data}"
+                )
+            return ProcessorSpec.from_dict(all_procs[proc_name])
+
+        # Mode 2/3: proc_data is a dict
+        if not isinstance(proc_data, dict):
+            raise ValueError(f"Invalid processor config type: {type(proc_data)}")
+
+        if proc_name not in proc_data:
+            raise ValueError(f"Processor '{proc_name}' not found in config")
+
+        entry = proc_data[proc_name]
+
+        # String reference: "path:name"
+        if isinstance(entry, str) and ':' in entry:
+            file_str, ref_name = entry.rsplit(':', 1)
+            file_path = ProcessorConfigSpec._resolve_path(file_str, base_path)
+            all_procs = ProcessorConfigSpec._load_external_file(file_path)
+            if ref_name not in all_procs:
+                raise ValueError(f"Processor '{ref_name}' not found in {file_str}")
+            return ProcessorSpec.from_dict(all_procs[ref_name])
+
+        # Object reference: {"file": ..., "name": ...}
+        if isinstance(entry, dict) and 'file' in entry and 'name' in entry:
+            file_path = ProcessorConfigSpec._resolve_path(entry['file'], base_path)
+            all_procs = ProcessorConfigSpec._load_external_file(file_path)
+            ref_name = entry['name']
+            if ref_name not in all_procs:
+                raise ValueError(f"Processor '{ref_name}' not found in {entry['file']}")
+            return ProcessorSpec.from_dict(all_procs[ref_name])
+
+        # Inline definition
+        if isinstance(entry, dict):
+            return ProcessorSpec.from_dict(entry)
+
+        raise ValueError(f"Cannot resolve processor '{proc_name}' from config")
+
     def _apply_scenario_sweep_value(
         self,
         scenario_name: str,
@@ -3648,7 +4169,8 @@ def is_valid_analysis_config(path: Path) -> bool:
     Check if a file is a valid declarative analysis config.
 
     A valid config must have 'name' and 'analysis' keys.
-    'scenarios' is required for most types but not for 'breakeven_curve'.
+    'scenarios' is required for most types, with targeted exceptions for
+    config-derived meta analyses and alternate resource_packing modes.
     """
     try:
         with open(path, 'r') as f:
@@ -3662,6 +4184,12 @@ def is_valid_analysis_config(path: Path) -> bool:
         analysis_type = data.get('analysis', {}).get('type')
         if analysis_type in ('breakeven_curve', 'savings_curve'):
             return True
+        if analysis_type == 'resource_packing':
+            analysis = data.get('analysis', {})
+            # resource_packing supports:
+            # - config-derived mode via analysis.config_sets (no top-level scenarios)
+            # - direct sweep mode with top-level scenarios
+            return 'config_sets' in analysis or 'scenarios' in data
         return 'scenarios' in data
     except (json.JSONDecodeError, KeyError, OSError):
         return False

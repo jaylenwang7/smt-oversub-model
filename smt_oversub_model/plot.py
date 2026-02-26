@@ -2238,8 +2238,8 @@ def plot_resource_constraints(
                     va='center', fontsize=style.annotation_fontsize, color='#666666')
 
     ax.set_yticks(y_pos)
-    ax.set_yticklabels(names, fontsize=style.label_fontsize)
-    ax.set_xlabel('Max vCPUs per Server', fontsize=style.label_fontsize)
+    ax.set_yticklabels(names, fontsize=style.tick_fontsize)
+    ax.set_xlabel('Max vCPUs per Server', fontsize=style.axis_label_fontsize)
     ax.invert_yaxis()
 
     # Legend
@@ -2259,6 +2259,273 @@ def plot_resource_constraints(
 
     if save_path:
         plt.savefig(save_path, dpi=style.dpi, bbox_inches='tight', facecolor=style.facecolor)
+
+    if show:
+        plt.show()
+
+    return fig
+
+
+def plot_resource_packing(
+    result,
+    save_path: Optional[Union[str, Path]] = None,
+    figsize: Optional[Tuple[float, float]] = None,
+    show: bool = True,
+    title: Optional[str] = None,
+    show_plot_title: Optional[bool] = None,
+    style: Optional[PlotStyle] = None,
+    x_label: Optional[str] = None,
+    show_bottleneck_markers: Optional[bool] = None,
+) -> Optional[Any]:
+    """Plot resource packing: grouped bars showing capacity vs demand per resource.
+
+    Creates vertically stacked subplots (one per resource). Within each subplot,
+    x-axis groups correspond to parameter values (e.g., utilization %), and within
+    each group, bars represent different scenarios.
+
+    Each bar shows capacity (lighter shade) with demand overlaid (darker shade).
+    Stranded capacity is annotated where significant.
+
+    Args:
+        result: AnalysisResult or dict with resource_packing_results
+        save_path: Path to save figure
+        figsize: Figure size (width, height) in inches
+        show: Whether to display the plot
+        title: Optional plot title
+        show_plot_title: Whether to show the title
+        style: PlotStyle configuration
+        x_label: Custom x-axis label
+    """
+    if not HAS_MATPLOTLIB:
+        return None
+
+    style = style or PlotStyle()
+
+    # Extract data
+    if hasattr(result, 'resource_packing_results'):
+        packing_data = result.resource_packing_results
+        config = result.config if hasattr(result, 'config') else None
+    elif isinstance(result, dict):
+        packing_data = result.get('resource_packing_results', [])
+        config = None
+    elif isinstance(result, list):
+        packing_data = result
+        config = None
+    else:
+        return None
+
+    if not packing_data:
+        return None
+
+    # Read config-level settings
+    if config and hasattr(config, 'analysis'):
+        analysis = config.analysis
+        if x_label is None:
+            x_label = analysis.x_label
+        if show_plot_title is None:
+            show_plot_title = analysis.show_plot_title
+        if show_bottleneck_markers is None:
+            show_bottleneck_markers = analysis.show_bottleneck_markers
+        if figsize is None and analysis.plot and analysis.plot.figsize:
+            figsize = tuple(analysis.plot.figsize)
+
+    if show_plot_title is None:
+        show_plot_title = True
+    if show_bottleneck_markers is None:
+        show_bottleneck_markers = True
+
+    # Determine resources and scenarios
+    first_point = packing_data[0]
+    scenario_labels = list(first_point['scenarios'].keys())
+    n_scenarios = len(scenario_labels)
+
+    # Collect all resource names (ordered: cores first if present, then others)
+    all_resources = []
+    for s_label in scenario_labels:
+        sdata = first_point['scenarios'][s_label]
+        for res_name in sdata['resources']:
+            if res_name not in all_resources:
+                all_resources.append(res_name)
+    # Ensure 'cores' is first
+    if 'cores' in all_resources:
+        all_resources.remove('cores')
+        all_resources.insert(0, 'cores')
+
+    n_resources = len(all_resources)
+    if n_resources == 0:
+        return None
+
+    # Setup figure
+    if figsize is None:
+        fig_w = max(8, 2.5 * len(packing_data) * n_scenarios / n_resources + 2)
+        fig_h = max(3.5 * n_resources, 6)
+        figsize = (fig_w, fig_h)
+
+    fig, axes = plt.subplots(n_resources, 1, figsize=figsize, squeeze=False)
+    axes = axes.flatten()
+
+    # Colors from tab10 palette
+    tab10 = plt.cm.get_cmap('tab10')
+    scenario_colors = [tab10(i) for i in range(n_scenarios)]
+
+    # X positions
+    x_values = [pt['x_value'] for pt in packing_data]
+    x = np.arange(len(x_values))
+    total_width = style.bar_width * style.bar_gap_factor
+    bar_w = total_width / n_scenarios if n_scenarios > 0 else total_width
+
+    for res_idx, res_name in enumerate(all_resources):
+        ax = axes[res_idx]
+
+        # Get resource label from first point's first scenario
+        res_label = res_name
+        for s_label in scenario_labels:
+            rdata = first_point['scenarios'][s_label]['resources'].get(res_name)
+            if rdata:
+                res_label = rdata.get('label', res_name)
+                break
+
+        for s_idx, s_label in enumerate(scenario_labels):
+            color = scenario_colors[s_idx]
+            bar_x = x - total_width / 2 + bar_w * s_idx + bar_w / 2
+
+            capacities = []
+            demands = []
+            stranded_pcts = []
+            oversub_ratios = []
+            effective_oversub_ratios = []
+
+            for pt in packing_data:
+                sdata = pt['scenarios'].get(s_label, {})
+                rdata = sdata.get('resources', {}).get(res_name, {})
+                capacities.append(rdata.get('capacity', 0))
+                demands.append(rdata.get('demand', 0))
+                stranded_pcts.append(rdata.get('stranded_pct', 0))
+                oversub_ratios.append(sdata.get('oversub_ratio', 0))
+                effective_oversub_ratios.append(sdata.get('effective_oversub_ratio'))
+
+            capacities = np.array(capacities)
+            demands = np.array(demands)
+
+            # Capacity bars (lighter)
+            ax.bar(bar_x, capacities, bar_w * 0.9,
+                   color=color, alpha=0.3,
+                   edgecolor=style.bar_edgecolor, linewidth=style.bar_linewidth)
+
+            # Demand bars (darker, overlaid)
+            ax.bar(bar_x, demands, bar_w * 0.9,
+                   color=color, alpha=0.85,
+                   edgecolor=style.bar_edgecolor, linewidth=style.bar_linewidth,
+                   label=s_label if res_idx == 0 else None)
+
+            # Annotations: stranded % and R on bars
+            for i in range(len(packing_data)):
+                cap = capacities[i]
+                dem = demands[i]
+                stranded = stranded_pcts[i]
+                R = oversub_ratios[i]
+                R_eff = effective_oversub_ratios[i]
+
+                # Stranded % annotation (above capacity bar if significant)
+                if stranded > 1.0 and cap > 0:
+                    ax.text(bar_x[i], cap + cap * 0.01,
+                            f'{stranded:.0f}%',
+                            ha='center', va='bottom',
+                            fontsize=style.annotation_fontsize - 2,
+                            color=color, fontweight='bold', alpha=0.8)
+
+                # R annotation at bottom of bar
+                if R > 0:
+                    r_y = dem * 0.02 if dem > 0 else 0
+                    r_fontsize = style.annotation_fontsize - 3
+                    # Show effective R below desired R when constrained
+                    if R_eff is not None and abs(R_eff - R) > 0.01:
+                        label = f'R={R:.1f}\nR_eff={R_eff:.2f}'
+                    else:
+                        label = f'R={R:.1f}'
+                    ax.text(bar_x[i], r_y,
+                            label,
+                            ha='center', va='bottom',
+                            fontsize=r_fontsize,
+                            color='white', fontweight='bold')
+
+        ax.set_ylabel(res_label, fontsize=style.axis_label_fontsize)
+        ax.set_xticks(x)
+        ax.set_xticklabels([f'{v}' for v in x_values], fontsize=style.tick_fontsize)
+
+        if style.grid:
+            ax.grid(axis=style.grid_axis, alpha=style.grid_alpha,
+                    linestyle=style.grid_linestyle, color=style.grid_color)
+            ax.set_axisbelow(True)
+
+        # Only show x-label on bottom subplot
+        if res_idx == n_resources - 1:
+            ax.set_xlabel(x_label or 'Parameter Value', fontsize=style.axis_label_fontsize)
+
+    # Bottleneck markers: downward triangle on the bottleneck resource's bar
+    if show_bottleneck_markers:
+        for s_idx, s_label in enumerate(scenario_labels):
+            color = scenario_colors[s_idx]
+            bar_x_positions = x - total_width / 2 + bar_w * s_idx + bar_w / 2
+
+            for i, pt in enumerate(packing_data):
+                sdata = pt['scenarios'].get(s_label, {})
+                bn_resource = sdata.get('bottleneck_resource')
+                if bn_resource and bn_resource in all_resources:
+                    res_idx = all_resources.index(bn_resource)
+                    ax = axes[res_idx]
+                    rdata = sdata.get('resources', {}).get(bn_resource, {})
+                    cap = rdata.get('capacity', 0)
+                    dem = rdata.get('demand', 0)
+                    marker_y = max(cap, dem) * 1.02 if max(cap, dem) > 0 else 0
+                    ax.plot(bar_x_positions[i], marker_y, marker='v',
+                            markersize=8, color=color, markeredgecolor='black',
+                            markeredgewidth=0.5, zorder=10)
+
+    # Add capacity/demand legend entries
+    cap_patch = mpatches.Patch(facecolor='gray', alpha=0.3,
+                               edgecolor='black', linewidth=0.5,
+                               label='Capacity')
+    dem_patch = mpatches.Patch(facecolor='gray', alpha=0.85,
+                               edgecolor='black', linewidth=0.5,
+                               label='Demand')
+    # Combine scenario legend with capacity/demand legend
+    handles, labels_list = axes[0].get_legend_handles_labels()
+    handles.extend([cap_patch, dem_patch])
+    labels_list.extend(['Capacity', 'Demand'])
+    # Add bottleneck marker to legend if markers are shown
+    if show_bottleneck_markers:
+        from matplotlib.lines import Line2D
+        bn_marker = Line2D([0], [0], marker='v', color='gray', markeredgecolor='black',
+                          markeredgewidth=0.5, markersize=8, linestyle='None',
+                          label='Bottleneck')
+        handles.append(bn_marker)
+        labels_list.append('Bottleneck')
+    plt.tight_layout()
+
+    has_title = show_plot_title and title
+    n_legend_items = len(handles)
+    n_legend_cols = min(n_legend_items, 6)
+    n_legend_rows = (n_legend_items + n_legend_cols - 1) // n_legend_cols
+    bottom_margin = 0.06 + 0.03 * n_legend_rows
+
+    fig.subplots_adjust(
+        top=0.92 if has_title else None,
+        bottom=bottom_margin,
+    )
+
+    fig.legend(handles, labels_list,
+               loc='lower center', ncol=n_legend_cols,
+               fontsize=style.annotation_fontsize,
+               bbox_to_anchor=(0.5, 0.0))
+
+    if has_title:
+        fig.suptitle(title, fontsize=style.title_fontsize, fontweight='bold',
+                     color='#333333', y=0.96)
+
+    if save_path:
+        plt.savefig(str(save_path), dpi=style.dpi, bbox_inches='tight',
+                    facecolor=style.facecolor)
 
     if show:
         plt.show()

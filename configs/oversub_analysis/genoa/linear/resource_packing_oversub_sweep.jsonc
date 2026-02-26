@@ -1,0 +1,69 @@
+{
+  "name": "resource_packing_oversub_sweep",
+  "description": "Resource packing visualization: sweep oversub_ratio, compare scaled vs constrained for NoSMT with cores, memory, SSD capacity/demand.",
+  "scenarios": {
+    "nosmt_scaled": {
+      "processor": "nosmt_linear",
+      "oversub_ratio": 1.0,
+      "resource_scaling": {
+        "scale_with_vcpus": ["memory", "ssd"]
+      }
+    },
+    "nosmt_constrained": {
+      "processor": "nosmt_smt_hw_linear",
+      "oversub_ratio": 1.0,
+      "resource_constraints": {
+        "memory_gb": {
+          "capacity_per_thread": 9.6,
+          "demand_per_vcpu": 4.0
+        },
+        "ssd_gb": {
+          "capacity_per_thread": 150.0,
+          "demand_per_vcpu": 50.0
+        }
+      }
+    }
+  },
+  "analysis": {
+    "type": "resource_packing",
+    "scenarios": ["nosmt_scaled", "nosmt_constrained"],
+    "sweep_parameter": "oversub_ratio",
+    "sweep_values": [1.0, 1.5, 2.0, 2.5, 3.0],
+    "resources": {
+      "memory_gb": {
+        "demand_per_vcpu": 4.0,
+        "capacity_per_thread": 4.8,
+        "label": "Memory (GB)"
+      },
+      "ssd_gb": {
+        "demand_per_vcpu": 50.0,
+        "capacity_per_thread": 75.0,
+        "label": "SSD (GB)"
+      }
+    },
+    "include_cores": true,
+    "x_label": "Oversubscription Ratio",
+    "labels": {
+      "nosmt_scaled": "NoSMT (scaled)",
+      "nosmt_constrained": "NoSMT (constrained)"
+    },
+    "plot": {
+      "figsize": [12, 10]
+    }
+  },
+  "processor": {
+    "nosmt_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_linear",
+    "nosmt_smt_hw_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_smt_hw_linear"
+  },
+  "workload": {
+    "total_vcpus": 10000,
+    "avg_util": 0.3
+  },
+  "cost": {
+    "carbon_intensity_g_kwh": 175,
+    "electricity_cost_usd_kwh": 0.28,
+    "lifetime_years": 6
+  },
+  "power_curve": { "type": "polynomial" },
+  "output_dir": "./results/oversub_analysis/genoa/linear/resource_packing_oversub_sweep"
+}

@@ -1,0 +1,67 @@
+{
+  "name": "genoa_nosmt_oversub_sweep_constrained_vs_scaled_linear",
+  "description": "Genoa No-SMT Linear: sweep oversub ratio comparing fixed resources, scaled resources, and constrained (same SMT hardware with SMT off).",
+  "scenarios": {
+    "nosmt_no_oversub": {
+      "processor": "nosmt_linear",
+      "oversub_ratio": 1.0
+    },
+    "nosmt_oversub_unscaled": {
+      "processor": "nosmt_linear",
+      "oversub_ratio": 1.0
+    },
+    "nosmt_oversub_scaled": {
+      "processor": "nosmt_linear",
+      "oversub_ratio": 1.0,
+      "resource_scaling": {
+        "scale_with_vcpus": ["memory", "ssd"]
+      }
+    },
+    "nosmt_oversub_constrained": {
+      "processor": "nosmt_smt_hw_linear",
+      "oversub_ratio": 1.0,
+      // Same physical server as SMT (768GB memory, 12TB SSD), SMT disabled.
+      // 80 HW threads: memory 9.6*80=768GB, SSD 150*80=12000GB
+      "resource_constraints": {
+        "memory_gb": {
+          "capacity_per_thread": 9.6,
+          "demand_per_vcpu": 4.0
+        },
+        "ssd_gb": {
+          "capacity_per_thread": 150.0,
+          "demand_per_vcpu": 50.0
+        }
+      }
+    }
+  },
+  "analysis": {
+    "type": "compare_sweep",
+    "baseline": "nosmt_no_oversub",
+    "sweep_scenarios": ["nosmt_oversub_unscaled", "nosmt_oversub_scaled", "nosmt_oversub_constrained"],
+    "sweep_parameter": "oversub_ratio",
+    "sweep_values": [1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
+    "show_ideal_scaling_line": true,
+    "show_breakeven_marker": false,
+    "separate_metric_plots": true,
+    "labels": {
+      "nosmt_oversub_unscaled": "No-SMT Linear (fixed resources)",
+      "nosmt_oversub_scaled": "No-SMT Linear (scaled mem/SSD)",
+      "nosmt_oversub_constrained": "No-SMT Linear (constrained, same HW)"
+    }
+  },
+  "processor": {
+    "nosmt_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_linear",
+    "nosmt_smt_hw_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_smt_hw_linear"
+  },
+  "workload": {
+    "total_vcpus": 10000,
+    "avg_util": 0.3
+  },
+  "cost": {
+    "carbon_intensity_g_kwh": 175,
+    "electricity_cost_usd_kwh": 0.28,
+    "lifetime_years": 6
+  },
+  "power_curve": { "type": "polynomial" },
+  "output_dir": "./results/oversub_analysis/genoa/linear/nosmt_oversub_sweep_constrained_vs_scaled_linear"
+}

@@ -246,6 +246,105 @@
     }
   },
 
+  "genoa_nosmt_smt_hw": {
+    // AMD Genoa 80-core, SMT disabled on SMT hardware.
+    // Same physical server as genoa_smt (12 DIMMs, 6 SSDs), just with SMT turned off.
+    // 80 cores × 1 tpc = 80 HW threads (vs 160 with SMT).
+    // Memory/SSD totals unchanged: 768GB, 12TB. Per-thread values doubled.
+    "physical_cores": 80,
+    "threads_per_core": 1,
+    "thread_overhead": 8,
+    // Power: same physical components as genoa_smt (12 DIMMs, 6 SSDs, same NIC/chassis).
+    // CPU power unchanged (same die, SMT off doesn't significantly change power envelope).
+    "power_breakdown": {
+      "cpu":     {"idle_w": 94, "max_w": 315},
+      "memory":  {"idle_w": 39, "max_w": 131},
+      "ssd":     {"idle_w": 19, "max_w": 94},
+      "nic":     {"idle_w": 32, "max_w": 107},
+      "chassis": {"idle_w": 60, "max_w": 116}
+    },
+    "embodied_carbon": {
+      "per_thread": {
+        // 59.1 kgCO2e/DIMM × 12 DIMMs / 80 threads = 8.865 (2× SMT's 4.43)
+        "memory": 8.865,
+        // 103 kgCO2e/SSD × 6 SSDs / 80 threads = 7.725 (2× SMT's 3.86)
+        "ssd": 7.725
+      },
+      "per_server": {
+        "cpu": 34.2,
+        "nic": 115.0,
+        "server": 255.48,
+        "rack": 51.9
+      }
+    },
+    "server_cost": {
+      "per_thread": {
+        // $440/DIMM × 12 DIMMs / 80 threads = $66.00 (2× SMT's $33.00)
+        "memory": 66.0,
+        // $272.71/SSD × 6 SSDs / 80 threads = $20.45 (2× SMT's $10.23)
+        "ssd": 20.45
+      },
+      "per_server": {
+        "cpu": 1487.0,
+        "nic": 1022.0,
+        "server": 1505.0,
+        "rack": 510.0
+      }
+    },
+    "capacity": {
+      "per_thread": {
+        // 768GB / 80 threads = 9.6 GB/thread (2× SMT's 4.8)
+        "memory": 9.6,
+        // 12000GB / 80 threads = 150.0 GB/thread (2× SMT's 75.0)
+        "ssd": 150.0
+      }
+    }
+  },
+
+  "genoa_nosmt_smt_hw_linear": {
+    // Same as genoa_nosmt_smt_hw but with linear CPU power curve.
+    "physical_cores": 80,
+    "threads_per_core": 1,
+    "thread_overhead": 8,
+    "power_breakdown": {
+      "cpu":     {"idle_w": 94, "max_w": 315, "power_curve": {"type": "linear"}},
+      "memory":  {"idle_w": 39, "max_w": 131},
+      "ssd":     {"idle_w": 19, "max_w": 94},
+      "nic":     {"idle_w": 32, "max_w": 107},
+      "chassis": {"idle_w": 60, "max_w": 116}
+    },
+    "embodied_carbon": {
+      "per_thread": {
+        "memory": 8.865,
+        "ssd": 7.725
+      },
+      "per_server": {
+        "cpu": 34.2,
+        "nic": 115.0,
+        "server": 255.48,
+        "rack": 51.9
+      }
+    },
+    "server_cost": {
+      "per_thread": {
+        "memory": 66.0,
+        "ssd": 20.45
+      },
+      "per_server": {
+        "cpu": 1487.0,
+        "nic": 1022.0,
+        "server": 1505.0,
+        "rack": 510.0
+      }
+    },
+    "capacity": {
+      "per_thread": {
+        "memory": 9.6,
+        "ssd": 150.0
+      }
+    }
+  },
+
   "genoa_nosmt_5pct_area_linear": {
     // Same as genoa_nosmt_5pct_area but with linear power curve.
     // Uses flat power_idle_w/power_max_w (no per-component breakdown).

@@ -1,0 +1,80 @@
+{
+  "name": "resource_packing_constrained_vs_unconstrained",
+  "description": "Resource packing visualization: per-server capacity vs demand for cores, memory, SSD across utilization levels. Compares SMT (scaled), SMT (constrained), NoSMT (scaled), and NoSMT (constrained on same SMT hardware).",
+  "analysis": {
+    "type": "resource_packing",
+    "config_sets": [
+      {
+        "label": "SMT (scaled)",
+        "configs": [
+          "configs/oversub_analysis/genoa/linear/util_10_pct_linear_resource_scaling_new_oversub.jsonc",
+          "configs/oversub_analysis/genoa/linear/util_20_pct_linear_resource_scaling_new_oversub.jsonc",
+          "configs/oversub_analysis/genoa/linear/util_30_pct_linear_resource_scaling_new_oversub.jsonc"
+        ],
+        "scenario": "smt_oversub"
+      },
+      {
+        "label": "SMT (constrained)",
+        "configs": [
+          "configs/oversub_analysis/genoa/linear/util_10_pct_linear_resource_scaling_new_oversub.jsonc",
+          "configs/oversub_analysis/genoa/linear/util_20_pct_linear_resource_scaling_new_oversub.jsonc",
+          "configs/oversub_analysis/genoa/linear/util_30_pct_linear_resource_scaling_new_oversub.jsonc"
+        ],
+        "scenario": "smt_oversub",
+        // Override: remove resource_scaling, add resource_constraints using SMT capacity
+        // genoa_smt: 160 HW threads, capacity memory=4.8 GB/thread, ssd=75.0 GB/thread
+        //   memory: 4.8 * 160 = 768 GB → 768/4.0 = 192 max vCPUs
+        //   SSD: 75.0 * 160 = 12000 GB → 12000/50.0 = 240 max vCPUs
+        "scenario_overrides": {
+          "resource_scaling": null,
+          "resource_constraints": {
+            "memory_gb": {
+              "capacity_per_thread": 4.8,
+              "demand_per_vcpu": 4.0
+            },
+            "ssd_gb": {
+              "capacity_per_thread": 75.0,
+              "demand_per_vcpu": 50.0
+            }
+          }
+        }
+      },
+      {
+        "label": "NoSMT (scaled)",
+        "configs": [
+          "configs/oversub_analysis/genoa/linear/util_10_pct_linear_resource_scaling_new_oversub.jsonc",
+          "configs/oversub_analysis/genoa/linear/util_20_pct_linear_resource_scaling_new_oversub.jsonc",
+          "configs/oversub_analysis/genoa/linear/util_30_pct_linear_resource_scaling_new_oversub.jsonc"
+        ],
+        "scenario": "nosmt_oversub"
+      },
+      {
+        "label": "NoSMT (constrained)",
+        "configs": [
+          "configs/oversub_analysis/genoa/linear/util_10_pct_linear_resource_constraints.jsonc",
+          "configs/oversub_analysis/genoa/linear/util_20_pct_linear_resource_constraints.jsonc",
+          "configs/oversub_analysis/genoa/linear/util_30_pct_linear_resource_constraints.jsonc"
+        ],
+        "scenario": "nosmt_oversub"
+      }
+    ],
+    "x_parameter": "workload.avg_util",
+    "x_display_multiplier": 100,
+    "x_label": "Average Utilization (%)",
+    "resources": {
+      "memory_gb": {
+        "demand_per_vcpu": 4.0,
+        "label": "Memory (GB)"
+      },
+      "ssd_gb": {
+        "demand_per_vcpu": 50.0,
+        "label": "SSD (GB)"
+      }
+    },
+    "include_cores": true,
+    "plot": {
+      "figsize": [14, 10]
+    }
+  },
+  "output_dir": "./results/oversub_analysis/genoa/linear/resource_packing_constrained_vs_unconstrained"
+}

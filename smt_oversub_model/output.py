@@ -597,6 +597,8 @@ class OutputWriter:
             self._plot_savings_curve(result, plots_dir)
         elif result.analysis_type == 'per_server_comparison':
             self._plot_per_server_comparison(result, plots_dir)
+        elif result.analysis_type == 'resource_packing':
+            self._plot_resource_packing(result, plots_dir)
 
     def _plot_comparison(
         self,
@@ -933,6 +935,32 @@ class OutputWriter:
                 show=False,
                 **common_kwargs,
             )
+
+
+    def _plot_resource_packing(
+        self,
+        result: 'AnalysisResult',
+        plots_dir: Path,
+    ) -> None:
+        """Generate resource packing plot."""
+        if not result.resource_packing_results:
+            return
+
+        try:
+            from .plot import plot_resource_packing
+        except ImportError:
+            return
+
+        common_kwargs = self._get_plot_kwargs(result)
+
+        save_path = plots_dir / 'resource_packing.png'
+        plot_resource_packing(
+            result,
+            save_path=str(save_path),
+            show=False,
+            title=f"Resource Packing: {result.config.name}",
+            **common_kwargs,
+        )
 
 
 def save_result(result: 'AnalysisResult', output_dir: str) -> None:

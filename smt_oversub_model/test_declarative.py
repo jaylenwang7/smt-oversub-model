@@ -3076,3 +3076,707 @@ class TestResourceConstraints:
         result = run_analysis(config_file)
         baseline = result.scenario_results['baseline']
         assert baseline.get('resource_constraint_result') is None
+
+
+class TestResourcePacking:
+    """Tests for resource_packing analysis type."""
+
+    def _make_sweep_config(self, scenarios, sweep_values=None, resources=None,
+                           include_cores=True, processors=None, labels=None):
+        """Build a resource_packing sweep config."""
+        if sweep_values is None:
+            sweep_values = [1.0, 2.0]
+        if processors is None:
+            processors = {
+                'smt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 2,
+                    'power_idle_w': 100.0,
+                    'power_max_w': 400.0,
+                    'thread_overhead': 0,
+                    'embodied_carbon': {
+                        'per_thread': {'cpu_die': 5.0},
+                        'per_server': {'chassis': 50.0},
+                    },
+                    'server_cost': {
+                        'per_thread': {'cpu': 50.0},
+                        'per_server': {'base': 500.0},
+                    },
+                },
+                'nosmt': {
+                    'physical_cores': 48,
+                    'threads_per_core': 1,
+                    'power_idle_w': 90.0,
+                    'power_max_w': 340.0,
+                    'thread_overhead': 0,
+                    'embodied_carbon': {
+                        'per_thread': {'cpu_die': 5.0},
+                        'per_server': {'chassis': 50.0},
+                    },
+                    'server_cost': {
+                        'per_thread': {'cpu': 50.0},
+                        'per_server': {'base': 500.0},
+                    },
+                },
+            }
+
+        analysis = {
+            'type': 'resource_packing',
+            'scenarios': list(scenarios.keys()),
+            'sweep_parameter': 'oversub_ratio',
+            'sweep_values': sweep_values,
+            'include_cores': include_cores,
+        }
+        if resources:
+            analysis['resources'] = resources
+        if labels:
+            analysis['labels'] = labels
+
+        return {
+            'name': 'test_resource_packing',
+            'scenarios': scenarios,
+            'analysis': analysis,
+            'processor': processors,
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.3},
+            'cost': {
+                'carbon_intensity_g_kwh': 175,
+                'electricity_cost_usd_kwh': 0.28,
+                'lifetime_years': 6,
+            },
+        }
+
+    def test_sweep_cores_only(self, tmp_path):
+        """Direct sweep mode with only cores resource (include_cores=True, no named resources).
+
+        Core capacity = available_pcpus (fixed hardware, constant regardless of R).
+        Core demand = effective_vcpus / R (oversub discounts demand).
+        """
+        scenarios = {
+            'nosmt_plain': {
+                'processor': 'nosmt',
+                'oversub_ratio': 1.0,
+            },
+        }
+        config_data = self._make_sweep_config(
+            scenarios, sweep_values=[1.0, 2.0], include_cores=True
+        )
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        assert result.analysis_type == 'resource_packing'
+        assert result.resource_packing_results is not None
+        assert len(result.resource_packing_results) == 2
+
+        # nosmt: 48 cores, 1 tpc, 0 overhead → 48 available_pcpus
+        # At R=1.0: capacity = 48 (fixed hw), demand = 48*1/1 = 48, util = 100%
+        pt1 = result.resource_packing_results[0]
+        assert pt1['x_value'] == 1.0
+        s1 = pt1['scenarios']['nosmt_plain']
+        assert 'cores' in s1['resources']
+        assert s1['resources']['cores']['capacity'] == pytest.approx(48.0)
+        assert s1['resources']['cores']['demand'] == pytest.approx(48.0)
+
+        # At R=2.0: capacity = 48 (same hw!), demand = 96/2 = 48, util = 100%
+        pt2 = result.resource_packing_results[1]
+        s2 = pt2['scenarios']['nosmt_plain']
+        assert s2['resources']['cores']['capacity'] == pytest.approx(48.0)
+        assert s2['resources']['cores']['demand'] == pytest.approx(48.0)
+
+    def test_sweep_constrained_vs_scaled(self, tmp_path):
+        """Direct sweep with constrained and scaled scenarios."""
+        scenarios = {
+            'nosmt_scaled': {
+                'processor': 'nosmt',
+                'oversub_ratio': 1.0,
+                'resource_scaling': {
+                    'scale_with_vcpus': ['memory'],
+                },
+            },
+            'nosmt_constrained': {
+                'processor': 'nosmt',
+                'oversub_ratio': 1.0,
+                'resource_constraints': {
+                    'memory_gb': {
+                        'capacity_per_thread': 4.0,
+                        'demand_per_vcpu': 2.0,
+                    },
+                },
+            },
+        }
+        resources = {
+            'memory_gb': {
+                'demand_per_vcpu': 2.0,
+                'capacity_per_thread': 4.0,
+                'label': 'Memory (GB)',
+            },
+        }
+        config_data = self._make_sweep_config(
+            scenarios, sweep_values=[1.0, 2.0, 3.0], resources=resources,
+            labels={
+                'nosmt_scaled': 'Scaled',
+                'nosmt_constrained': 'Constrained',
+            }
+        )
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        assert result.analysis_type == 'resource_packing'
+        assert len(result.resource_packing_results) == 3
+
+        # At R=2.0:
+        # nosmt: 48 cores, 1 tpc, 0 overhead → 48 hw_threads, 48 available_pcpus
+        # Scaled: vcpus_per_server = max(48, 48*2) = 96
+        #   memory capacity = 4.0 * 96 = 384 (scaled), demand = 2.0 * 96 = 192
+        # Constrained: memory capacity = 4.0 * 48 = 192, max_vcpus = 192/2.0 = 96
+        #   core_limit = 48*2 = 96, effective_vcpus = min(96, 96) = 96
+        #   memory demand = 2.0 * 96 = 192
+        pt2 = result.resource_packing_results[1]
+        assert pt2['x_value'] == 2.0
+
+        scaled = pt2['scenarios']['Scaled']
+        assert scaled['resources']['memory_gb']['capacity'] == pytest.approx(384.0)
+        assert scaled['resources']['memory_gb']['demand'] == pytest.approx(192.0)
+
+        constrained = pt2['scenarios']['Constrained']
+        assert constrained['resources']['memory_gb']['capacity'] == pytest.approx(192.0)
+        assert constrained['resources']['memory_gb']['demand'] == pytest.approx(192.0)
+
+        # At R=3.0: constrained should hit memory bottleneck
+        # core_limit = 48*3 = 144, memory max_vcpus = 192/2.0 = 96
+        # effective_vcpus = min(144, 96) = 96 → memory is bottleneck
+        # Core capacity = 48 (fixed hw), demand = 96/3 = 32 (stranded!)
+        pt3 = result.resource_packing_results[2]
+        constrained_3 = pt3['scenarios']['Constrained']
+        assert constrained_3['was_constrained'] is True
+        assert constrained_3['bottleneck_resource'] == 'memory_gb'
+        assert constrained_3['resources']['cores']['capacity'] == pytest.approx(48.0)
+        assert constrained_3['resources']['cores']['demand'] == pytest.approx(32.0)
+        assert constrained_3['resources']['cores']['stranded_pct'] == pytest.approx(100.0 - 32.0/48.0 * 100.0)
+
+    def test_sweep_structured_costs(self, tmp_path):
+        """Verify structured per-processor costs are used (not defaults)."""
+        # Use processors with distinctive embodied_carbon values
+        processors = {
+            'custom': {
+                'physical_cores': 32,
+                'threads_per_core': 2,
+                'power_idle_w': 80.0,
+                'power_max_w': 300.0,
+                'thread_overhead': 4,
+                'embodied_carbon': {
+                    'per_thread': {'cpu_die': 7.0},
+                    'per_server': {'chassis': 100.0},
+                },
+                'server_cost': {
+                    'per_thread': {'cpu': 60.0},
+                    'per_server': {'base': 800.0},
+                },
+            },
+        }
+        scenarios = {
+            'test_scenario': {
+                'processor': 'custom',
+                'oversub_ratio': 1.0,
+            },
+        }
+        config_data = self._make_sweep_config(
+            scenarios, sweep_values=[1.0], processors=processors
+        )
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        assert result.analysis_type == 'resource_packing'
+
+        # Verify packing data is present and correct
+        pt = result.resource_packing_results[0]
+        s = pt['scenarios']['test_scenario']
+        # 32 cores * 2 tpc = 64 hw_threads, 64 - 4 = 60 available_pcpus
+        assert s['hw_threads'] == 64
+        assert s['available_pcpus'] == 60
+        assert s['resources']['cores']['capacity'] == pytest.approx(60.0)
+
+    def test_config_derived_mode(self, tmp_path):
+        """Config-derived mode: load sub-configs and extract packing data."""
+        # Create two sub-configs with different workload.avg_util
+        for util, R in [(0.1, 2.0), (0.3, 1.0)]:
+            sub_config = {
+                'name': f'sub_{int(util*100)}',
+                'scenarios': {
+                    'test_scenario': {
+                        'processor': 'proc_a',
+                        'oversub_ratio': R,
+                    },
+                },
+                'workload': {'total_vcpus': 10000, 'avg_util': util},
+                'analysis': {
+                    'type': 'compare_sweep',
+                    'baseline': 'test_scenario',
+                    'sweep_scenario': 'test_scenario',
+                    'sweep_parameter': 'oversub_ratio',
+                    'sweep_values': [1.0],
+                },
+                'processor': {
+                    'proc_a': {
+                        'physical_cores': 48,
+                        'threads_per_core': 1,
+                        'power_idle_w': 90.0,
+                        'power_max_w': 340.0,
+                        'thread_overhead': 0,
+                        'embodied_carbon': {
+                            'per_thread': {'cpu_die': 5.0},
+                            'per_server': {'chassis': 50.0},
+                        },
+                        'server_cost': {
+                            'per_thread': {'cpu': 50.0},
+                            'per_server': {'base': 500.0},
+                        },
+                    },
+                },
+                'cost': {
+                    'carbon_intensity_g_kwh': 175,
+                    'electricity_cost_usd_kwh': 0.28,
+                    'lifetime_years': 6,
+                },
+            }
+            sub_file = tmp_path / f'sub_{int(util*100)}.json'
+            with open(sub_file, 'w') as f:
+                json.dump(sub_config, f)
+
+        # Create the resource_packing config referencing sub-configs
+        main_config = {
+            'name': 'test_config_derived',
+            'analysis': {
+                'type': 'resource_packing',
+                'config_sets': [
+                    {
+                        'label': 'Test Scenario',
+                        'configs': [
+                            str(tmp_path / 'sub_10.json'),
+                            str(tmp_path / 'sub_30.json'),
+                        ],
+                        'scenario': 'test_scenario',
+                    },
+                ],
+                'x_parameter': 'workload.avg_util',
+                'x_display_multiplier': 100,
+                'x_label': 'Utilization (%)',
+                'include_cores': True,
+            },
+        }
+        config_file = tmp_path / 'main.json'
+        with open(config_file, 'w') as f:
+            json.dump(main_config, f)
+
+        result = run_analysis(config_file)
+        assert result.analysis_type == 'resource_packing'
+        assert len(result.resource_packing_results) == 2
+
+        # First point: 10% util, R=2.0
+        # Core capacity = available_pcpus = 48 (constant, fixed hardware)
+        # Core demand = core_limit / R = 96 / 2.0 = 48
+        pt1 = result.resource_packing_results[0]
+        assert pt1['x_value'] == pytest.approx(10.0)
+        s1 = pt1['scenarios']['Test Scenario']
+        assert s1['oversub_ratio'] == pytest.approx(2.0)
+        assert s1['resources']['cores']['capacity'] == pytest.approx(48.0)
+        assert s1['resources']['cores']['demand'] == pytest.approx(48.0)
+
+        # Second point: 30% util, R=1.0
+        # Core capacity = 48 (same hw!), demand = 48/1 = 48
+        pt2 = result.resource_packing_results[1]
+        assert pt2['x_value'] == pytest.approx(30.0)
+        s2 = pt2['scenarios']['Test Scenario']
+        assert s2['oversub_ratio'] == pytest.approx(1.0)
+        assert s2['resources']['cores']['capacity'] == pytest.approx(48.0)
+        assert s2['resources']['cores']['demand'] == pytest.approx(48.0)
+
+    def test_serialization(self, tmp_path):
+        """resource_packing_results included in to_dict() serialization."""
+        scenarios = {
+            'nosmt_plain': {
+                'processor': 'nosmt',
+                'oversub_ratio': 1.0,
+            },
+        }
+        config_data = self._make_sweep_config(
+            scenarios, sweep_values=[1.0]
+        )
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        d = result.to_dict()
+        assert 'resource_packing_results' in d
+        assert len(d['resource_packing_results']) == 1
+        assert 'scenarios' in d['resource_packing_results'][0]
+
+    def test_include_cores_false(self, tmp_path):
+        """When include_cores=False, cores resource is not included."""
+        scenarios = {
+            'nosmt_constrained': {
+                'processor': 'nosmt',
+                'oversub_ratio': 2.0,
+                'resource_constraints': {
+                    'memory_gb': {
+                        'capacity_per_thread': 4.0,
+                        'demand_per_vcpu': 2.0,
+                    },
+                },
+            },
+        }
+        resources = {
+            'memory_gb': {
+                'demand_per_vcpu': 2.0,
+                'capacity_per_thread': 4.0,
+                'label': 'Memory (GB)',
+            },
+        }
+        config_data = self._make_sweep_config(
+            scenarios, sweep_values=[2.0], resources=resources,
+            include_cores=False
+        )
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        pt = result.resource_packing_results[0]
+        s = pt['scenarios']['nosmt_constrained']
+        assert 'cores' not in s['resources']
+        assert 'memory_gb' in s['resources']
+
+    def test_cores_capacity_constant_across_oversub(self, tmp_path):
+        """Core capacity is fixed hardware (available_pcpus), constant regardless of R.
+
+        Core demand = effective_vcpus / R. For unconstrained, demand = available_pcpus
+        (since effective_vcpus = available_pcpus * R, and demand = (avail * R) / R = avail).
+        """
+        scenarios = {
+            'nosmt_plain': {
+                'processor': 'nosmt',
+                'oversub_ratio': 1.0,
+            },
+        }
+        config_data = self._make_sweep_config(
+            scenarios, sweep_values=[1.0, 2.0, 5.0], include_cores=True
+        )
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        # nosmt: 48 cores, 1 tpc, 0 overhead → 48 available_pcpus
+        for pt in result.resource_packing_results:
+            s = pt['scenarios']['nosmt_plain']
+            # Capacity always = 48 (fixed hardware)
+            assert s['resources']['cores']['capacity'] == pytest.approx(48.0)
+            # Demand always = 48 (effective_vcpus / R = avail * R / R = avail)
+            assert s['resources']['cores']['demand'] == pytest.approx(48.0)
+            assert s['resources']['cores']['utilization_pct'] == pytest.approx(100.0)
+            assert s['resources']['cores']['stranded_pct'] == pytest.approx(0.0)
+
+    def test_cores_stranding_from_resource_constraint(self, tmp_path):
+        """When a non-core resource limits packing, cores show stranding."""
+        scenarios = {
+            'constrained': {
+                'processor': 'nosmt',
+                'oversub_ratio': 1.0,
+                'resource_constraints': {
+                    'memory_gb': {
+                        'capacity_per_thread': 4.0,  # 4.0 * 48 = 192 GB
+                        'demand_per_vcpu': 2.0,       # 192/2 = 96 max vCPUs
+                    },
+                },
+            },
+        }
+        resources = {
+            'memory_gb': {
+                'demand_per_vcpu': 2.0,
+                'capacity_per_thread': 4.0,
+                'label': 'Memory (GB)',
+            },
+        }
+        # At R=4.0: core_limit = 48*4 = 192, memory max_vcpus = 96
+        # effective_vcpus = min(192, 96) = 96, memory is bottleneck
+        # Core capacity = 48, demand = 96/4 = 24, util = 50%
+        config_data = self._make_sweep_config(
+            scenarios, sweep_values=[4.0], resources=resources
+        )
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        pt = result.resource_packing_results[0]
+        s = pt['scenarios']['constrained']
+
+        assert s['was_constrained'] is True
+        assert s['bottleneck_resource'] == 'memory_gb'
+        assert s['resources']['cores']['capacity'] == pytest.approx(48.0)
+        assert s['resources']['cores']['demand'] == pytest.approx(24.0)  # 96/4
+        assert s['resources']['cores']['utilization_pct'] == pytest.approx(50.0)
+        assert s['resources']['cores']['stranded_pct'] == pytest.approx(50.0)
+
+    def test_proc_capacity_fallback(self, tmp_path):
+        """When resource_defs lack capacity_per_thread, falls back to processor capacity."""
+        processors = {
+            'with_capacity': {
+                'physical_cores': 48,
+                'threads_per_core': 1,
+                'power_idle_w': 90.0,
+                'power_max_w': 340.0,
+                'thread_overhead': 0,
+                'embodied_carbon': {
+                    'per_thread': {'cpu_die': 5.0},
+                    'per_server': {'chassis': 50.0},
+                },
+                'server_cost': {
+                    'per_thread': {'cpu': 50.0},
+                    'per_server': {'base': 500.0},
+                },
+                # Capacity field with per_thread breakdown
+                'capacity': {
+                    'per_thread': {
+                        'memory': 4.8,  # matches memory_gb via name stripping
+                        'ssd': 75.0,    # matches ssd_gb via name stripping
+                    },
+                },
+            },
+        }
+        scenarios = {
+            'scaled': {
+                'processor': 'with_capacity',
+                'oversub_ratio': 1.0,
+                'resource_scaling': {
+                    'scale_with_vcpus': ['memory_gb', 'ssd_gb'],
+                },
+            },
+        }
+        # resource_defs intentionally OMIT capacity_per_thread to test fallback
+        resources = {
+            'memory_gb': {
+                'demand_per_vcpu': 4.0,
+                'label': 'Memory (GB)',
+            },
+            'ssd_gb': {
+                'demand_per_vcpu': 50.0,
+                'label': 'SSD (GB)',
+            },
+        }
+        config_data = self._make_sweep_config(
+            scenarios, sweep_values=[2.0], resources=resources,
+            processors=processors
+        )
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        pt = result.resource_packing_results[0]
+        s = pt['scenarios']['scaled']
+
+        # At R=2.0: vcpus_per_server = max(48, 48*2) = 96
+        # Memory: capacity = 4.8 * 96 = 460.8, demand = 4.0 * 96 = 384
+        # Stranded = 1 - 384/460.8 = 16.7%
+        assert s['resources']['memory_gb']['capacity'] == pytest.approx(460.8)
+        assert s['resources']['memory_gb']['demand'] == pytest.approx(384.0)
+        assert s['resources']['memory_gb']['stranded_pct'] == pytest.approx(
+            100.0 - 384.0 / 460.8 * 100.0, abs=0.1
+        )
+
+        # SSD: capacity = 75.0 * 96 = 7200, demand = 50.0 * 96 = 4800
+        # Stranded = 1 - 4800/7200 = 33.3%
+        assert s['resources']['ssd_gb']['capacity'] == pytest.approx(7200.0)
+        assert s['resources']['ssd_gb']['demand'] == pytest.approx(4800.0)
+        assert s['resources']['ssd_gb']['stranded_pct'] == pytest.approx(
+            100.0 - 4800.0 / 7200.0 * 100.0, abs=0.1
+        )
+
+    def test_bottleneck_resource_detection(self, tmp_path):
+        """Bottleneck resource is detected for all scenario types."""
+        processors = {
+            'proc': {
+                'physical_cores': 48,
+                'threads_per_core': 1,
+                'power_idle_w': 90.0,
+                'power_max_w': 340.0,
+                'thread_overhead': 0,
+                'embodied_carbon': {
+                    'per_thread': {'cpu_die': 5.0},
+                    'per_server': {'chassis': 50.0},
+                },
+                'server_cost': {
+                    'per_thread': {'cpu': 50.0},
+                    'per_server': {'base': 500.0},
+                },
+                'capacity': {
+                    'per_thread': {'memory': 4.8, 'ssd': 75.0},
+                },
+            },
+        }
+        scenarios = {
+            'scaled': {
+                'processor': 'proc',
+                'oversub_ratio': 1.0,
+                'resource_scaling': {
+                    'scale_with_vcpus': ['memory_gb', 'ssd_gb'],
+                },
+            },
+            'constrained': {
+                'processor': 'proc',
+                'oversub_ratio': 1.0,
+                'resource_constraints': {
+                    'memory_gb': {
+                        'capacity_per_thread': 4.8,
+                        'demand_per_vcpu': 4.0,
+                    },
+                    'ssd_gb': {
+                        'capacity_per_thread': 75.0,
+                        'demand_per_vcpu': 50.0,
+                    },
+                },
+            },
+        }
+        resources = {
+            'memory_gb': {'demand_per_vcpu': 4.0, 'label': 'Memory'},
+            'ssd_gb': {'demand_per_vcpu': 50.0, 'label': 'SSD'},
+        }
+        config_data = self._make_sweep_config(
+            scenarios, sweep_values=[3.0], resources=resources,
+            processors=processors
+        )
+        config_file = tmp_path / 'test.json'
+        with open(config_file, 'w') as f:
+            json.dump(config_data, f)
+
+        result = run_analysis(config_file)
+        pt = result.resource_packing_results[0]
+
+        # Scaled at R=3.0: cores 100%, memory 83%, ssd 67% → bottleneck = cores
+        scaled = pt['scenarios']['scaled']
+        assert scaled['bottleneck_resource'] == 'cores'
+
+        # Constrained at R=3.0: core_limit=144, memory max=57.6, ssd max=72
+        # effective_vcpus = 57.6 → memory is bottleneck
+        constrained = pt['scenarios']['constrained']
+        assert constrained['bottleneck_resource'] == 'memory_gb'
+        assert constrained['was_constrained'] is True
+
+    def test_scenario_overrides_in_config_derived(self, tmp_path):
+        """Config-derived mode with scenario_overrides: override resource_scaling to constraints."""
+        # Create a sub-config with resource_scaling
+        sub_config = {
+            'name': 'sub',
+            'scenarios': {
+                'scenario_a': {
+                    'processor': 'proc',
+                    'oversub_ratio': 3.0,
+                    'resource_scaling': {
+                        'scale_with_vcpus': ['memory_gb'],
+                    },
+                },
+            },
+            'workload': {'total_vcpus': 10000, 'avg_util': 0.2},
+            'analysis': {
+                'type': 'compare_sweep',
+                'baseline': 'scenario_a',
+                'sweep_scenario': 'scenario_a',
+                'sweep_parameter': 'oversub_ratio',
+                'sweep_values': [1.0],
+            },
+            'processor': {
+                'proc': {
+                    'physical_cores': 48,
+                    'threads_per_core': 1,
+                    'power_idle_w': 90.0,
+                    'power_max_w': 340.0,
+                    'thread_overhead': 0,
+                    'embodied_carbon': {
+                        'per_thread': {'cpu_die': 5.0},
+                        'per_server': {'chassis': 50.0},
+                    },
+                    'server_cost': {
+                        'per_thread': {'cpu': 50.0},
+                        'per_server': {'base': 500.0},
+                    },
+                    'capacity': {
+                        'per_thread': {'memory': 4.8},
+                    },
+                },
+            },
+            'cost': {
+                'carbon_intensity_g_kwh': 175,
+                'electricity_cost_usd_kwh': 0.28,
+                'lifetime_years': 6,
+            },
+        }
+        sub_file = tmp_path / 'sub.json'
+        with open(sub_file, 'w') as f:
+            json.dump(sub_config, f)
+
+        # Create resource_packing config with scenario_overrides
+        main_config = {
+            'name': 'test_overrides',
+            'analysis': {
+                'type': 'resource_packing',
+                'config_sets': [
+                    {
+                        'label': 'Scaled',
+                        'configs': [str(sub_file)],
+                        'scenario': 'scenario_a',
+                    },
+                    {
+                        'label': 'Constrained (override)',
+                        'configs': [str(sub_file)],
+                        'scenario': 'scenario_a',
+                        'scenario_overrides': {
+                            'resource_scaling': None,
+                            'resource_constraints': {
+                                'memory_gb': {
+                                    'capacity_per_thread': 4.8,
+                                    'demand_per_vcpu': 4.0,
+                                },
+                            },
+                        },
+                    },
+                ],
+                'x_parameter': 'workload.avg_util',
+                'x_display_multiplier': 100,
+                'resources': {
+                    'memory_gb': {
+                        'demand_per_vcpu': 4.0,
+                        'label': 'Memory (GB)',
+                    },
+                },
+                'include_cores': True,
+            },
+        }
+        config_file = tmp_path / 'main.json'
+        with open(config_file, 'w') as f:
+            json.dump(main_config, f)
+
+        result = run_analysis(config_file)
+        assert len(result.resource_packing_results) == 1
+        pt = result.resource_packing_results[0]
+
+        # Scaled: uses original resource_scaling from sub-config
+        scaled = pt['scenarios']['Scaled']
+        assert scaled['was_constrained'] is False
+        # vcpus_per_server = max(48, 48*3) = 144
+        # Memory capacity = 4.8 * 144 = 691.2 (scaled with vcpus)
+        assert scaled['resources']['memory_gb']['capacity'] == pytest.approx(691.2)
+
+        # Constrained (override): resource_scaling removed, resource_constraints added
+        constrained = pt['scenarios']['Constrained (override)']
+        # memory: 4.8 * 48 = 230.4 GB, max_vcpus = 230.4/4.0 = 57.6
+        # core_limit = 48 * 3 = 144, effective_vcpus = min(144, 57.6) = 57.6
+        assert constrained['was_constrained'] is True
+        assert constrained['bottleneck_resource'] == 'memory_gb'
+        assert constrained['resources']['memory_gb']['capacity'] == pytest.approx(230.4)
