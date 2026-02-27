@@ -599,6 +599,8 @@ class OutputWriter:
             self._plot_per_server_comparison(result, plots_dir)
         elif result.analysis_type == 'resource_packing':
             self._plot_resource_packing(result, plots_dir)
+        elif result.analysis_type == 'fleet_comparison':
+            self._plot_fleet_comparison(result, plots_dir)
 
     def _plot_comparison(
         self,
@@ -959,6 +961,31 @@ class OutputWriter:
             save_path=str(save_path),
             show=False,
             title=f"Resource Packing: {result.config.name}",
+            **common_kwargs,
+        )
+
+    def _plot_fleet_comparison(
+        self,
+        result: 'AnalysisResult',
+        plots_dir: Path,
+    ) -> None:
+        """Generate fleet comparison grouped bar plot."""
+        if not result.fleet_comparison_results:
+            return
+
+        try:
+            from .plot import plot_fleet_comparison
+        except ImportError:
+            return
+
+        common_kwargs = self._get_plot_kwargs(result)
+
+        save_path = plots_dir / 'fleet_comparison.png'
+        plot_fleet_comparison(
+            result,
+            save_path=str(save_path),
+            show=False,
+            title=f"Fleet Comparison: {result.config.name}",
             **common_kwargs,
         )
 

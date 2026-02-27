@@ -1894,6 +1894,7 @@ class AnalysisResult:
     savings_curve_results: Optional[List[Dict[str, Any]]] = None  # For savings_curve analysis
     per_server_comparison_results: Optional[List[Dict[str, Any]]] = None  # For per_server_comparison analysis
     resource_packing_results: Optional[List[Dict[str, Any]]] = None  # For resource_packing analysis
+    fleet_comparison_results: Optional[List[Dict[str, Any]]] = None  # For fleet_comparison analysis
     summary: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1928,6 +1929,8 @@ class AnalysisResult:
             result['per_server_comparison_results'] = self.per_server_comparison_results
         if self.resource_packing_results:
             result['resource_packing_results'] = self.resource_packing_results
+        if self.fleet_comparison_results:
+            result['fleet_comparison_results'] = self.fleet_comparison_results
         return result
 
 
@@ -1969,6 +1972,8 @@ class DeclarativeAnalysisEngine:
             return self._run_savings_curve()
         if analysis_type == 'resource_packing':
             return self._run_resource_packing()
+        if analysis_type == 'fleet_comparison':
+            return self._run_fleet_comparison()
 
         # Resolve ratio-based costs if needed (except for sweeps over ratio params)
         if analysis_type == 'sweep' and self._is_ratio_sweep_param(config.analysis.sweep_parameter):
@@ -3722,6 +3727,236 @@ class DeclarativeAnalysisEngine:
 
         return "\n".join(lines)
 
+    # ---- fleet_comparison analysis ----
+
+    def _run_fleet_comparison(self) -> AnalysisResult:
+        """Run fleet_comparison: grouped bar chart of absolute fleet metrics.
+
+        Runs sub-configs (compare_sweep type), extracts absolute metric values
+        (e.g., total_carbon_kg, total_cost_usd) at a specified marker value,
+        and organizes for grouped bar plotting across an x parameter.
+
+        Each config_set specifies:
+        - label: display label for this series
+        - configs: list of sub-config paths (one per x-value)
+        - extract_from: "baseline" or a scenario name to extract values from
+        """
+        analysis = self._config.analysis
+        config_sets = analysis.config_sets
+        x_parameter = analysis.x_parameter
+        x_multiplier = analysis.x_display_multiplier
+        marker_values = analysis.marker_values or []
+        metrics = analysis.metrics or ['total_carbon_kg', 'total_cost_usd']
+        metric_labels = analysis.metric_labels or {}
+
+        if not config_sets:
+            raise ValueError("fleet_comparison requires 'config_sets'")
+        if not x_parameter:
+            raise ValueError("fleet_comparison requires 'x_parameter'")
+        if not marker_values:
+            raise ValueError("fleet_comparison requires 'marker_values'")
+
+        marker_value = marker_values[0]
+
+        # Fields to extract: requested metrics + their stacked components + num_servers
+        _STACKED_COMPONENTS = {
+            'total_carbon_kg': ['embodied_carbon_kg', 'operational_carbon_kg'],
+            'total_cost_usd': ['embodied_cost_usd', 'operational_cost_usd'],
+        }
+        extract_fields = list(metrics) + ['num_servers']
+        for m in metrics:
+            for comp in _STACKED_COMPONENTS.get(m, []):
+                if comp not in extract_fields:
+                    extract_fields.append(comp)
+
+        # Structure: {x_raw: {x_value, x_raw, series: {label: {field: value}}}}
+        x_points = {}
+
+        for cs in config_sets:
+            cs_label = cs.get('label', 'unnamed')
+            cs_configs = cs.get('configs', [])
+            extract_from = cs.get('extract_from', 'baseline')
+
+            for config_path_str in cs_configs:
+                config_path = Path(config_path_str)
+
+                # Load raw config to extract x-value
+                with open(config_path, 'r') as f:
+                    if _HAS_JSON5:
+                        raw_config = json5.load(f)
+                    else:
+                        raw_config = json.load(f)
+
+                x_raw = self._extract_nested_value(raw_config, x_parameter)
+                if x_raw is None:
+                    raise ValueError(
+                        f"Could not extract '{x_parameter}' from {config_path_str}"
+                    )
+                x_display = float(x_raw) * x_multiplier
+
+                # Run sub-config
+                sub_engine = DeclarativeAnalysisEngine()
+                sub_result = sub_engine.run_from_file(config_path)
+
+                if not sub_result.compare_sweep_results:
+                    raise ValueError(
+                        f"Sub-config {config_path_str} did not produce compare_sweep_results"
+                    )
+
+                # Extract all fields from the appropriate scenario
+                values = {}
+                for field in extract_fields:
+                    if extract_from == 'baseline':
+                        baseline_data = sub_result.compare_sweep_results[0].get('baseline', {})
+                        values[field] = baseline_data.get(field, 0)
+                    else:
+                        value = self._extract_absolute_at_value(
+                            sub_result.compare_sweep_results,
+                            extract_from,
+                            field,
+                            marker_value,
+                        )
+                        values[field] = value
+
+                x_key = round(float(x_raw), 10)
+                if x_key not in x_points:
+                    x_points[x_key] = {
+                        'x_value': x_display,
+                        'x_raw': float(x_raw),
+                        'series': {},
+                    }
+                x_points[x_key]['series'][cs_label] = values
+
+        # Sort by x_value
+        fleet_comparison_results = [
+            x_points[k] for k in sorted(x_points.keys())
+        ]
+
+        summary = self._build_fleet_comparison_summary(
+            fleet_comparison_results, analysis, metrics, metric_labels, marker_value
+        )
+
+        return AnalysisResult(
+            config=self._config,
+            analysis_type='fleet_comparison',
+            scenario_results={},
+            comparisons={},
+            fleet_comparison_results=fleet_comparison_results,
+            summary=summary,
+        )
+
+    @staticmethod
+    def _extract_absolute_at_value(
+        compare_sweep_results: List[Dict[str, Any]],
+        scenario_name: str,
+        metric: str,
+        target_value: float,
+    ) -> Optional[float]:
+        """Extract absolute metric value for a scenario at a specific sweep parameter value.
+
+        Looks up the scenario's result dict at the target parameter value.
+        Uses linear interpolation between adjacent sweep points if needed.
+        """
+        points = []
+        for entry in compare_sweep_results:
+            pv = entry['parameter_value']
+            # Try multi-scenario format
+            scenarios = entry.get('scenarios', {})
+            if scenario_name in scenarios:
+                result_data = scenarios[scenario_name].get('result', {})
+                mv = result_data.get(metric)
+            else:
+                # Backward compat: single-scenario format
+                sweep_data = entry.get('sweep_scenario', {})
+                mv = sweep_data.get(metric)
+            if mv is not None:
+                points.append((pv, mv))
+
+        if not points:
+            return None
+
+        points.sort(key=lambda p: p[0])
+
+        # Exact match
+        for pv, mv in points:
+            if abs(pv - target_value) < 1e-9:
+                return mv
+
+        # Interpolate
+        for j in range(len(points) - 1):
+            x0, y0 = points[j]
+            x1, y1 = points[j + 1]
+            if x0 <= target_value <= x1:
+                t = (target_value - x0) / (x1 - x0)
+                return y0 + t * (y1 - y0)
+
+        return None
+
+    @staticmethod
+    def _build_fleet_comparison_summary(
+        results: List[Dict[str, Any]],
+        analysis: 'AnalysisSpec',
+        metrics: List[str],
+        metric_labels: Dict[str, str],
+        marker_value: float,
+    ) -> str:
+        """Build summary for fleet_comparison analysis."""
+        lines = [
+            fmt.title("Fleet Comparison Analysis"),
+            "",
+            fmt.heading("Configuration"),
+            fmt.kv_block([
+                ("X Parameter", str(analysis.x_parameter)),
+                ("Marker Value", str(marker_value)),
+                ("Metrics", ', '.join(metrics)),
+            ]),
+            "",
+        ]
+
+        if not results:
+            return "\n".join(lines)
+
+        x_label = analysis.x_label or 'X'
+        series_labels = list(results[0]['series'].keys())
+
+        for metric in metrics:
+            display_label = metric_labels.get(metric, metric)
+            lines.append(fmt.heading(display_label))
+
+            headers = [x_label] + series_labels
+            col_aligns = ['r'] + ['r'] * len(series_labels)
+            rows = []
+            for pt in results:
+                cols = [f"{pt['x_value']:.0f}"]
+                for s_label in series_labels:
+                    val = pt['series'].get(s_label, {}).get(metric)
+                    if val is not None:
+                        cols.append(f"{val:,.0f}")
+                    else:
+                        cols.append("N/A")
+                rows.append(cols)
+            lines.append(fmt.table(headers, rows, col_aligns))
+            lines.append("")
+
+        # Servers table
+        lines.append(fmt.heading("Servers"))
+        headers = [x_label] + series_labels
+        col_aligns = ['r'] + ['r'] * len(series_labels)
+        rows = []
+        for pt in results:
+            cols = [f"{pt['x_value']:.0f}"]
+            for s_label in series_labels:
+                val = pt['series'].get(s_label, {}).get('num_servers')
+                if val is not None:
+                    cols.append(f"{val:,.0f}")
+                else:
+                    cols.append("N/A")
+            rows.append(cols)
+        lines.append(fmt.table(headers, rows, col_aligns))
+        lines.append("")
+
+        return "\n".join(lines)
+
     def _resolve_processor_from_raw_config(
         self,
         proc_data: Any,
@@ -4182,7 +4417,7 @@ def is_valid_analysis_config(path: Path) -> bool:
             return False
         # Meta-analyses don't require scenarios
         analysis_type = data.get('analysis', {}).get('type')
-        if analysis_type in ('breakeven_curve', 'savings_curve'):
+        if analysis_type in ('breakeven_curve', 'savings_curve', 'fleet_comparison'):
             return True
         if analysis_type == 'resource_packing':
             analysis = data.get('analysis', {})

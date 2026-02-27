@@ -1,13 +1,25 @@
 {
   "name": "util_20pct_smt_vs_nosmt_linear_same_hw",
-  "description": "At 20% utilization: Compare SMT (R=1.33, resource_scaling) vs No-SMT Linear on same SMT hardware (R=2.34, resource_constraints). Models disabling SMT on an existing SMT server (keeping 12 DIMMs, 6 SSDs) rather than purpose-building a no-SMT server.",
+  "description": "At 20% utilization: Compare SMT (R=1.33, resource_constraints) vs No-SMT Linear on same SMT hardware (R=2.34, resource_constraints). Both scenarios on identical physical hardware (12 DIMMs, 6 SSDs) with fixed resource capacities.",
   "scenarios": {
     "smt_oversub": {
       "processor": "smt",
       "oversub_ratio": 1.33,
       "util_overhead": 0.0,
-      "resource_scaling": {
-        "scale_with_vcpus": ["memory", "ssd"]
+      // Same physical server: 768GB memory, 12TB SSD.
+      // 160 HW threads → capacity_per_thread from genoa_smt.
+      //   memory: 4.8 × 160 = 768 GB → 768/4.0 = 192 max vCPUs
+      //   SSD: 75.0 × 160 = 12000 GB → 12000/50.0 = 240 max vCPUs
+      //   core limit at R=1.33 = 144 × 1.33 = 191.5 → cores are bottleneck (not constrained)
+      "resource_constraints": {
+        "memory_gb": {
+          "capacity_per_thread": 4.8,
+          "demand_per_vcpu": 4.0
+        },
+        "ssd_gb": {
+          "capacity_per_thread": 75.0,
+          "demand_per_vcpu": 50.0
+        }
       }
     },
     "nosmt_oversub": {
@@ -48,7 +60,7 @@
     "x_axis_markers": [0.65, 0.75, 0.85],
     "x_axis_marker_labels": ["low", "geomean", "high"],
     "labels": {
-      "smt_oversub": "SMT (R=1.33, scaled)",
+      "smt_oversub": "SMT (R=1.33, same HW)",
       "nosmt_oversub": "No-SMT Linear (R=2.34, same HW)"
     }
   },

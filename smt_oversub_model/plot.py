@@ -2531,3 +2531,236 @@ def plot_resource_packing(
         plt.show()
 
     return fig
+
+
+def plot_fleet_comparison(
+    result,
+    save_path: Optional[Union[str, Path]] = None,
+    figsize: Optional[Tuple[float, float]] = None,
+    show: bool = True,
+    title: Optional[str] = None,
+    show_plot_title: Optional[bool] = None,
+    style: Optional[PlotStyle] = None,
+    x_label: Optional[str] = None,
+) -> Optional[Any]:
+    """Plot fleet comparison: grouped bars showing absolute fleet metrics.
+
+    Creates side-by-side subplots (one per metric, e.g., Carbon and TCO).
+    Within each subplot, x-axis groups correspond to parameter values
+    (e.g., utilization %), and within each group, bars represent different
+    scenario configurations.
+
+    Args:
+        result: AnalysisResult or dict with fleet_comparison_results
+        save_path: Path to save figure
+        figsize: Figure size (width, height) in inches
+        show: Whether to display the plot
+        title: Optional plot title
+        show_plot_title: Whether to show the title
+        style: PlotStyle configuration
+        x_label: Custom x-axis label
+    """
+    if not HAS_MATPLOTLIB:
+        return None
+
+    style = style or PlotStyle()
+
+    # Extract data
+    if hasattr(result, 'fleet_comparison_results'):
+        fc_data = result.fleet_comparison_results
+        config = result.config if hasattr(result, 'config') else None
+    elif isinstance(result, dict):
+        fc_data = result.get('fleet_comparison_results', [])
+        config = None
+    elif isinstance(result, list):
+        fc_data = result
+        config = None
+    else:
+        return None
+
+    if not fc_data:
+        return None
+
+    # Read config-level settings
+    metrics = ['total_carbon_kg', 'total_cost_usd']
+    metric_labels = {}
+    if config and hasattr(config, 'analysis'):
+        analysis = config.analysis
+        if x_label is None:
+            x_label = analysis.x_label
+        if show_plot_title is None:
+            show_plot_title = analysis.show_plot_title
+        if figsize is None and analysis.plot and analysis.plot.figsize:
+            figsize = tuple(analysis.plot.figsize)
+        if analysis.metrics:
+            metrics = analysis.metrics
+        if analysis.metric_labels:
+            metric_labels = analysis.metric_labels
+
+    if show_plot_title is None:
+        show_plot_title = True
+
+    # Default metric labels
+    default_labels = {
+        'total_carbon_kg': 'Total Carbon (kg CO\u2082e)',
+        'total_cost_usd': 'Total Cost ($)',
+    }
+    for m in metrics:
+        if m not in metric_labels:
+            metric_labels[m] = default_labels.get(m, m)
+
+    # Get series labels and x values
+    first_point = fc_data[0]
+    series_labels = list(first_point['series'].keys())
+    n_series = len(series_labels)
+    x_values = [pt['x_value'] for pt in fc_data]
+    n_groups = len(x_values)
+    n_metrics = len(metrics)
+
+    if figsize is None:
+        figsize = (5 * n_metrics, 5)
+
+    fig, axes = plt.subplots(1, n_metrics, figsize=figsize, squeeze=False)
+    axes = axes.flatten()
+
+    # Stacked component mapping: total metric -> (bottom_key, top_key, bottom_label, top_label)
+    _STACK_MAP = {
+        'total_carbon_kg': ('embodied_carbon_kg', 'operational_carbon_kg',
+                            'Embodied', 'Operational'),
+        'total_cost_usd': ('embodied_cost_usd', 'operational_cost_usd',
+                           'CAPEX', 'OPEX'),
+    }
+
+    # Colors: each series gets a distinct color
+    tab10 = plt.cm.get_cmap('tab10')
+    series_colors = [tab10(i) for i in range(n_series)]
+
+    x = np.arange(n_groups)
+    total_width = style.bar_width * style.bar_gap_factor
+    bar_w = total_width / n_series if n_series > 0 else total_width
+
+    has_stacked = False
+
+    for m_idx, metric in enumerate(metrics):
+        ax = axes[m_idx]
+        _apply_common_style(ax, style)
+
+        stack_info = _STACK_MAP.get(metric)
+        # Check if stacked component data is available
+        can_stack = False
+        if stack_info:
+            bot_key, top_key = stack_info[0], stack_info[1]
+            # Check first series at first x-point for component data
+            first_series_data = first_point['series'].get(series_labels[0], {})
+            can_stack = (bot_key in first_series_data and
+                         first_series_data[bot_key] is not None)
+
+        for s_idx, s_label in enumerate(series_labels):
+            offset = (s_idx - (n_series - 1) / 2) * bar_w
+            color = series_colors[s_idx]
+            # Lighter version for operational/opex
+            lighter = tuple(min(1.0, c * 0.5 + 0.5) for c in color[:3]) + (color[3],)
+
+            if can_stack:
+                has_stacked = True
+                bot_vals = []
+                top_vals = []
+                for pt in fc_data:
+                    sd = pt['series'].get(s_label, {})
+                    bv = sd.get(bot_key, 0)
+                    tv = sd.get(top_key, 0)
+                    bot_vals.append(bv if bv is not None else 0)
+                    top_vals.append(tv if tv is not None else 0)
+
+                # Bottom: embodied/capex (solid, series color)
+                ax.bar(
+                    x + offset, bot_vals, bar_w,
+                    color=color,
+                    alpha=style.bar_alpha,
+                    edgecolor=style.bar_edgecolor,
+                    linewidth=style.bar_linewidth,
+                )
+                # Top: operational/opex (lighter shade + hatch)
+                ax.bar(
+                    x + offset, top_vals, bar_w,
+                    bottom=bot_vals,
+                    color=lighter,
+                    alpha=style.bar_alpha,
+                    edgecolor=style.bar_edgecolor,
+                    linewidth=style.bar_linewidth,
+                    hatch='///',
+                )
+            else:
+                vals = []
+                for pt in fc_data:
+                    v = pt['series'].get(s_label, {}).get(metric, 0)
+                    vals.append(v if v is not None else 0)
+                ax.bar(
+                    x + offset, vals, bar_w,
+                    color=color,
+                    alpha=style.bar_alpha,
+                    edgecolor=style.bar_edgecolor,
+                    linewidth=style.bar_linewidth,
+                )
+
+        ax.set_xlabel(x_label or 'X', fontsize=style.axis_label_fontsize)
+        ax.set_ylabel(metric_labels.get(metric, metric),
+                      fontsize=style.axis_label_fontsize)
+        ax.set_xticks(x)
+        ax.set_xticklabels([f'{v:.0f}' for v in x_values],
+                           fontsize=style.tick_fontsize)
+        ax.tick_params(axis='y', labelsize=style.tick_fontsize)
+
+        # Format y-axis with commas, no scientific notation
+        ax.yaxis.set_major_formatter(
+            plt.FuncFormatter(lambda val, pos: f'{val:,.0f}')
+        )
+
+    # Build legend: series colors + stacked component indicators
+    from matplotlib.patches import Patch
+    legend_handles = []
+    legend_labels = []
+
+    # Series entries
+    for s_idx, s_label in enumerate(series_labels):
+        legend_handles.append(Patch(facecolor=series_colors[s_idx],
+                                    alpha=style.bar_alpha,
+                                    edgecolor=style.bar_edgecolor,
+                                    linewidth=style.bar_linewidth))
+        legend_labels.append(s_label)
+
+    # Stacked component entries (if any metric was stacked)
+    if has_stacked:
+        legend_handles.append(Patch(facecolor='#888888', alpha=style.bar_alpha,
+                                    edgecolor=style.bar_edgecolor,
+                                    linewidth=style.bar_linewidth))
+        legend_labels.append('Embodied / CAPEX')
+        legend_handles.append(Patch(facecolor='#cccccc', alpha=style.bar_alpha,
+                                    edgecolor=style.bar_edgecolor,
+                                    linewidth=style.bar_linewidth,
+                                    hatch='///'))
+        legend_labels.append('Operational / OPEX')
+
+    n_legend_cols = min(len(legend_handles), 6)
+
+    has_title = show_plot_title and title
+
+    plt.tight_layout(rect=[0, 0.08, 1, 0.93 if has_title else 1.0])
+
+    fig.legend(legend_handles, legend_labels,
+               loc='lower center', ncol=n_legend_cols,
+               fontsize=style.annotation_fontsize,
+               bbox_to_anchor=(0.5, 0.0))
+
+    if has_title:
+        fig.suptitle(title, fontsize=style.title_fontsize, fontweight='bold',
+                     color='#333333', y=0.97)
+
+    if save_path:
+        plt.savefig(str(save_path), dpi=style.dpi, bbox_inches='tight',
+                    facecolor=style.facecolor)
+
+    if show:
+        plt.show()
+
+    return fig
