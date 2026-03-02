@@ -1,0 +1,103 @@
+{
+  "name": "util_10pct_multi_cluster_unconstrained_compare",
+  "description": "At 10% utilization: Three-way bar comparison at the breakeven split point (0.863). Compares homogeneous SMT, homogeneous no-SMT (avg discount 0.75), and mixed fleet (trait-split at breakeven). Unconstrained (resource_scaling) model.",
+  "scenarios": {
+    // 1. Homogeneous SMT baseline
+    "smt_homogeneous": {
+      "processor": "smt",
+      "oversub_ratio": 3.0,
+      "resource_scaling": {
+        "scale_with_vcpus": ["memory", "ssd"]
+      }
+    },
+    // 2. Homogeneous no-SMT: all VMs at fleet-average discount (0.75)
+    "nosmt_homogeneous": {
+      "processor": "nosmt_linear",
+      "oversub_ratio": 5.0,
+      "vcpu_demand_multiplier": 0.75,
+      "resource_scaling": {
+        "scale_with_vcpus": ["memory", "ssd"]
+      }
+    },
+    // Sub-scenario: SMT pool (receives VMs above the split point)
+    "smt_pool": {
+      "processor": "smt",
+      "oversub_ratio": 3.0,
+      "resource_scaling": {
+        "scale_with_vcpus": ["memory", "ssd"]
+      }
+    },
+    // Sub-scenario: No-SMT pool (receives VMs below the split point)
+    // vcpu_demand_multiplier overridden by trait weighted_average
+    "nosmt_pool": {
+      "processor": "nosmt_linear",
+      "oversub_ratio": 5.0,
+      "vcpu_demand_multiplier": 1.0,
+      "resource_scaling": {
+        "scale_with_vcpus": ["memory", "ssd"]
+      }
+    },
+    // 3. Mixed fleet: trait-split at breakeven (0.863)
+    "mixed_fleet": {
+      "composite": {
+        "nosmt_pool": {
+          "allocation": "below_split",
+          "parameter_effects": {"vcpu_demand_multiplier": "weighted_average"}
+        },
+        "smt_pool": {
+          "allocation": "above_split",
+          "parameter_effects": {"vcpu_demand_multiplier": 1.0}
+        }
+      },
+      "split_trait": "vcpu_discount",
+      "split_point": 0.863
+    }
+  },
+  "workload": {
+    "total_vcpus": 10000,
+    "avg_util": 0.1,
+    "traits": {
+      "vcpu_discount": {
+        "type": "discrete",
+        "bins": [
+          {"value": 0.50, "vcpu_fraction": 0.0909},
+          {"value": 0.55, "vcpu_fraction": 0.0909},
+          {"value": 0.60, "vcpu_fraction": 0.0909},
+          {"value": 0.65, "vcpu_fraction": 0.0909},
+          {"value": 0.70, "vcpu_fraction": 0.0909},
+          {"value": 0.75, "vcpu_fraction": 0.0909},
+          {"value": 0.80, "vcpu_fraction": 0.0909},
+          {"value": 0.85, "vcpu_fraction": 0.0909},
+          {"value": 0.90, "vcpu_fraction": 0.0909},
+          {"value": 0.95, "vcpu_fraction": 0.0909},
+          {"value": 1.00, "vcpu_fraction": 0.0909}
+        ]
+      }
+    }
+  },
+  "analysis": {
+    "type": "compare",
+    "baseline": "smt_homogeneous",
+    "scenarios": ["smt_homogeneous", "nosmt_homogeneous", "mixed_fleet"],
+    "separate_metric_plots": true,
+    "show_plot_title": false,
+    "labels": {
+      "smt_homogeneous": "SMT (R=3.0)",
+      "nosmt_homogeneous": "No-SMT (R=5.0, discount=0.75)",
+      "mixed_fleet": "Mixed Fleet (split=0.863)"
+    }
+  },
+  "processor": {
+    "smt": "configs/shared/genoa_processors.jsonc:genoa_smt",
+    "nosmt_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_linear"
+  },
+  "cost": {
+    "carbon_intensity_g_kwh": 175,
+    "electricity_cost_usd_kwh": 0.28,
+    "lifetime_years": 6
+  },
+  "power_curve": {
+    "type": "polynomial"
+  },
+  "output_dir": "./results/oversub_analysis/genoa/linear/multi_cluster/util_10pct_multi_cluster_unconstrained_compare"
+}

@@ -160,6 +160,10 @@ class OutputWriter:
             if scenario.get('resource_constraint_result'):
                 row['resource_constraint_result'] = scenario['resource_constraint_result']
 
+            # Extract composite sub_results if present
+            if scenario.get('sub_results'):
+                row['sub_results'] = scenario['sub_results']
+
             # Extract breakdown data if present
             breakdown = scenario.get('embodied_breakdown')
             if breakdown:
@@ -454,7 +458,53 @@ class OutputWriter:
 
                 lines.append("")
 
-        # Section 5: Resource Constraints (if any scenario has constraint data)
+        # Section 5: Composite Scenario Pool Breakdown
+        has_composite = any(
+            d.get('sub_results') is not None
+            for d in data
+        )
+        if has_composite:
+            lines.append("")
+            lines.append("-" * 80)
+            lines.append("COMPOSITE SCENARIO BREAKDOWN")
+            lines.append("-" * 80)
+            lines.append("")
+
+            for d in data:
+                sub = d.get('sub_results')
+                if sub is None:
+                    continue
+                name = d['scenario']
+                servers = d.get('servers', 0)
+                carbon = d.get('total_carbon_kg', 0)
+                cost = d.get('total_cost_usd', 0)
+                lines.append(f"  {name} (composite): {servers:,} servers | {carbon:,.0f} kg CO2 | ${cost:,.0f}")
+
+                for pool_name, pool_data in sub.items():
+                    p_servers = pool_data.get('num_servers', 0)
+                    p_carbon = pool_data.get('total_carbon_kg', 0)
+                    p_cost = pool_data.get('total_cost_usd', 0)
+                    lines.append(f"    {pool_name}: {p_servers:,} servers | {p_carbon:,.0f} kg | ${p_cost:,.0f}")
+
+                    # Show resource constraint info if present
+                    p_cr = pool_data.get('resource_constraint_result')
+                    if p_cr and isinstance(p_cr, dict):
+                        bottleneck = p_cr.get('bottleneck_resource', 'N/A')
+                        details = p_cr.get('resource_details', {})
+                        detail_parts = []
+                        for res, info in details.items():
+                            if isinstance(info, dict):
+                                detail_parts.append(
+                                    f"{res} {info.get('utilization_pct', 0):.0f}% util"
+                                )
+                        if detail_parts:
+                            lines.append(
+                                f"      [Resource packing: {', '.join(detail_parts)}, "
+                                f"bottleneck: {bottleneck}]"
+                            )
+                lines.append("")
+
+        # Section 6: Resource Constraints (if any scenario has constraint data)
         has_constraints = any(
             d.get('resource_constraint_result') is not None
             for d in data

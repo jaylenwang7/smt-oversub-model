@@ -619,9 +619,106 @@ class ResourceConstraintsConfig:
 
 
 @dataclass
+class TraitBin:
+    """A single bin in a trait distribution."""
+    value: float
+    vcpu_fraction: float
+
+
+@dataclass
+class TraitDistribution:
+    """A distribution of a per-vCPU trait across the fleet.
+
+    Supports discrete bin format and CDF format (converted to bins on load).
+    """
+    bins: List[TraitBin] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TraitDistribution':
+        dist_type = data.get('type', 'discrete')
+        if dist_type == 'cdf':
+            points = data.get('points', [])
+            bins = []
+            prev_cum = 0.0
+            for pt in points:
+                frac = pt['cumulative_fraction'] - prev_cum
+                if frac > 1e-12:
+                    bins.append(TraitBin(value=pt['value'], vcpu_fraction=frac))
+                prev_cum = pt['cumulative_fraction']
+            return cls(bins=bins)
+        else:  # discrete
+            bins = [
+                TraitBin(value=b['value'], vcpu_fraction=b['vcpu_fraction'])
+                for b in data.get('bins', [])
+            ]
+            return cls(bins=bins)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'type': 'discrete',
+            'bins': [{'value': b.value, 'vcpu_fraction': b.vcpu_fraction} for b in self.bins],
+        }
+
+    def partition(self, split_point: float) -> Tuple[List[TraitBin], List[TraitBin]]:
+        """Split bins into below (value < split) and above (value >= split)."""
+        below = [b for b in self.bins if b.value < split_point]
+        above = [b for b in self.bins if b.value >= split_point]
+        return below, above
+
+    def weighted_average(self, bins: List[TraitBin]) -> float:
+        """Weighted average of trait values for a set of bins."""
+        total_frac = sum(b.vcpu_fraction for b in bins)
+        if total_frac <= 0:
+            return 0.0
+        return sum(b.value * b.vcpu_fraction for b in bins) / total_frac
+
+    def total_fraction(self, bins: List[TraitBin]) -> float:
+        """Sum of vcpu_fractions."""
+        return sum(b.vcpu_fraction for b in bins)
+
+
+@dataclass
+class CompositePoolConfig:
+    """Configuration for a single pool within a composite scenario.
+
+    Supports two allocation modes:
+    - Explicit: vcpu_fraction specified directly
+    - Trait-based: allocation ("below_split"/"above_split") + parameter_effects
+    """
+    # Explicit mode
+    vcpu_fraction: Optional[float] = None
+
+    # Trait-based mode
+    allocation: Optional[str] = None  # "below_split" or "above_split"
+    parameter_effects: Optional[Dict[str, Any]] = None  # param_path -> "weighted_average" | fixed value
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'CompositePoolConfig':
+        return cls(
+            vcpu_fraction=data.get('vcpu_fraction'),
+            allocation=data.get('allocation'),
+            parameter_effects=data.get('parameter_effects'),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {}
+        if self.vcpu_fraction is not None:
+            d['vcpu_fraction'] = self.vcpu_fraction
+        if self.allocation is not None:
+            d['allocation'] = self.allocation
+        if self.parameter_effects is not None:
+            d['parameter_effects'] = dict(self.parameter_effects)
+        return d
+
+
+@dataclass
 class ScenarioConfig:
-    """Configuration for a single scenario."""
-    processor: str  # "smt" or "nosmt"
+    """Configuration for a single scenario.
+
+    Can represent either a regular (single-pool) scenario or a composite
+    scenario made up of multiple sub-pools. Set `composite` to define pools.
+    """
+    processor: str  # "smt" or "nosmt"; "_composite" sentinel for composite scenarios
     oversub_ratio: float = 1.0
     util_overhead: float = 0.0
     vcpu_demand_multiplier: float = 1.0
@@ -630,6 +727,15 @@ class ScenarioConfig:
     resource_constraints: Optional[ResourceConstraintsConfig] = None
     max_vms_per_server: Optional[int] = None
     avg_vm_size_vcpus: Optional[float] = None
+    # Composite scenario fields
+    composite: Optional[Dict[str, CompositePoolConfig]] = None
+    split_trait: Optional[str] = None  # Key into workload.traits for trait-based allocation
+    split_point: Optional[float] = None  # Trait value to split on
+
+    @property
+    def is_composite(self) -> bool:
+        """True if this scenario is a composite of multiple pools."""
+        return self.composite is not None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ScenarioConfig':
@@ -643,8 +749,21 @@ class ScenarioConfig:
             raise ValueError(
                 "resource_scaling and resource_constraints are mutually exclusive"
             )
+
+        # Parse composite pools
+        composite = None
+        composite_data = data.get('composite')
+        if composite_data and isinstance(composite_data, dict):
+            composite = {
+                name: CompositePoolConfig.from_dict(pool_data)
+                for name, pool_data in composite_data.items()
+            }
+
+        # Use "_composite" sentinel when composite is specified
+        processor = data.get('processor', '_composite' if composite else 'smt')
+
         return cls(
-            processor=data.get('processor', 'smt'),
+            processor=processor,
             oversub_ratio=data.get('oversub_ratio', 1.0),
             util_overhead=data.get('util_overhead', 0.0),
             vcpu_demand_multiplier=data.get('vcpu_demand_multiplier', 1.0),
@@ -653,15 +772,18 @@ class ScenarioConfig:
             resource_constraints=resource_constraints,
             max_vms_per_server=data.get('max_vms_per_server'),
             avg_vm_size_vcpus=data.get('avg_vm_size_vcpus'),
+            composite=composite,
+            split_trait=data.get('split_trait'),
+            split_point=data.get('split_point'),
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        d = {
-            'processor': self.processor,
-            'oversub_ratio': self.oversub_ratio,
-            'util_overhead': self.util_overhead,
-            'vcpu_demand_multiplier': self.vcpu_demand_multiplier,
-        }
+        d: Dict[str, Any] = {}
+        if not self.is_composite:
+            d['processor'] = self.processor
+        d['oversub_ratio'] = self.oversub_ratio
+        d['util_overhead'] = self.util_overhead
+        d['vcpu_demand_multiplier'] = self.vcpu_demand_multiplier
         if self.overrides:
             d['overrides'] = self.overrides
         if self.resource_scaling:
@@ -672,6 +794,12 @@ class ScenarioConfig:
             d['max_vms_per_server'] = self.max_vms_per_server
         if self.avg_vm_size_vcpus is not None:
             d['avg_vm_size_vcpus'] = self.avg_vm_size_vcpus
+        if self.composite:
+            d['composite'] = {name: pool.to_dict() for name, pool in self.composite.items()}
+        if self.split_trait is not None:
+            d['split_trait'] = self.split_trait
+        if self.split_point is not None:
+            d['split_point'] = self.split_point
         return d
 
 
@@ -1381,17 +1509,33 @@ class WorkloadSpec:
     total_vcpus: int = 10000
     avg_util: float = 0.3
     avg_vm_size_vcpus: float = 4.0
+    traits: Optional[Dict[str, TraitDistribution]] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'WorkloadSpec':
+        traits = None
+        traits_data = data.get('traits')
+        if traits_data and isinstance(traits_data, dict):
+            traits = {
+                name: TraitDistribution.from_dict(td)
+                for name, td in traits_data.items()
+            }
         return cls(
             total_vcpus=data.get('total_vcpus', 10000),
             avg_util=data.get('avg_util', 0.3),
             avg_vm_size_vcpus=data.get('avg_vm_size_vcpus', 4.0),
+            traits=traits,
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        d: Dict[str, Any] = {
+            'total_vcpus': self.total_vcpus,
+            'avg_util': self.avg_util,
+            'avg_vm_size_vcpus': self.avg_vm_size_vcpus,
+        }
+        if self.traits:
+            d['traits'] = {name: td.to_dict() for name, td in self.traits.items()}
+        return d
 
 
 @dataclass
@@ -2406,12 +2550,17 @@ class DeclarativeAnalysisEngine:
     def _evaluate_scenario(self, name: str) -> Tuple[ScenarioParams, ScenarioResult]:
         """Evaluate a scenario by name and return params and result.
 
+        For composite scenarios, delegates to _evaluate_composite_scenario().
+
         Resolves embodied carbon and server cost using priority chain:
         1. Processor-level structured (embodied_carbon: {per_thread, per_server})
         2. Processor-level flat (embodied_carbon_kg)
         3. Global cost structured (cost.embodied_carbon: {...})
         4. Global cost flat (cost.embodied_carbon_kg) - already in model defaults
         """
+        if self._config.scenarios[name].is_composite:
+            return self._evaluate_composite_scenario(name)
+
         cost_overrides, modified_params = self._resolve_scenario_cost_overrides(name)
 
         # Use modified params (from resource scaling) or build fresh
@@ -2423,6 +2572,263 @@ class DeclarativeAnalysisEngine:
 
         result = self._model.evaluate_scenario(params, cost_overrides if cost_overrides else None)
         return params, result
+
+    def _evaluate_composite_scenario(self, name: str) -> Tuple[ScenarioParams, ScenarioResult]:
+        """Evaluate a composite scenario by summing over its sub-pools.
+
+        Each pool gets a fraction of total vCPU demand and is evaluated independently.
+        Results are aggregated into a single ScenarioResult with sub_results.
+
+        Supports two allocation modes:
+        - Explicit: pools have vcpu_fraction set directly
+        - Trait-based: pools have allocation + split_trait/split_point on the composite
+
+        Returns:
+            Tuple of (dummy ScenarioParams, aggregated ScenarioResult)
+        """
+        scenario_cfg = self._config.scenarios[name]
+        composite = scenario_cfg.composite
+        total_vcpus = self._model.workload.total_vcpus
+
+        # Validate sub-scenarios exist and are not composite
+        for pool_name in composite:
+            if pool_name not in self._config.scenarios:
+                raise ValueError(
+                    f"Composite scenario '{name}' references non-existent "
+                    f"sub-scenario '{pool_name}'"
+                )
+            if self._config.scenarios[pool_name].is_composite:
+                raise ValueError(
+                    f"Composite scenario '{name}' references another composite "
+                    f"scenario '{pool_name}'. Nested composites are not supported."
+                )
+
+        # Determine allocation mode and compute per-pool fractions/effects
+        pool_fractions, pool_effects = self._resolve_composite_allocation(
+            name, scenario_cfg, composite
+        )
+
+        # Validate fractions sum to 1.0 (relaxed tolerance for trait distributions
+        # where bin fractions may not sum exactly due to rounding)
+        frac_sum = sum(pool_fractions.values())
+        if abs(frac_sum - 1.0) > 1e-3:
+            raise ValueError(
+                f"Composite scenario '{name}': pool vcpu_fractions sum to "
+                f"{frac_sum:.6f}, must sum to 1.0"
+            )
+
+        # Save originals for restoration
+        original_total_vcpus = self._model.workload.total_vcpus
+        original_scenario_configs = {
+            pool_name: copy.deepcopy(self._config.scenarios[pool_name])
+            for pool_name in composite
+        }
+
+        sub_results: Dict[str, ScenarioResult] = {}
+        pool_names = list(composite.keys())
+        allocated_vcpus = 0
+
+        try:
+            for i, pool_name in enumerate(pool_names):
+                # Compute pool vCPUs (last pool gets remainder)
+                if i < len(pool_names) - 1:
+                    pool_vcpus = int(total_vcpus * pool_fractions[pool_name])
+                    allocated_vcpus += pool_vcpus
+                else:
+                    pool_vcpus = total_vcpus - allocated_vcpus
+
+                if pool_vcpus <= 0:
+                    # Pool gets no vCPUs - create zero result
+                    sub_results[pool_name] = ScenarioResult(
+                        num_servers=0,
+                        avg_util_per_server=0.0,
+                        effective_util_per_server=0.0,
+                        power_per_server_w=0.0,
+                        embodied_carbon_kg=0.0,
+                        operational_carbon_kg=0.0,
+                        total_carbon_kg=0.0,
+                        embodied_cost_usd=0.0,
+                        operational_cost_usd=0.0,
+                        total_cost_usd=0.0,
+                        carbon_per_vcpu_kg=0.0,
+                        cost_per_vcpu_usd=0.0,
+                    )
+                    continue
+
+                # Apply parameter effects if any
+                if pool_name in pool_effects:
+                    for param_path, effect_value in pool_effects[pool_name].items():
+                        if param_path.startswith('workload.'):
+                            # Modify workload param
+                            attr = param_path.split('.', 1)[1]
+                            if attr == 'avg_util':
+                                self._model.workload.avg_util = float(effect_value)
+                            elif attr == 'total_vcpus':
+                                pass  # Handled by pool_vcpus
+                        else:
+                            # Modify sub-scenario config param
+                            setattr(self._config.scenarios[pool_name], param_path, effect_value)
+
+                # Temporarily set workload to pool's vCPUs
+                self._model.workload.total_vcpus = pool_vcpus
+
+                # Evaluate using the full cost resolution pipeline
+                _, result = self._evaluate_scenario.__wrapped__(self, pool_name) if hasattr(self._evaluate_scenario, '__wrapped__') else self._evaluate_sub_scenario(pool_name)
+                sub_results[pool_name] = result
+
+                # Restore workload for next pool
+                self._model.workload.total_vcpus = original_total_vcpus
+                self._model.workload.avg_util = self._config.workload.avg_util
+
+        finally:
+            # Restore all originals
+            self._model.workload.total_vcpus = original_total_vcpus
+            self._model.workload.avg_util = self._config.workload.avg_util
+            for pool_name, cfg in original_scenario_configs.items():
+                self._config.scenarios[pool_name] = cfg
+
+        # Aggregate sub-results
+        aggregated = self._aggregate_sub_results(sub_results, total_vcpus)
+
+        # Return a dummy ScenarioParams (composite has no single processor)
+        # Use the first pool's processor for the dummy params
+        first_pool = pool_names[0]
+        first_cfg = original_scenario_configs[first_pool]
+        dummy_params = self._build_scenario_params(first_cfg)
+
+        return dummy_params, aggregated
+
+    def _evaluate_sub_scenario(self, name: str) -> Tuple[ScenarioParams, ScenarioResult]:
+        """Evaluate a non-composite sub-scenario (bypasses composite dispatch)."""
+        cost_overrides, modified_params = self._resolve_scenario_cost_overrides(name)
+        if modified_params is not None:
+            params = modified_params
+        else:
+            scenario_cfg = self._config.scenarios[name]
+            params = self._build_scenario_params(scenario_cfg)
+        result = self._model.evaluate_scenario(params, cost_overrides if cost_overrides else None)
+        return params, result
+
+    def _resolve_composite_allocation(
+        self,
+        name: str,
+        scenario_cfg: ScenarioConfig,
+        composite: Dict[str, CompositePoolConfig],
+    ) -> Tuple[Dict[str, float], Dict[str, Dict[str, Any]]]:
+        """Resolve per-pool fractions and parameter effects.
+
+        Returns:
+            Tuple of (pool_fractions, pool_effects) where:
+            - pool_fractions: {pool_name: vcpu_fraction}
+            - pool_effects: {pool_name: {param_path: resolved_value}}
+        """
+        pool_fractions: Dict[str, float] = {}
+        pool_effects: Dict[str, Dict[str, Any]] = {}
+
+        # Check if trait-based
+        if scenario_cfg.split_trait is not None:
+            # Trait-based allocation
+            trait_name = scenario_cfg.split_trait
+            split_point = scenario_cfg.split_point
+            if split_point is None:
+                raise ValueError(
+                    f"Composite scenario '{name}' has split_trait but no split_point"
+                )
+
+            traits = self._config.workload.traits
+            if not traits or trait_name not in traits:
+                raise ValueError(
+                    f"Composite scenario '{name}' references trait '{trait_name}' "
+                    f"not found in workload.traits"
+                )
+
+            distribution = traits[trait_name]
+            below, above = distribution.partition(split_point)
+
+            for pool_name, pool_cfg in composite.items():
+                alloc = pool_cfg.allocation
+                if alloc == 'below_split':
+                    partition_bins = below
+                elif alloc == 'above_split':
+                    partition_bins = above
+                else:
+                    raise ValueError(
+                        f"Pool '{pool_name}' in composite '{name}' has invalid "
+                        f"allocation '{alloc}'. Must be 'below_split' or 'above_split'."
+                    )
+
+                pool_fractions[pool_name] = distribution.total_fraction(partition_bins)
+
+                # Resolve parameter effects
+                if pool_cfg.parameter_effects:
+                    effects: Dict[str, Any] = {}
+                    for param_path, effect in pool_cfg.parameter_effects.items():
+                        if effect == 'weighted_average':
+                            effects[param_path] = distribution.weighted_average(partition_bins)
+                        else:
+                            # Fixed value
+                            effects[param_path] = effect
+                    pool_effects[pool_name] = effects
+        else:
+            # Explicit fraction mode
+            for pool_name, pool_cfg in composite.items():
+                if pool_cfg.vcpu_fraction is None:
+                    raise ValueError(
+                        f"Pool '{pool_name}' in composite '{name}' has no "
+                        f"vcpu_fraction and no trait-based allocation"
+                    )
+                pool_fractions[pool_name] = pool_cfg.vcpu_fraction
+
+        return pool_fractions, pool_effects
+
+    def _aggregate_sub_results(
+        self,
+        sub_results: Dict[str, ScenarioResult],
+        total_vcpus: int,
+    ) -> ScenarioResult:
+        """Aggregate per-pool results into a single composite ScenarioResult."""
+        total_servers = 0
+        total_embodied_carbon = 0.0
+        total_operational_carbon = 0.0
+        total_embodied_cost = 0.0
+        total_operational_cost = 0.0
+        weighted_util_sum = 0.0
+        weighted_eff_util_sum = 0.0
+        weighted_power_sum = 0.0
+
+        for result in sub_results.values():
+            total_servers += result.num_servers
+            total_embodied_carbon += result.embodied_carbon_kg
+            total_operational_carbon += result.operational_carbon_kg
+            total_embodied_cost += result.embodied_cost_usd
+            total_operational_cost += result.operational_cost_usd
+            # Weight by server count for per-server averages
+            weighted_util_sum += result.avg_util_per_server * result.num_servers
+            weighted_eff_util_sum += result.effective_util_per_server * result.num_servers
+            weighted_power_sum += result.power_per_server_w * result.num_servers
+
+        total_carbon = total_embodied_carbon + total_operational_carbon
+        total_cost = total_embodied_cost + total_operational_cost
+
+        avg_util = weighted_util_sum / total_servers if total_servers > 0 else 0.0
+        eff_util = weighted_eff_util_sum / total_servers if total_servers > 0 else 0.0
+        avg_power = weighted_power_sum / total_servers if total_servers > 0 else 0.0
+
+        return ScenarioResult(
+            num_servers=total_servers,
+            avg_util_per_server=avg_util,
+            effective_util_per_server=eff_util,
+            power_per_server_w=avg_power,
+            embodied_carbon_kg=total_embodied_carbon,
+            operational_carbon_kg=total_operational_carbon,
+            total_carbon_kg=total_carbon,
+            embodied_cost_usd=total_embodied_cost,
+            operational_cost_usd=total_operational_cost,
+            total_cost_usd=total_cost,
+            carbon_per_vcpu_kg=total_carbon / total_vcpus if total_vcpus > 0 else 0.0,
+            cost_per_vcpu_usd=total_cost / total_vcpus if total_vcpus > 0 else 0.0,
+            sub_results=sub_results,
+        )
 
     def _apply_resource_scaling_to_breakdown(
         self,
@@ -4035,6 +4441,8 @@ class DeclarativeAnalysisEngine:
             scenario_cfg.oversub_ratio = value
         elif param == 'util_overhead':
             scenario_cfg.util_overhead = value
+        elif param == 'split_point':
+            scenario_cfg.split_point = value
         else:
             # Try to apply as a workload or cost parameter
             param_path = ParameterPath(param)

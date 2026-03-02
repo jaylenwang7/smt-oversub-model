@@ -481,6 +481,94 @@ Output includes:
 - `separate_metric_plots`: Generate separate plots for carbon and TCO instead of a combined plot (default: false)
 - `show_ideal_scaling_line`: Show dotted ideal 1/R scaling reference line on plot (default: false). Ideal savings = `-(1 - 1/R) * 100%`.
 
+### Composite Scenarios (Heterogeneous Fleets)
+
+A composite scenario models a mixed fleet of N independent server pools, each receiving a fraction of total vCPU demand. Sub-scenarios are regular scenarios defined at the same level, referenced by name.
+
+**Explicit mode** (fractions specified directly):
+```json
+{
+  "scenarios": {
+    "smt_pool": {"processor": "smt", "oversub_ratio": 1.0},
+    "nosmt_pool": {"processor": "nosmt", "oversub_ratio": 2.0, "vcpu_demand_multiplier": 0.65},
+    "mixed_fleet": {
+      "composite": {
+        "smt_pool": {"vcpu_fraction": 0.4},
+        "nosmt_pool": {"vcpu_fraction": 0.6}
+      }
+    }
+  }
+}
+```
+
+Fractions must sum to 1.0. Each sub-scenario retains all its existing features (resource_scaling, resource_constraints, per-processor costs, etc.).
+
+**Trait-based mode** (split point drives allocation):
+```json
+{
+  "workload": {
+    "total_vcpus": 10000,
+    "avg_util": 0.3,
+    "traits": {
+      "vcpu_discount": {
+        "type": "discrete",
+        "bins": [
+          {"value": 0.5, "vcpu_fraction": 0.10},
+          {"value": 0.7, "vcpu_fraction": 0.25},
+          {"value": 0.9, "vcpu_fraction": 0.15},
+          {"value": 1.0, "vcpu_fraction": 0.15}
+        ]
+      }
+    }
+  },
+  "scenarios": {
+    "mixed_fleet": {
+      "composite": {
+        "nosmt_pool": {
+          "allocation": "below_split",
+          "parameter_effects": {"vcpu_demand_multiplier": "weighted_average"}
+        },
+        "smt_pool": {
+          "allocation": "above_split",
+          "parameter_effects": {"vcpu_demand_multiplier": 1.0}
+        }
+      },
+      "split_trait": "vcpu_discount",
+      "split_point": 0.75
+    }
+  }
+}
+```
+
+**Trait distribution types:** `"discrete"` (bins with value/vcpu_fraction) and `"cdf"` (cumulative points, auto-converted to bins).
+
+**parameter_effects:** `"weighted_average"` computes weighted avg of trait values in the partition. Fixed values (numbers) are used directly. Supports any parameter path (e.g., `vcpu_demand_multiplier`, `workload.avg_util`).
+
+**Sweep the split point:**
+```json
+{
+  "analysis": {
+    "type": "compare_sweep",
+    "baseline": "smt_baseline",
+    "sweep_scenario": "mixed_fleet",
+    "sweep_parameter": "split_point",
+    "sweep_values": [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+  }
+}
+```
+
+**Key classes:**
+- `CompositePoolConfig` (declarative.py): Per-pool config with vcpu_fraction or allocation/parameter_effects
+- `TraitBin` / `TraitDistribution` (declarative.py): Trait distribution with partition/weighted_average
+- `ScenarioResult.sub_results` (model.py): Dict of per-pool ScenarioResults on composite results
+
+**Aggregation:** Servers, carbon, and cost are summed across pools. Per-server averages (utilization, power) are weighted by server count. Per-vCPU metrics use original total_vcpus.
+
+**Limitations:**
+1. No nested composites (a pool cannot reference another composite)
+2. Single split point (two-pool partition)
+3. Single trait per composite
+
 ### Resource Scaling for vCPU Density
 
 When oversubscription packs more vCPUs onto a server than HW threads, resources like memory and SSD must scale with the actual vCPU count. The `resource_scaling` option on a scenario makes specified components scale with `vcpus_per_server` instead of `hw_threads`.
