@@ -393,6 +393,20 @@ def plot_scenarios(
                                 xytext=(0, server_offset),
                                 textcoords='offset points', ha='center', va='top',
                                 fontsize=8, color=COLORS['neutral'])
+                    # Show per-pool breakdown for composite scenarios
+                    sub = s.get('sub_results')
+                    if sub:
+                        parts = []
+                        for pool_name, pool_data in sub.items():
+                            pool_servers = pool_data.get('num_servers', 0) if isinstance(pool_data, dict) else getattr(pool_data, 'num_servers', 0)
+                            if pool_servers > 0:
+                                parts.append(f"{pool_name}: {pool_servers}")
+                        if parts:
+                            breakdown_text = "(" + ", ".join(parts) + ")"
+                            ax.annotate(breakdown_text, xy=(i, 0),
+                                        xytext=(0, server_offset - 12),
+                                        textcoords='offset points', ha='center', va='top',
+                                        fontsize=7, color=COLORS['neutral'])
         ax.set_ylabel(f"{metric_info['label']} ({metric_info['unit']})",
                        fontsize=style.axis_label_fontsize)
         ax.set_ylim(0, max(total_vals) * 1.15)

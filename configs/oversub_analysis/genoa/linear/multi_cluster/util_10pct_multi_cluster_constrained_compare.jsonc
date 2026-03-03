@@ -13,7 +13,7 @@
         },
         "ssd_gb": {
           "capacity_per_thread": 75.0,
-          "demand_per_vcpu": 50.0
+          "demand_per_vcpu": 50
         }
       }
     },
@@ -29,7 +29,7 @@
         },
         "ssd_gb": {
           "capacity_per_thread": 150.0,
-          "demand_per_vcpu": 50.0
+          "demand_per_vcpu": 50
         }
       }
     },
@@ -44,7 +44,7 @@
         },
         "ssd_gb": {
           "capacity_per_thread": 75.0,
-          "demand_per_vcpu": 50.0
+          "demand_per_vcpu": 50
         }
       }
     },
@@ -61,7 +61,7 @@
         },
         "ssd_gb": {
           "capacity_per_thread": 150.0,
-          "demand_per_vcpu": 50.0
+          "demand_per_vcpu": 50
         }
       }
     },
@@ -110,9 +110,9 @@
     "separate_metric_plots": true,
     "show_plot_title": false,
     "labels": {
-      "smt_homogeneous": "SMT (R=3.0, same HW)",
-      "nosmt_homogeneous": "No-SMT (R=5.0, same HW, discount=0.75)",
-      "mixed_fleet": "Mixed Fleet (split=0.850, same HW)"
+      "smt_homogeneous": "SMT\n(R=3.0)",
+      "nosmt_homogeneous": "No-SMT\n(R=5.0)",
+      "mixed_fleet": "Mixed Fleet\n(split=0.850)"
     }
   },
   "processor": {

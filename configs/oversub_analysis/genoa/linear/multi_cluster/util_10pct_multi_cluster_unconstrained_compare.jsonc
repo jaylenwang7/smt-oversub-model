@@ -82,9 +82,9 @@
     "separate_metric_plots": true,
     "show_plot_title": false,
     "labels": {
-      "smt_homogeneous": "SMT (R=3.0)",
-      "nosmt_homogeneous": "No-SMT (R=5.0, discount=0.75)",
-      "mixed_fleet": "Mixed Fleet (split=0.863)"
+      "smt_homogeneous": "SMT\n(R=3.0)",
+      "nosmt_homogeneous": "No-SMT\n(R=5.0)",
+      "mixed_fleet": "Mixed Fleet\n(split=0.863)"
     }
   },
   "processor": {

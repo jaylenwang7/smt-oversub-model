@@ -18,7 +18,7 @@
         },
         "ssd_gb": {
           "capacity_per_thread": 75.0,
-          "demand_per_vcpu": 50.0
+          "demand_per_vcpu": 50
         }
       }
     },
@@ -38,7 +38,7 @@
         },
         "ssd_gb": {
           "capacity_per_thread": 150.0,
-          "demand_per_vcpu": 50.0
+          "demand_per_vcpu": 50
         }
       }
     }

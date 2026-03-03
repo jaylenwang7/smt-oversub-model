@@ -635,7 +635,7 @@ The opposite of `resource_scaling`: servers have **fixed capacities** and multip
       },
       "ssd_gb": {
         "capacity_per_server": 6000,
-        "demand_per_vcpu": 50.0
+        "demand_per_vcpu": 50
       }
     }
   }

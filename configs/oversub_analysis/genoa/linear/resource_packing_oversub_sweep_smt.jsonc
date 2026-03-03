@@ -1,24 +1,24 @@
 {
-  "name": "resource_packing_oversub_sweep",
-  "description": "Resource packing visualization: sweep oversub_ratio, compare scaled vs constrained for NoSMT with cores, memory, SSD capacity/demand.",
+  "name": "resource_packing_oversub_sweep_smt",
+  "description": "Resource packing visualization: sweep oversub_ratio, compare scaled vs constrained for SMT with cores, memory, SSD capacity/demand.",
   "scenarios": {
-    "nosmt_scaled": {
-      "processor": "nosmt_linear",
+    "smt_scaled": {
+      "processor": "smt",
       "oversub_ratio": 1.0,
       "resource_scaling": {
         "scale_with_vcpus": ["memory", "ssd"]
       }
     },
-    "nosmt_constrained": {
-      "processor": "nosmt_smt_hw_linear",
+    "smt_constrained": {
+      "processor": "smt",
       "oversub_ratio": 1.0,
       "resource_constraints": {
         "memory_gb": {
-          "capacity_per_thread": 9.6,
+          "capacity_per_thread": 4.8,
           "demand_per_vcpu": 4.0
         },
         "ssd_gb": {
-          "capacity_per_thread": 150.0,
+          "capacity_per_thread": 75.0,
           "demand_per_vcpu": 50
         }
       }
@@ -26,7 +26,7 @@
   },
   "analysis": {
     "type": "resource_packing",
-    "scenarios": ["nosmt_scaled", "nosmt_constrained"],
+    "scenarios": ["smt_scaled", "smt_constrained"],
     "sweep_parameter": "oversub_ratio",
     "sweep_values": [1.0, 1.5, 2.0, 2.5, 3.0],
     "resources": {
@@ -44,16 +44,15 @@
     "include_cores": true,
     "x_label": "Oversubscription Ratio",
     "labels": {
-      "nosmt_scaled": "NoSMT (scaled)",
-      "nosmt_constrained": "NoSMT (constrained)"
+      "smt_scaled": "SMT (scaled)",
+      "smt_constrained": "SMT (constrained)"
     },
     "plot": {
       "figsize": [12, 10]
     }
   },
   "processor": {
-    "nosmt_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_linear",
-    "nosmt_smt_hw_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_smt_hw_linear"
+    "smt": "configs/shared/genoa_processors.jsonc:genoa_smt"
   },
   "workload": {
     "total_vcpus": 10000,
@@ -64,6 +63,5 @@
     "electricity_cost_usd_kwh": 0.28,
     "lifetime_years": 6
   },
-  "power_curve": { "type": "polynomial" },
-  "output_dir": "./results/oversub_analysis/genoa/linear/resource_packing_oversub_sweep"
+  "output_dir": "./results/oversub_analysis/genoa/linear/resource_packing_oversub_sweep_smt"
 }
