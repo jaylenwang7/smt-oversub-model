@@ -56,7 +56,7 @@
     "nosmt_smt_hw_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_smt_hw_linear"
   },
   "workload": {
-    "total_vcpus": 10000,
+    "total_vcpus": 100000,
     "avg_util": 0.3
   },
   "cost": {

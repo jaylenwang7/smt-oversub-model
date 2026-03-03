@@ -1,11 +1,11 @@
 {
-  "name": "util_10pct_multi_cluster_constrained_compare",
-  "description": "At 10% utilization: Three-way bar comparison at the auto-computed breakeven split point. Compares homogeneous SMT, homogeneous no-SMT (same HW, avg discount 0.75), and mixed fleet (trait-split at breakeven). Constrained (resource_constraints) model.",
+  "name": "util_30pct_multi_cluster_constrained_compare",
+  "description": "At 30% utilization: Three-way bar comparison at the auto-computed breakeven split point. Compares homogeneous SMT, homogeneous no-SMT (same HW, avg discount 0.75), and mixed fleet (trait-split at breakeven). Constrained (resource_constraints) model.",
   "scenarios": {
     // 1. Homogeneous SMT baseline (same HW with resource constraints)
     "smt_homogeneous": {
       "processor": "smt",
-      "oversub_ratio": 3.0,
+      "oversub_ratio": 1.0,
       "resource_constraints": {
         "memory_gb": {
           "capacity_per_thread": 4.8,
@@ -20,7 +20,7 @@
     // 2. Homogeneous no-SMT: all VMs on same HW (SMT disabled) at fleet-average discount (0.75)
     "nosmt_homogeneous": {
       "processor": "nosmt_smt_hw_linear",
-      "oversub_ratio": 5.0,
+      "oversub_ratio": 1.67,
       "vcpu_demand_multiplier": 0.75,
       "resource_constraints": {
         "memory_gb": {
@@ -36,7 +36,7 @@
     // Sub-scenario: SMT pool (receives VMs above the split point)
     "smt_pool": {
       "processor": "smt",
-      "oversub_ratio": 3.0,
+      "oversub_ratio": 1.0,
       "resource_constraints": {
         "memory_gb": {
           "capacity_per_thread": 4.8,
@@ -52,7 +52,7 @@
     // vcpu_demand_multiplier overridden by trait weighted_average
     "nosmt_pool": {
       "processor": "nosmt_smt_hw_linear",
-      "oversub_ratio": 5.0,
+      "oversub_ratio": 1.67,
       "vcpu_demand_multiplier": 1.0,
       "resource_constraints": {
         "memory_gb": {
@@ -91,7 +91,7 @@
   },
   "workload": {
     "total_vcpus": 100000,
-    "avg_util": 0.1,
+    "avg_util": 0.3,
     "traits": {
       "vcpu_discount": {
         "type": "discrete",
@@ -118,8 +118,8 @@
     "separate_metric_plots": true,
     "show_plot_title": false,
     "labels": {
-      "smt_homogeneous": "SMT\n(R=3.0)",
-      "nosmt_homogeneous": "No-SMT\n(R=5.0)",
+      "smt_homogeneous": "SMT\n(R=1.0)",
+      "nosmt_homogeneous": "No-SMT\n(R=1.67)",
       "mixed_fleet": "Mixed Fleet\n(auto-breakeven)"
     }
   },
@@ -135,5 +135,5 @@
   "power_curve": {
     "type": "polynomial"
   },
-  "output_dir": "./results/oversub_analysis/genoa/linear/multi_cluster/util_10pct_multi_cluster_constrained_compare"
+  "output_dir": "./results/oversub_analysis/genoa/linear/multi_cluster/util_30pct_multi_cluster_constrained_compare"
 }

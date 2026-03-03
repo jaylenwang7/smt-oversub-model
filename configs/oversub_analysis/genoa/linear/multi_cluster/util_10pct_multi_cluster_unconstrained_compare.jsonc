@@ -1,6 +1,6 @@
 {
   "name": "util_10pct_multi_cluster_unconstrained_compare",
-  "description": "At 10% utilization: Three-way bar comparison at the breakeven split point (0.863). Compares homogeneous SMT, homogeneous no-SMT (avg discount 0.75), and mixed fleet (trait-split at breakeven). Unconstrained (resource_scaling) model.",
+  "description": "At 10% utilization: Three-way bar comparison at the auto-computed breakeven split point. Compares homogeneous SMT, homogeneous no-SMT (avg discount 0.75), and mixed fleet (trait-split at breakeven). Unconstrained (resource_scaling) model.",
   "scenarios": {
     // 1. Homogeneous SMT baseline
     "smt_homogeneous": {
@@ -37,7 +37,7 @@
         "scale_with_vcpus": ["memory", "ssd"]
       }
     },
-    // 3. Mixed fleet: trait-split at breakeven (0.863)
+    // 3. Mixed fleet: trait-split at auto-computed breakeven
     "mixed_fleet": {
       "composite": {
         "nosmt_pool": {
@@ -50,11 +50,19 @@
         }
       },
       "split_trait": "vcpu_discount",
-      "split_point": 0.863
+      "split_point": {
+        "auto_breakeven": {
+          "baseline_scenario": "smt_pool",
+          "target_scenario": "nosmt_pool",
+          "target_parameter": "vcpu_demand_multiplier",
+          "match_metric": "carbon",
+          "search_bounds": [0.5, 1.0]
+        }
+      }
     }
   },
   "workload": {
-    "total_vcpus": 10000,
+    "total_vcpus": 100000,
     "avg_util": 0.1,
     "traits": {
       "vcpu_discount": {
@@ -84,7 +92,7 @@
     "labels": {
       "smt_homogeneous": "SMT\n(R=3.0)",
       "nosmt_homogeneous": "No-SMT\n(R=5.0)",
-      "mixed_fleet": "Mixed Fleet\n(split=0.863)"
+      "mixed_fleet": "Mixed Fleet\n(auto-breakeven)"
     }
   },
   "processor": {

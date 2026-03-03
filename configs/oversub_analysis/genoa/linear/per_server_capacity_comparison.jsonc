@@ -93,7 +93,7 @@
     "nosmt": "configs/shared/genoa_processors.jsonc:genoa_nosmt_linear"
   },
   "workload": {
-    "total_vcpus": 10000,
+    "total_vcpus": 100000,
     "avg_util": 0.2,
     "avg_vm_size_vcpus": 4.0
   },

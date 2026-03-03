@@ -1,11 +1,11 @@
 {
-  "name": "util_10pct_multi_cluster_unconstrained",
-  "description": "At 10% utilization: Mixed fleet (SMT + No-SMT pools) using unconstrained (resource_scaling) model. VMs split by vCPU discount trait: below breakeven (0.863) go to no-SMT pool, above go to SMT pool. Uniform discount distribution from 0.5 to 1.0 (avg 0.75). No-SMT pool gets weighted average discount as vcpu_demand_multiplier; SMT pool uses multiplier 1.0. Sweep split_point to see sensitivity.",
+  "name": "util_20pct_multi_cluster_unconstrained",
+  "description": "At 20% utilization: Mixed fleet (SMT + No-SMT pools) using unconstrained (resource_scaling) model. VMs split by vCPU discount trait. Uniform discount distribution from 0.5 to 1.0 (avg 0.75). No-SMT pool gets weighted average discount as vcpu_demand_multiplier; SMT pool uses multiplier 1.0. Sweep split_point to see sensitivity.",
   "scenarios": {
     // Pure SMT baseline for comparison
     "smt_baseline": {
       "processor": "smt",
-      "oversub_ratio": 3.0,
+      "oversub_ratio": 1.33,
       "resource_scaling": {
         "scale_with_vcpus": ["memory", "ssd"]
       }
@@ -13,7 +13,7 @@
     // Sub-scenario: SMT pool (receives VMs above the split point)
     "smt_pool": {
       "processor": "smt",
-      "oversub_ratio": 3.0,
+      "oversub_ratio": 1.33,
       "resource_scaling": {
         "scale_with_vcpus": ["memory", "ssd"]
       }
@@ -22,7 +22,7 @@
     // vcpu_demand_multiplier will be overridden by trait weighted_average
     "nosmt_pool": {
       "processor": "nosmt_linear",
-      "oversub_ratio": 5.0,
+      "oversub_ratio": 2.34,
       "vcpu_demand_multiplier": 1.0,
       "resource_scaling": {
         "scale_with_vcpus": ["memory", "ssd"]
@@ -31,7 +31,7 @@
     // Homogeneous no-SMT: all VMs on no-SMT at fleet-average discount (0.75)
     "nosmt_homogeneous": {
       "processor": "nosmt_linear",
-      "oversub_ratio": 5.0,
+      "oversub_ratio": 2.34,
       "vcpu_demand_multiplier": 0.75,
       "resource_scaling": {
         "scale_with_vcpus": ["memory", "ssd"]
@@ -50,13 +50,12 @@
         }
       },
       "split_trait": "vcpu_discount",
-      // Breakeven from unconstrained 10% util analysis: 0.863
-      "split_point": 0.863
+      "split_point": 0.75
     }
   },
   "workload": {
     "total_vcpus": 100000,
-    "avg_util": 0.1,
+    "avg_util": 0.2,
     "traits": {
       // Uniform distribution from 0.5 to 1.0 in 0.05 steps
       // 11 equal bins, each with fraction 1/11 ≈ 0.0909
@@ -88,11 +87,9 @@
     "show_breakeven_marker": true,
     "separate_metric_plots": true,
     "show_plot_title": false,
-    "x_axis_markers": [0.863],
-    "x_axis_marker_labels": ["breakeven (0.863)"],
     "labels": {
-      "smt_baseline": "SMT (R=3.0, scaled)",
-      "nosmt_homogeneous": "No-SMT Homogeneous (R=5.0, discount=0.75)",
+      "smt_baseline": "SMT (R=1.33, scaled)",
+      "nosmt_homogeneous": "No-SMT Homogeneous (R=2.34, discount=0.75)",
       "mixed_fleet": "Mixed Fleet (SMT + No-SMT)"
     }
   },
@@ -108,5 +105,5 @@
   "power_curve": {
     "type": "polynomial"
   },
-  "output_dir": "./results/oversub_analysis/genoa/linear/multi_cluster/util_10pct_multi_cluster_unconstrained"
+  "output_dir": "./results/oversub_analysis/genoa/linear/multi_cluster/util_20pct_multi_cluster_unconstrained"
 }

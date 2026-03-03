@@ -20,7 +20,7 @@
     }
   },
   "workload": {
-    "total_vcpus": 10000,
+    "total_vcpus": 100000,
     "avg_util": 0.4
   },
   "analysis": {

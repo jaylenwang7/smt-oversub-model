@@ -31,6 +31,7 @@ from .declarative import (
     CompositePoolConfig,
     TraitBin,
     TraitDistribution,
+    AutoBreakevenSplitConfig,
 )
 from .model import (
     PowerCurve, ProcessorConfig, ScenarioParams,
@@ -4452,3 +4453,232 @@ class TestTraitCompositeEvaluation:
         engine = DeclarativeAnalysisEngine()
         with pytest.raises(ValueError, match="split_point"):
             engine.run(config)
+
+
+class TestAutoBreakevenSplitPoint:
+    """Tests for auto_breakeven split_point in composite scenarios."""
+
+    def _make_auto_breakeven_config(self, structured_costs=False):
+        """Helper to build a trait-based composite with auto_breakeven split_point."""
+        processors = {
+            'smt': {
+                'physical_cores': 48,
+                'threads_per_core': 2,
+                'power_idle_w': 100.0,
+                'power_max_w': 400.0,
+                'thread_overhead': 0,
+            },
+            'nosmt': {
+                'physical_cores': 48,
+                'threads_per_core': 1,
+                'power_idle_w': 90.0,
+                'power_max_w': 340.0,
+                'thread_overhead': 0,
+            },
+        }
+
+        if structured_costs:
+            processors['smt']['embodied_carbon'] = {
+                'per_thread': {'cpu_die': 5.0},
+                'per_server': {'chassis': 200.0},
+            }
+            processors['smt']['server_cost'] = {
+                'per_thread': {'cpu': 50.0},
+                'per_server': {'base': 1000.0},
+            }
+            processors['nosmt']['embodied_carbon'] = {
+                'per_thread': {'cpu_die': 7.0},
+                'per_server': {'chassis': 150.0},
+            }
+            processors['nosmt']['server_cost'] = {
+                'per_thread': {'cpu': 60.0},
+                'per_server': {'base': 800.0},
+            }
+
+        return {
+            'name': 'auto_breakeven_test',
+            'processor': processors,
+            'workload': {
+                'total_vcpus': 10000,
+                'avg_util': 0.3,
+                'traits': {
+                    'vcpu_discount': {
+                        'type': 'discrete',
+                        'bins': [
+                            {'value': 0.5, 'vcpu_fraction': 0.10},
+                            {'value': 0.6, 'vcpu_fraction': 0.15},
+                            {'value': 0.7, 'vcpu_fraction': 0.25},
+                            {'value': 0.8, 'vcpu_fraction': 0.20},
+                            {'value': 0.9, 'vcpu_fraction': 0.15},
+                            {'value': 1.0, 'vcpu_fraction': 0.15},
+                        ],
+                    }
+                },
+            },
+            'cost': {
+                'embodied_carbon_kg': 1000.0,
+                'server_cost_usd': 10000.0,
+                'carbon_intensity_g_kwh': 400.0,
+                'electricity_cost_usd_kwh': 0.10,
+                'lifetime_years': 5.0,
+            },
+            'scenarios': {
+                'smt_baseline': {
+                    'processor': 'smt',
+                    'oversub_ratio': 1.0,
+                },
+                'nosmt_pool': {
+                    'processor': 'nosmt',
+                    'oversub_ratio': 2.0,
+                },
+                'smt_pool': {
+                    'processor': 'smt',
+                    'oversub_ratio': 1.0,
+                },
+                'mixed_fleet': {
+                    'composite': {
+                        'nosmt_pool': {
+                            'allocation': 'below_split',
+                            'parameter_effects': {'vcpu_demand_multiplier': 'weighted_average'},
+                        },
+                        'smt_pool': {
+                            'allocation': 'above_split',
+                            'parameter_effects': {'vcpu_demand_multiplier': 1.0},
+                        },
+                    },
+                    'split_trait': 'vcpu_discount',
+                    'split_point': {
+                        'auto_breakeven': {
+                            'baseline_scenario': 'smt_pool',
+                            'target_scenario': 'nosmt_pool',
+                            'target_parameter': 'vcpu_demand_multiplier',
+                            'match_metric': 'carbon',
+                            'search_bounds': [0.5, 1.0],
+                        }
+                    },
+                },
+            },
+            'analysis': {
+                'type': 'compare',
+                'baseline': 'smt_baseline',
+            },
+        }
+
+    def test_auto_breakeven_resolves(self):
+        """Auto-breakeven computes a split_point and evaluates the composite."""
+        config_dict = self._make_auto_breakeven_config()
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        # Should produce results
+        assert result is not None
+        assert 'mixed_fleet' in result.scenario_results
+
+        # The scenario_results are dicts; check auto_resolved_split_point
+        mixed_dict = result.scenario_results['mixed_fleet']
+        assert mixed_dict.get('auto_resolved_split_point') is not None
+        split_val = mixed_dict['auto_resolved_split_point']
+        # Should be within search bounds
+        assert 0.5 <= split_val <= 1.0
+        # Should have sub_results from composite evaluation
+        assert mixed_dict.get('sub_results') is not None
+
+    def test_auto_breakeven_with_structured_costs(self):
+        """Structured per-processor costs propagate through auto-breakeven."""
+        config_dict = self._make_auto_breakeven_config(structured_costs=True)
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        mixed_dict = result.scenario_results['mixed_fleet']
+        assert mixed_dict.get('auto_resolved_split_point') is not None
+
+        # Verify structured costs were used (not defaults)
+        # smt: 5.0 * 96 + 200 = 680 per server (not default 1000)
+        # nosmt: 7.0 * 48 + 150 = 486 per server (not default 1000)
+        sub_results = mixed_dict['sub_results']
+        smt_sub = sub_results['smt_pool']
+        nosmt_sub = sub_results['nosmt_pool']
+        if smt_sub['num_servers'] > 0:
+            per_server_carbon_smt = smt_sub['embodied_carbon_kg'] / smt_sub['num_servers']
+            assert abs(per_server_carbon_smt - 680.0) < 1.0, (
+                f"Expected ~680 kg/server for SMT, got {per_server_carbon_smt}"
+            )
+        if nosmt_sub['num_servers'] > 0:
+            per_server_carbon_nosmt = nosmt_sub['embodied_carbon_kg'] / nosmt_sub['num_servers']
+            assert abs(per_server_carbon_nosmt - 486.0) < 1.0, (
+                f"Expected ~486 kg/server for no-SMT, got {per_server_carbon_nosmt}"
+            )
+
+    def test_auto_breakeven_from_dict_to_dict_roundtrip(self):
+        """AutoBreakevenSplitConfig serializes and deserializes correctly."""
+        config_dict = self._make_auto_breakeven_config()
+        config = AnalysisConfig.from_dict(config_dict)
+
+        # Check the parsed split_point is AutoBreakevenSplitConfig
+        mixed_cfg = config.scenarios['mixed_fleet']
+        assert isinstance(mixed_cfg.split_point, AutoBreakevenSplitConfig)
+        assert mixed_cfg.split_point.baseline_scenario == 'smt_pool'
+        assert mixed_cfg.split_point.target_scenario == 'nosmt_pool'
+        assert mixed_cfg.split_point.target_parameter == 'vcpu_demand_multiplier'
+        assert mixed_cfg.split_point.match_metric == 'carbon'
+        assert mixed_cfg.split_point.search_bounds == (0.5, 1.0)
+
+        # Round-trip through to_dict
+        d = mixed_cfg.to_dict()
+        assert 'split_point' in d
+        assert 'auto_breakeven' in d['split_point']
+        ab = d['split_point']['auto_breakeven']
+        assert ab['baseline_scenario'] == 'smt_pool'
+        assert ab['target_scenario'] == 'nosmt_pool'
+        assert ab['search_bounds'] == [0.5, 1.0]
+
+        # Re-parse from to_dict output
+        reparsed = ScenarioConfig.from_dict(d)
+        assert isinstance(reparsed.split_point, AutoBreakevenSplitConfig)
+        assert reparsed.split_point.baseline_scenario == 'smt_pool'
+
+    def test_auto_breakeven_failed_raises_error(self):
+        """Impossible breakeven raises ValueError."""
+        config_dict = self._make_auto_breakeven_config()
+        # Set impossible search bounds (both very low, no breakeven possible)
+        config_dict['scenarios']['mixed_fleet']['split_point'] = {
+            'auto_breakeven': {
+                'baseline_scenario': 'smt_pool',
+                'target_scenario': 'nosmt_pool',
+                'target_parameter': 'vcpu_demand_multiplier',
+                'match_metric': 'carbon',
+                'search_bounds': [0.001, 0.002],  # impossibly narrow
+            }
+        }
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        with pytest.raises(ValueError, match="breakeven not found"):
+            engine.run(config)
+
+    def test_auto_breakeven_nonexistent_pool_raises_error(self):
+        """Referencing a non-pool scenario in auto_breakeven raises ValueError."""
+        config_dict = self._make_auto_breakeven_config()
+        config_dict['scenarios']['mixed_fleet']['split_point'] = {
+            'auto_breakeven': {
+                'baseline_scenario': 'smt_baseline',  # exists as scenario but not a pool
+                'target_scenario': 'nosmt_pool',
+                'target_parameter': 'vcpu_demand_multiplier',
+                'match_metric': 'carbon',
+                'search_bounds': [0.5, 1.0],
+            }
+        }
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        with pytest.raises(ValueError, match="not a pool"):
+            engine.run(config)
+
+    def test_float_split_point_still_works(self):
+        """Float split_point still works (backward compat)."""
+        config_dict = _make_trait_composite_config(split_point=0.75)
+        config = AnalysisConfig.from_dict(config_dict)
+        assert config.scenarios['mixed_fleet'].split_point == 0.75
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+        assert result is not None

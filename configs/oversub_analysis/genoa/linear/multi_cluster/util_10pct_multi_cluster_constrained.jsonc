@@ -85,7 +85,7 @@
     }
   },
   "workload": {
-    "total_vcpus": 10000,
+    "total_vcpus": 100000,
     "avg_util": 0.1,
     "traits": {
       // Uniform distribution from 0.5 to 1.0 in 0.05 steps

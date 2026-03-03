@@ -507,7 +507,7 @@ Fractions must sum to 1.0. Each sub-scenario retains all its existing features (
 ```json
 {
   "workload": {
-    "total_vcpus": 10000,
+    "total_vcpus": 100000,
     "avg_util": 0.3,
     "traits": {
       "vcpu_discount": {
@@ -544,6 +544,32 @@ Fractions must sum to 1.0. Each sub-scenario retains all its existing features (
 
 **parameter_effects:** `"weighted_average"` computes weighted avg of trait values in the partition. Fixed values (numbers) are used directly. Supports any parameter path (e.g., `vcpu_demand_multiplier`, `workload.avg_util`).
 
+**Auto-breakeven split_point:**
+
+Instead of hardcoding `split_point` as a float, use `auto_breakeven` to automatically compute it via breakeven search between two sub-scenarios:
+
+```json
+{
+  "split_point": {
+    "auto_breakeven": {
+      "baseline_scenario": "smt_pool",
+      "target_scenario": "nosmt_pool",
+      "target_parameter": "vcpu_demand_multiplier",
+      "match_metric": "carbon",
+      "search_bounds": [0.5, 1.0]
+    }
+  }
+}
+```
+
+Fields:
+- `baseline_scenario` / `target_scenario`: Must be pool names in the composite AND defined scenarios
+- `target_parameter`: Parameter to vary on the target (e.g., `vcpu_demand_multiplier`)
+- `match_metric`: `"carbon"` or `"tco"` (default: `"carbon"`)
+- `search_bounds`: Binary search range (default: `[0.5, 1.0]`)
+
+The resolved value is stored on `ScenarioResult.auto_resolved_split_point`. When `split_point` is swept directly (via `compare_sweep`), the sweep float overrides any auto_breakeven config.
+
 **Sweep the split point:**
 ```json
 {
@@ -559,8 +585,10 @@ Fractions must sum to 1.0. Each sub-scenario retains all its existing features (
 
 **Key classes:**
 - `CompositePoolConfig` (declarative.py): Per-pool config with vcpu_fraction or allocation/parameter_effects
+- `AutoBreakevenSplitConfig` (declarative.py): Config for auto-computing split_point via breakeven search
 - `TraitBin` / `TraitDistribution` (declarative.py): Trait distribution with partition/weighted_average
 - `ScenarioResult.sub_results` (model.py): Dict of per-pool ScenarioResults on composite results
+- `ScenarioResult.auto_resolved_split_point` (model.py): Float value when auto-breakeven was used
 
 **Aggregation:** Servers, carbon, and cost are summed across pools. Per-server averages (utilization, power) are weighted by server count. Per-vCPU metrics use original total_vcpus.
 

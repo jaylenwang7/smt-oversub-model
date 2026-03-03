@@ -712,6 +712,41 @@ class CompositePoolConfig:
 
 
 @dataclass
+class AutoBreakevenSplitConfig:
+    """Configuration for auto-computing split_point via breakeven search.
+
+    Instead of hardcoding a split_point float, this config tells the engine
+    to find the split_point by running a breakeven search between two
+    sub-scenarios of the composite.
+    """
+    baseline_scenario: str  # Sub-scenario name to use as reference
+    target_scenario: str  # Sub-scenario name to vary
+    target_parameter: str  # Parameter to vary on target (e.g., 'vcpu_demand_multiplier')
+    match_metric: str = 'carbon'  # 'carbon' or 'tco'
+    search_bounds: Tuple[float, float] = (0.5, 1.0)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'AutoBreakevenSplitConfig':
+        bounds = data.get('search_bounds', [0.5, 1.0])
+        return cls(
+            baseline_scenario=data['baseline_scenario'],
+            target_scenario=data['target_scenario'],
+            target_parameter=data['target_parameter'],
+            match_metric=data.get('match_metric', 'carbon'),
+            search_bounds=tuple(bounds),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'baseline_scenario': self.baseline_scenario,
+            'target_scenario': self.target_scenario,
+            'target_parameter': self.target_parameter,
+            'match_metric': self.match_metric,
+            'search_bounds': list(self.search_bounds),
+        }
+
+
+@dataclass
 class ScenarioConfig:
     """Configuration for a single scenario.
 
@@ -730,7 +765,7 @@ class ScenarioConfig:
     # Composite scenario fields
     composite: Optional[Dict[str, CompositePoolConfig]] = None
     split_trait: Optional[str] = None  # Key into workload.traits for trait-based allocation
-    split_point: Optional[float] = None  # Trait value to split on
+    split_point: Optional[Union[float, AutoBreakevenSplitConfig]] = None  # Trait value or auto-breakeven config
 
     @property
     def is_composite(self) -> bool:
@@ -774,8 +809,19 @@ class ScenarioConfig:
             avg_vm_size_vcpus=data.get('avg_vm_size_vcpus'),
             composite=composite,
             split_trait=data.get('split_trait'),
-            split_point=data.get('split_point'),
+            split_point=cls._parse_split_point(data.get('split_point')),
         )
+
+    @staticmethod
+    def _parse_split_point(raw) -> Optional[Union[float, AutoBreakevenSplitConfig]]:
+        """Parse split_point from config: float, auto_breakeven dict, or None."""
+        if raw is None:
+            return None
+        if isinstance(raw, (int, float)):
+            return float(raw)
+        if isinstance(raw, dict) and 'auto_breakeven' in raw:
+            return AutoBreakevenSplitConfig.from_dict(raw['auto_breakeven'])
+        raise ValueError(f"Invalid split_point format: {raw}")
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {}
@@ -799,7 +845,10 @@ class ScenarioConfig:
         if self.split_trait is not None:
             d['split_trait'] = self.split_trait
         if self.split_point is not None:
-            d['split_point'] = self.split_point
+            if isinstance(self.split_point, AutoBreakevenSplitConfig):
+                d['split_point'] = {'auto_breakeven': self.split_point.to_dict()}
+            else:
+                d['split_point'] = self.split_point
         return d
 
 
@@ -2690,6 +2739,19 @@ class DeclarativeAnalysisEngine:
         # Aggregate sub-results
         aggregated = self._aggregate_sub_results(sub_results, total_vcpus)
 
+        # Set auto_resolved_split_point if auto-breakeven was used
+        if hasattr(scenario_cfg, '_resolved_split_point'):
+            resolved_sp = scenario_cfg._resolved_split_point
+            aggregated.auto_resolved_split_point = resolved_sp
+
+            # Update label to include the resolved split_point value
+            if self._config.analysis and self._config.analysis.labels:
+                label = self._config.analysis.labels.get(name)
+                if label and 'auto-breakeven' in label:
+                    self._config.analysis.labels[name] = label.replace(
+                        'auto-breakeven', f'split={resolved_sp:.3f}'
+                    )
+
         # Return a dummy ScenarioParams (composite has no single processor)
         # Use the first pool's processor for the dummy params
         first_pool = pool_names[0]
@@ -2729,11 +2791,21 @@ class DeclarativeAnalysisEngine:
         if scenario_cfg.split_trait is not None:
             # Trait-based allocation
             trait_name = scenario_cfg.split_trait
-            split_point = scenario_cfg.split_point
-            if split_point is None:
+            raw_split_point = scenario_cfg.split_point
+            if raw_split_point is None:
                 raise ValueError(
                     f"Composite scenario '{name}' has split_trait but no split_point"
                 )
+
+            # Resolve auto-breakeven split_point if needed
+            if isinstance(raw_split_point, AutoBreakevenSplitConfig):
+                split_point = self._resolve_auto_breakeven_split_point(
+                    name, raw_split_point, composite
+                )
+                # Store resolved value for output access
+                scenario_cfg._resolved_split_point = split_point
+            else:
+                split_point = raw_split_point
 
             traits = self._config.workload.traits
             if not traits or trait_name not in traits:
@@ -2780,6 +2852,81 @@ class DeclarativeAnalysisEngine:
                 pool_fractions[pool_name] = pool_cfg.vcpu_fraction
 
         return pool_fractions, pool_effects
+
+    def _resolve_auto_breakeven_split_point(
+        self,
+        composite_name: str,
+        auto_cfg: AutoBreakevenSplitConfig,
+        composite: Dict[str, CompositePoolConfig],
+    ) -> float:
+        """Resolve an auto_breakeven split_point by running a breakeven search.
+
+        Evaluates the baseline sub-scenario to get a reference result, then
+        uses GeneralizedBreakevenFinder to find the target_parameter value
+        where the target sub-scenario matches the baseline on match_metric.
+
+        Args:
+            composite_name: Name of the composite scenario (for error messages)
+            auto_cfg: Auto-breakeven configuration
+            composite: Pool configs from the composite scenario
+
+        Returns:
+            The breakeven value (float) to use as split_point
+
+        Raises:
+            ValueError: If referenced scenarios don't exist or breakeven not found
+        """
+        # Validate referenced scenarios exist as pools and as defined scenarios
+        for scenario_ref in [auto_cfg.baseline_scenario, auto_cfg.target_scenario]:
+            if scenario_ref not in composite:
+                raise ValueError(
+                    f"auto_breakeven in composite '{composite_name}' references "
+                    f"'{scenario_ref}' which is not a pool in the composite"
+                )
+            if scenario_ref not in self._config.scenarios:
+                raise ValueError(
+                    f"auto_breakeven in composite '{composite_name}' references "
+                    f"'{scenario_ref}' which is not a defined scenario"
+                )
+
+        # Evaluate baseline sub-scenario to get reference result
+        _, ref_result = self._evaluate_sub_scenario(auto_cfg.baseline_scenario)
+
+        # Build target scenario params with cost overrides
+        target_name = auto_cfg.target_scenario
+        cost_overrides, modified_params = self._resolve_scenario_cost_overrides(target_name)
+        if modified_params is not None:
+            target_params = modified_params
+        else:
+            target_cfg = self._config.scenarios[target_name]
+            target_params = self._build_scenario_params(target_cfg)
+
+        # Build match condition
+        condition = SimpleCondition(
+            metric=auto_cfg.match_metric,
+            match_type=MatchType.EQUAL,
+        )
+
+        # Run breakeven search
+        finder = GeneralizedBreakevenFinder(self._model)
+        be_result = finder.find_breakeven(
+            base_scenario=target_params,
+            reference_result=ref_result,
+            vary_parameter=auto_cfg.target_parameter,
+            match_condition=condition,
+            search_bounds=auto_cfg.search_bounds,
+            cost_overrides=cost_overrides if cost_overrides else None,
+        )
+
+        if not be_result.achieved or be_result.breakeven_value is None:
+            raise ValueError(
+                f"auto_breakeven in composite '{composite_name}': breakeven not found "
+                f"for {auto_cfg.target_parameter} matching {auto_cfg.match_metric} "
+                f"between '{auto_cfg.baseline_scenario}' and '{auto_cfg.target_scenario}' "
+                f"in bounds {auto_cfg.search_bounds}"
+            )
+
+        return be_result.breakeven_value
 
     def _aggregate_sub_results(
         self,

@@ -1,68 +1,40 @@
 {
-  "name": "util_10pct_multi_cluster_constrained_compare",
-  "description": "At 10% utilization: Three-way bar comparison at the auto-computed breakeven split point. Compares homogeneous SMT, homogeneous no-SMT (same HW, avg discount 0.75), and mixed fleet (trait-split at breakeven). Constrained (resource_constraints) model.",
+  "name": "util_30pct_multi_cluster_unconstrained_compare",
+  "description": "At 30% utilization: Three-way bar comparison at the auto-computed breakeven split point. Compares homogeneous SMT, homogeneous no-SMT (avg discount 0.75), and mixed fleet (trait-split at breakeven). Unconstrained (resource_scaling) model.",
   "scenarios": {
-    // 1. Homogeneous SMT baseline (same HW with resource constraints)
+    // 1. Homogeneous SMT baseline
     "smt_homogeneous": {
       "processor": "smt",
-      "oversub_ratio": 3.0,
-      "resource_constraints": {
-        "memory_gb": {
-          "capacity_per_thread": 4.8,
-          "demand_per_vcpu": 4.0
-        },
-        "ssd_gb": {
-          "capacity_per_thread": 75.0,
-          "demand_per_vcpu": 50
-        }
+      "oversub_ratio": 1.14,
+      "resource_scaling": {
+        "scale_with_vcpus": ["memory", "ssd"]
       }
     },
-    // 2. Homogeneous no-SMT: all VMs on same HW (SMT disabled) at fleet-average discount (0.75)
+    // 2. Homogeneous no-SMT: all VMs at fleet-average discount (0.75)
     "nosmt_homogeneous": {
-      "processor": "nosmt_smt_hw_linear",
-      "oversub_ratio": 5.0,
+      "processor": "nosmt_linear",
+      "oversub_ratio": 1.6,
       "vcpu_demand_multiplier": 0.75,
-      "resource_constraints": {
-        "memory_gb": {
-          "capacity_per_thread": 9.6,
-          "demand_per_vcpu": 4.0
-        },
-        "ssd_gb": {
-          "capacity_per_thread": 150.0,
-          "demand_per_vcpu": 50
-        }
+      "resource_scaling": {
+        "scale_with_vcpus": ["memory", "ssd"]
       }
     },
     // Sub-scenario: SMT pool (receives VMs above the split point)
     "smt_pool": {
       "processor": "smt",
-      "oversub_ratio": 3.0,
-      "resource_constraints": {
-        "memory_gb": {
-          "capacity_per_thread": 4.8,
-          "demand_per_vcpu": 4.0
-        },
-        "ssd_gb": {
-          "capacity_per_thread": 75.0,
-          "demand_per_vcpu": 50
-        }
+      "oversub_ratio": 1.14,
+      "resource_scaling": {
+        "scale_with_vcpus": ["memory", "ssd"]
       }
     },
-    // Sub-scenario: No-SMT pool on same SMT hardware with SMT disabled
+    // Sub-scenario: No-SMT pool (receives VMs below the split point)
     // vcpu_demand_multiplier overridden by trait weighted_average
     "nosmt_pool": {
-      "processor": "nosmt_smt_hw_linear",
-      "oversub_ratio": 5.0,
+      "processor": "nosmt_linear",
+      "oversub_ratio": 1.6,
       "vcpu_demand_multiplier": 1.0,
-      "resource_constraints": {
-        "memory_gb": {
-          "capacity_per_thread": 9.6,
-          "demand_per_vcpu": 4.0
-        },
-        "ssd_gb": {
-          "capacity_per_thread": 150.0,
-          "demand_per_vcpu": 50
-        }
+      "resource_scaling": {
+        "scale_with_vcpus": ["memory", "ssd"]
       }
     },
     // 3. Mixed fleet: trait-split at auto-computed breakeven
@@ -91,7 +63,7 @@
   },
   "workload": {
     "total_vcpus": 100000,
-    "avg_util": 0.1,
+    "avg_util": 0.3,
     "traits": {
       "vcpu_discount": {
         "type": "discrete",
@@ -118,14 +90,14 @@
     "separate_metric_plots": true,
     "show_plot_title": false,
     "labels": {
-      "smt_homogeneous": "SMT\n(R=3.0)",
-      "nosmt_homogeneous": "No-SMT\n(R=5.0)",
+      "smt_homogeneous": "SMT\n(R=1.14)",
+      "nosmt_homogeneous": "No-SMT\n(R=1.6)",
       "mixed_fleet": "Mixed Fleet\n(auto-breakeven)"
     }
   },
   "processor": {
     "smt": "configs/shared/genoa_processors.jsonc:genoa_smt",
-    "nosmt_smt_hw_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_smt_hw_linear"
+    "nosmt_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_linear"
   },
   "cost": {
     "carbon_intensity_g_kwh": 175,
@@ -135,5 +107,5 @@
   "power_curve": {
     "type": "polynomial"
   },
-  "output_dir": "./results/oversub_analysis/genoa/linear/multi_cluster/util_10pct_multi_cluster_constrained_compare"
+  "output_dir": "./results/oversub_analysis/genoa/linear/multi_cluster/util_30pct_multi_cluster_unconstrained_compare"
 }

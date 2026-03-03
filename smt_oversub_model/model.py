@@ -408,6 +408,7 @@ class ScenarioResult:
     power_breakdown: Optional[PowerBreakdown] = None
     resource_constraint_result: Optional[ResourceConstraintResult] = None
     sub_results: Optional[Dict[str, 'ScenarioResult']] = None
+    auto_resolved_split_point: Optional[float] = None
 
 
 class OverssubModel:

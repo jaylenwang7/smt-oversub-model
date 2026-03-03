@@ -1,11 +1,11 @@
 {
-  "name": "util_10pct_multi_cluster_constrained_compare",
-  "description": "At 10% utilization: Three-way bar comparison at the auto-computed breakeven split point. Compares homogeneous SMT, homogeneous no-SMT (same HW, avg discount 0.75), and mixed fleet (trait-split at breakeven). Constrained (resource_constraints) model.",
+  "name": "util_30pct_multi_cluster_constrained",
+  "description": "At 30% utilization: Mixed fleet (SMT + No-SMT pools) using constrained (resource_constraints, same HW) model. VMs split by vCPU discount trait. Uniform discount distribution from 0.5 to 1.0 (avg 0.75). No-SMT pool gets weighted average discount as vcpu_demand_multiplier; SMT pool uses multiplier 1.0. Both pools use resource_constraints for fixed server capacities. Sweep split_point to see sensitivity.",
   "scenarios": {
-    // 1. Homogeneous SMT baseline (same HW with resource constraints)
-    "smt_homogeneous": {
+    // Pure SMT baseline for comparison (same HW with resource constraints)
+    "smt_baseline": {
       "processor": "smt",
-      "oversub_ratio": 3.0,
+      "oversub_ratio": 1.0,
       "resource_constraints": {
         "memory_gb": {
           "capacity_per_thread": 4.8,
@@ -17,26 +17,10 @@
         }
       }
     },
-    // 2. Homogeneous no-SMT: all VMs on same HW (SMT disabled) at fleet-average discount (0.75)
-    "nosmt_homogeneous": {
-      "processor": "nosmt_smt_hw_linear",
-      "oversub_ratio": 5.0,
-      "vcpu_demand_multiplier": 0.75,
-      "resource_constraints": {
-        "memory_gb": {
-          "capacity_per_thread": 9.6,
-          "demand_per_vcpu": 4.0
-        },
-        "ssd_gb": {
-          "capacity_per_thread": 150.0,
-          "demand_per_vcpu": 50
-        }
-      }
-    },
     // Sub-scenario: SMT pool (receives VMs above the split point)
     "smt_pool": {
       "processor": "smt",
-      "oversub_ratio": 3.0,
+      "oversub_ratio": 1.0,
       "resource_constraints": {
         "memory_gb": {
           "capacity_per_thread": 4.8,
@@ -49,10 +33,12 @@
       }
     },
     // Sub-scenario: No-SMT pool on same SMT hardware with SMT disabled
-    // vcpu_demand_multiplier overridden by trait weighted_average
+    // vcpu_demand_multiplier will be overridden by trait weighted_average
+    // Same physical server as SMT: 768GB memory, 12TB SSD
+    // 80 HW threads → doubled capacity_per_thread vs purpose-built
     "nosmt_pool": {
       "processor": "nosmt_smt_hw_linear",
-      "oversub_ratio": 5.0,
+      "oversub_ratio": 1.67,
       "vcpu_demand_multiplier": 1.0,
       "resource_constraints": {
         "memory_gb": {
@@ -65,7 +51,23 @@
         }
       }
     },
-    // 3. Mixed fleet: trait-split at auto-computed breakeven
+    // Homogeneous no-SMT: all VMs on no-SMT (same HW) at fleet-average discount (0.75)
+    "nosmt_homogeneous": {
+      "processor": "nosmt_smt_hw_linear",
+      "oversub_ratio": 1.67,
+      "vcpu_demand_multiplier": 0.75,
+      "resource_constraints": {
+        "memory_gb": {
+          "capacity_per_thread": 9.6,
+          "demand_per_vcpu": 4.0
+        },
+        "ssd_gb": {
+          "capacity_per_thread": 150.0,
+          "demand_per_vcpu": 50
+        }
+      }
+    },
+    // Composite: split fleet by vCPU discount trait
     "mixed_fleet": {
       "composite": {
         "nosmt_pool": {
@@ -78,21 +80,15 @@
         }
       },
       "split_trait": "vcpu_discount",
-      "split_point": {
-        "auto_breakeven": {
-          "baseline_scenario": "smt_pool",
-          "target_scenario": "nosmt_pool",
-          "target_parameter": "vcpu_demand_multiplier",
-          "match_metric": "carbon",
-          "search_bounds": [0.5, 1.0]
-        }
-      }
+      "split_point": 0.75
     }
   },
   "workload": {
     "total_vcpus": 100000,
-    "avg_util": 0.1,
+    "avg_util": 0.3,
     "traits": {
+      // Uniform distribution from 0.5 to 1.0 in 0.05 steps
+      // 11 equal bins, each with fraction 1/11 ≈ 0.0909
       "vcpu_discount": {
         "type": "discrete",
         "bins": [
@@ -112,15 +108,19 @@
     }
   },
   "analysis": {
-    "type": "compare",
-    "baseline": "smt_homogeneous",
-    "scenarios": ["smt_homogeneous", "nosmt_homogeneous", "mixed_fleet"],
+    "type": "compare_sweep",
+    "baseline": "smt_baseline",
+    "sweep_scenarios": ["nosmt_homogeneous", "mixed_fleet"],
+    "sweep_parameter": "split_point",
+    "sweep_parameter_label": "vCPU Discount Split Point",
+    "sweep_values": [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.01],
+    "show_breakeven_marker": true,
     "separate_metric_plots": true,
     "show_plot_title": false,
     "labels": {
-      "smt_homogeneous": "SMT\n(R=3.0)",
-      "nosmt_homogeneous": "No-SMT\n(R=5.0)",
-      "mixed_fleet": "Mixed Fleet\n(auto-breakeven)"
+      "smt_baseline": "SMT (R=1.0, same HW)",
+      "nosmt_homogeneous": "No-SMT Homogeneous (R=1.67, discount=0.75)",
+      "mixed_fleet": "Mixed Fleet (SMT + No-SMT, same HW)"
     }
   },
   "processor": {
@@ -135,5 +135,5 @@
   "power_curve": {
     "type": "polynomial"
   },
-  "output_dir": "./results/oversub_analysis/genoa/linear/multi_cluster/util_10pct_multi_cluster_constrained_compare"
+  "output_dir": "./results/oversub_analysis/genoa/linear/multi_cluster/util_30pct_multi_cluster_constrained"
 }
