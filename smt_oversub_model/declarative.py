@@ -4116,11 +4116,22 @@ class DeclarativeAnalysisEngine:
         # Core limit (max vCPUs that cores can support)
         core_limit = float(available_pcpus * oversub_ratio)
 
-        # For constrained scenarios, compute resource limits
+        # For constrained scenarios, compute resource limits using user-available
+        # capacity (excludes overhead threads' share — those resources aren't
+        # stranded, they're used by the host)
         resource_limits = {'cores': core_limit}
         if has_constraints:
             for res_name, spec in scenario_cfg.resource_constraints.constraints.items():
-                resource_limits[res_name] = spec.max_vcpus(hw_threads)
+                if spec.capacity_per_thread is not None:
+                    user_cap = spec.capacity_per_thread * available_pcpus
+                elif spec.capacity_per_server is not None:
+                    user_cap = spec.capacity_per_server
+                else:
+                    user_cap = 0.0
+                resource_limits[res_name] = (
+                    user_cap / spec.demand_per_vcpu
+                    if spec.demand_per_vcpu > 0 else 0.0
+                )
 
         # Effective vCPUs (constrained = min of all limits, otherwise = core limit)
         if has_constraints:
@@ -4130,9 +4141,9 @@ class DeclarativeAnalysisEngine:
 
         effective_R = effective_vcpus / available_pcpus if available_pcpus > 0 else 0.0
 
-        # For scaled scenarios, vcpus_per_server grows
+        # vcpus_per_server = user vCPUs placed on the server
         if has_scaling:
-            vcpus_per_server = max(float(hw_threads), core_limit)
+            vcpus_per_server = core_limit
         else:
             vcpus_per_server = effective_vcpus
 
@@ -4174,11 +4185,11 @@ class DeclarativeAnalysisEngine:
                 )
 
             if has_constraints and scenario_cfg.resource_constraints:
-                # Capacity is fixed hardware
+                # User-available capacity (excludes overhead threads)
                 spec = scenario_cfg.resource_constraints.constraints.get(res_name)
                 if spec:
                     if spec.capacity_per_thread is not None:
-                        capacity = spec.capacity_per_thread * hw_threads
+                        capacity = spec.capacity_per_thread * available_pcpus
                     elif spec.capacity_per_server is not None:
                         capacity = spec.capacity_per_server
                     else:
@@ -4187,7 +4198,7 @@ class DeclarativeAnalysisEngine:
                     capacity = 0
                 demand = demand_per_vcpu * effective_vcpus
             elif has_scaling and scenario_cfg.resource_scaling:
-                # Capacity grows with vcpus_per_server if this resource is in scale_with_vcpus
+                # Capacity and demand based on user vCPUs (core_limit)
                 scale_resources = scenario_cfg.resource_scaling.scale_with_vcpus
                 # Handle name variants (memory_gb matches 'memory' in scale_with_vcpus)
                 should_scale = (res_name in scale_resources)
@@ -4196,13 +4207,13 @@ class DeclarativeAnalysisEngine:
                     if len(parts) == 2:
                         should_scale = (parts[0] in scale_resources)
                 if should_scale:
-                    capacity = cap_per_thread * vcpus_per_server
+                    capacity = cap_per_thread * core_limit
                 else:
-                    capacity = cap_per_thread * hw_threads
-                demand = demand_per_vcpu * vcpus_per_server
+                    capacity = cap_per_thread * available_pcpus
+                demand = demand_per_vcpu * core_limit
             else:
-                # Unscaled: fixed capacity, demand may exceed
-                capacity = cap_per_thread * hw_threads
+                # Unscaled: fixed user-available capacity
+                capacity = cap_per_thread * available_pcpus
                 demand = demand_per_vcpu * core_limit
 
             util_pct = (demand / capacity * 100.0) if capacity > 0 else 0.0
