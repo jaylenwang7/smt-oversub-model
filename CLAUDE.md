@@ -97,6 +97,11 @@ The declarative framework allows config-driven analyses with support for finding
 2. **`compare`**: Compare multiple scenarios
 3. **`sweep`**: Run breakeven analysis across parameter sweep
 4. **`compare_sweep`**: Compare scenarios while sweeping a parameter, showing % change vs baseline at each sweep value. Useful for sensitivity analysis (e.g., "how do savings change as vCPU discount varies?")
+5. **`breakeven_curve`**: Aggregate breakeven values from multiple sub-config files into a curve (e.g., breakeven vs utilization)
+6. **`savings_curve`**: Aggregate compare_sweep results from multiple sub-configs into a multi-line savings plot
+7. **`per_server_comparison`**: Compare per-server metrics (capacity, embodied carbon breakdown) across configurations
+8. **`resource_packing`**: Visualize resource utilization, bottlenecks, and stranded capacity under constraints
+9. **`fleet_comparison`**: Aggregate fleet-level TCO/carbon totals from multiple scenario sets
 
 ### Example Config
 
