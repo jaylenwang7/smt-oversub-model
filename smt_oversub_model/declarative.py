@@ -619,6 +619,23 @@ class ResourceConstraintsConfig:
 
 
 @dataclass
+class OverssubCapacitySpec:
+    """Config-level spec for an oversub capacity lookup table."""
+    points: List[Dict[str, Any]]  # [{lp_count, utilization, max_oversub}, ...]
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'OverssubCapacitySpec':
+        return cls(points=data.get('points', data.get('data', [])))
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {'points': self.points}
+
+    def to_capacity_curve(self):
+        from .model import OverssubCapacityCurve
+        return OverssubCapacityCurve.from_table(self.points)
+
+
+@dataclass
 class TraitBin:
     """A single bin in a trait distribution."""
     value: float
@@ -747,6 +764,89 @@ class AutoBreakevenSplitConfig:
 
 
 @dataclass
+class IntraNodePoolConfig:
+    """Config for a single pool within an intra-node partition."""
+    processor: str                              # Processor name (for TPC and capacity lookup)
+    core_fraction: Optional[float] = None       # Fraction of available physical cores
+    vcpu_demand_fraction: Optional[float] = None  # Fraction of total vCPU demand
+    oversub_capacity: Optional[str] = None      # Key into oversub_capacity; defaults to processor name
+    oversub_ratio: Optional[float] = None       # Fixed oversub ratio (fallback if no capacity curve)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'IntraNodePoolConfig':
+        return cls(
+            processor=data['processor'],
+            core_fraction=data.get('core_fraction'),
+            vcpu_demand_fraction=data.get('vcpu_demand_fraction'),
+            oversub_capacity=data.get('oversub_capacity'),
+            oversub_ratio=data.get('oversub_ratio'),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {'processor': self.processor}
+        if self.core_fraction is not None:
+            d['core_fraction'] = self.core_fraction
+        if self.vcpu_demand_fraction is not None:
+            d['vcpu_demand_fraction'] = self.vcpu_demand_fraction
+        if self.oversub_capacity is not None:
+            d['oversub_capacity'] = self.oversub_capacity
+        if self.oversub_ratio is not None:
+            d['oversub_ratio'] = self.oversub_ratio
+        return d
+
+
+@dataclass
+class IntraNodeConfig:
+    """Config for intra-node core pooling. All servers identical, cores partitioned."""
+    pools: Dict[str, IntraNodePoolConfig]
+    server_processor: str          # Processor spec for node-level power/cost
+    core_split: Optional[float] = None     # Convenience: fraction to first pool (2-pool)
+    demand_split: Optional[float] = None   # Convenience: demand fraction to first pool (2-pool)
+    thread_overhead: int = 0               # Host-reserved HW threads before partitioning
+    resource_constraints: Optional[ResourceConstraintsConfig] = None
+    resource_scaling: Optional[ResourceScalingConfig] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'IntraNodeConfig':
+        pools = {
+            name: IntraNodePoolConfig.from_dict(pool_data)
+            for name, pool_data in data.get('pools', {}).items()
+        }
+        rc = None
+        if 'resource_constraints' in data and isinstance(data['resource_constraints'], dict):
+            rc = ResourceConstraintsConfig.from_dict(data['resource_constraints'])
+        rs = None
+        if 'resource_scaling' in data and isinstance(data['resource_scaling'], dict):
+            rs = ResourceScalingConfig.from_dict(data['resource_scaling'])
+        return cls(
+            pools=pools,
+            server_processor=data['server_processor'],
+            core_split=data.get('core_split'),
+            demand_split=data.get('demand_split'),
+            thread_overhead=data.get('thread_overhead', 0),
+            resource_constraints=rc,
+            resource_scaling=rs,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        d: Dict[str, Any] = {
+            'pools': {name: pool.to_dict() for name, pool in self.pools.items()},
+            'server_processor': self.server_processor,
+        }
+        if self.core_split is not None:
+            d['core_split'] = self.core_split
+        if self.demand_split is not None:
+            d['demand_split'] = self.demand_split
+        if self.thread_overhead != 0:
+            d['thread_overhead'] = self.thread_overhead
+        if self.resource_constraints is not None:
+            d['resource_constraints'] = self.resource_constraints.to_dict()
+        if self.resource_scaling is not None:
+            d['resource_scaling'] = self.resource_scaling.to_dict()
+        return d
+
+
+@dataclass
 class ScenarioConfig:
     """Configuration for a single scenario.
 
@@ -766,11 +866,18 @@ class ScenarioConfig:
     composite: Optional[Dict[str, CompositePoolConfig]] = None
     split_trait: Optional[str] = None  # Key into workload.traits for trait-based allocation
     split_point: Optional[Union[float, AutoBreakevenSplitConfig]] = None  # Trait value or auto-breakeven config
+    # Intra-node core pooling
+    intra_node: Optional[IntraNodeConfig] = None
 
     @property
     def is_composite(self) -> bool:
         """True if this scenario is a composite of multiple pools."""
         return self.composite is not None
+
+    @property
+    def is_intra_node(self) -> bool:
+        """True if this scenario uses intra-node core pooling."""
+        return self.intra_node is not None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'ScenarioConfig':
@@ -794,8 +901,17 @@ class ScenarioConfig:
                 for name, pool_data in composite_data.items()
             }
 
-        # Use "_composite" sentinel when composite is specified
-        processor = data.get('processor', '_composite' if composite else 'smt')
+        # Parse intra-node config
+        intra_node = None
+        intra_node_data = data.get('intra_node')
+        if intra_node_data and isinstance(intra_node_data, dict):
+            intra_node = IntraNodeConfig.from_dict(intra_node_data)
+
+        # Use sentinel when composite or intra-node is specified
+        processor = data.get(
+            'processor',
+            '_intra_node' if intra_node else ('_composite' if composite else 'smt'),
+        )
 
         return cls(
             processor=processor,
@@ -810,6 +926,7 @@ class ScenarioConfig:
             composite=composite,
             split_trait=data.get('split_trait'),
             split_point=cls._parse_split_point(data.get('split_point')),
+            intra_node=intra_node,
         )
 
     @staticmethod
@@ -825,7 +942,7 @@ class ScenarioConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {}
-        if not self.is_composite:
+        if not self.is_composite and not self.is_intra_node:
             d['processor'] = self.processor
         d['oversub_ratio'] = self.oversub_ratio
         d['util_overhead'] = self.util_overhead
@@ -849,6 +966,8 @@ class ScenarioConfig:
                 d['split_point'] = {'auto_breakeven': self.split_point.to_dict()}
             else:
                 d['split_point'] = self.split_point
+        if self.intra_node is not None:
+            d['intra_node'] = self.intra_node.to_dict()
         return d
 
 
@@ -1998,6 +2117,7 @@ class AnalysisConfig:
     power_curve: PowerCurveSpec = field(default_factory=PowerCurveSpec)
     output_dir: Optional[str] = None
     description: str = ""
+    oversub_capacity: Optional[Dict[str, OverssubCapacitySpec]] = None
 
     @classmethod
     def from_dict(
@@ -2032,6 +2152,15 @@ class AnalysisConfig:
             # processor is inline dict (original behavior)
             processor_spec = ProcessorConfigSpec.from_dict(processor_data, base_path)
 
+        # Parse oversub capacity tables
+        oversub_capacity = None
+        oc_data = data.get('oversub_capacity')
+        if oc_data and isinstance(oc_data, dict):
+            oversub_capacity = {
+                name: OverssubCapacitySpec.from_dict(spec)
+                for name, spec in oc_data.items()
+            }
+
         return cls(
             name=data.get('name', 'unnamed'),
             description=data.get('description', ''),
@@ -2042,6 +2171,7 @@ class AnalysisConfig:
             cost=CostSpec.from_dict(data.get('cost', {})),
             power_curve=PowerCurveSpec.from_dict(data.get('power_curve', {})),
             output_dir=data.get('output_dir'),
+            oversub_capacity=oversub_capacity,
         )
 
     @classmethod
@@ -2607,6 +2737,8 @@ class DeclarativeAnalysisEngine:
         3. Global cost structured (cost.embodied_carbon: {...})
         4. Global cost flat (cost.embodied_carbon_kg) - already in model defaults
         """
+        if self._config.scenarios[name].is_intra_node:
+            return self._evaluate_intra_node_scenario(name)
         if self._config.scenarios[name].is_composite:
             return self._evaluate_composite_scenario(name)
 
@@ -2770,6 +2902,288 @@ class DeclarativeAnalysisEngine:
             params = self._build_scenario_params(scenario_cfg)
         result = self._model.evaluate_scenario(params, cost_overrides if cost_overrides else None)
         return params, result
+
+    def _evaluate_intra_node_scenario(self, name: str) -> Tuple[ScenarioParams, ScenarioResult]:
+        """Evaluate an intra-node core pooling scenario.
+
+        All servers are identical; cores are partitioned into pools with different
+        hardware modes. Server count = max across pools of ceil(demand / capacity).
+        """
+        import math as _math
+        from .model import ScenarioResult as _SR
+
+        scenario_cfg = self._config.scenarios[name]
+        intra = scenario_cfg.intra_node
+        pool_names = list(intra.pools.keys())
+
+        # 1. Get server processor spec
+        server_proc_spec = self._processor_config.get(intra.server_processor)
+        server_phys = server_proc_spec.physical_cores
+        server_tpc = server_proc_spec.threads_per_core
+
+        # 2. Available physical cores after thread overhead
+        total_hw_threads = server_phys * server_tpc
+        available_phys_cores = (total_hw_threads - intra.thread_overhead) // server_tpc
+
+        # 3. Resolve core fractions and demand fractions
+        core_fractions = self._resolve_intra_node_fractions(
+            intra, pool_names, 'core_fraction', intra.core_split,
+        )
+        demand_fractions = self._resolve_intra_node_fractions(
+            intra, pool_names, 'vcpu_demand_fraction', intra.demand_split,
+        )
+
+        # 4. Compute per-pool physical cores (last pool gets remainder)
+        pool_phys_cores: Dict[str, int] = {}
+        allocated_cores = 0
+        for i, pname in enumerate(pool_names):
+            if i < len(pool_names) - 1:
+                cores = int(available_phys_cores * core_fractions[pname])
+                pool_phys_cores[pname] = cores
+                allocated_cores += cores
+            else:
+                pool_phys_cores[pname] = available_phys_cores - allocated_cores
+
+        # 5. Per-pool capacity and demand
+        total_vcpus = self._model.workload.total_vcpus
+        avg_util = self._config.workload.avg_util
+        pool_data: Dict[str, Dict[str, float]] = {}
+
+        for pname in pool_names:
+            pool_cfg = intra.pools[pname]
+            pool_proc_spec = self._processor_config.get(pool_cfg.processor)
+            pool_tpc = pool_proc_spec.threads_per_core
+            pool_lps = pool_phys_cores[pname] * pool_tpc
+            pool_demand = total_vcpus * demand_fractions[pname]
+
+            # Determine max oversub ratio
+            capacity_key = pool_cfg.oversub_capacity or pool_cfg.processor
+            pool_max_oversub = 1.0
+            if (self._config.oversub_capacity
+                    and capacity_key in self._config.oversub_capacity):
+                curve = self._config.oversub_capacity[capacity_key].to_capacity_curve()
+                pool_max_oversub = curve.max_oversub_at(pool_lps, avg_util)
+            elif pool_cfg.oversub_ratio is not None:
+                pool_max_oversub = pool_cfg.oversub_ratio
+
+            pool_vcpu_capacity = pool_lps * pool_max_oversub
+
+            pool_data[pname] = {
+                'phys_cores': pool_phys_cores[pname],
+                'tpc': pool_tpc,
+                'lps': pool_lps,
+                'max_oversub': pool_max_oversub,
+                'vcpu_capacity': pool_vcpu_capacity,
+                'demand': pool_demand,
+            }
+
+        # 6. Apply node-level resource constraints if configured
+        if intra.resource_constraints:
+            total_vcpu_capacity = sum(pd['vcpu_capacity'] for pd in pool_data.values())
+            # Per-resource max_vcpus using server-level hw_threads
+            resource_limits = {}
+            for res_name, spec in intra.resource_constraints.constraints.items():
+                resource_limits[res_name] = spec.max_vcpus(total_hw_threads)
+            effective_vcpus = min(total_vcpu_capacity,
+                                 *resource_limits.values()) if resource_limits else total_vcpu_capacity
+            if effective_vcpus < total_vcpu_capacity and total_vcpu_capacity > 0:
+                scale = effective_vcpus / total_vcpu_capacity
+                for pd in pool_data.values():
+                    pd['vcpu_capacity'] *= scale
+
+        # 7. Server count = max across pools of ceil(demand / capacity)
+        num_servers = 1
+        for pname in pool_names:
+            pd = pool_data[pname]
+            if pd['vcpu_capacity'] > 0 and pd['demand'] > 0:
+                pool_servers = _math.ceil(pd['demand'] / pd['vcpu_capacity'])
+                num_servers = max(num_servers, pool_servers)
+
+        # 8. Per-pool utilization and capacity utilization
+        for pname in pool_names:
+            pd = pool_data[pname]
+            if pd['lps'] > 0 and num_servers > 0:
+                pool_demand_per_server = pd['demand'] / num_servers
+                pd['pool_util'] = min(1.0, pool_demand_per_server * avg_util / pd['lps'])
+                if pd['vcpu_capacity'] > 0:
+                    pd['capacity_util_pct'] = (pool_demand_per_server / pd['vcpu_capacity']) * 100.0
+                else:
+                    pd['capacity_util_pct'] = 0.0
+            else:
+                pd['pool_util'] = 0.0
+                pd['capacity_util_pct'] = 0.0
+
+        # 9. Aggregate utilization (physical-core-weighted)
+        total_phys = sum(pd['phys_cores'] for pd in pool_data.values())
+        if total_phys > 0:
+            aggregate_util = sum(
+                pd['phys_cores'] * pd['pool_util'] for pd in pool_data.values()
+            ) / total_phys
+        else:
+            aggregate_util = 0.0
+        effective_util = min(1.0, aggregate_util + scenario_cfg.util_overhead)
+
+        # 10. Power from server_processor power curve
+        server_power_curve = self._build_power_curve_for_processor(server_proc_spec)
+        power_per_server = server_power_curve.power_at_util(effective_util)
+
+        # 11. Resolve costs from server processor
+        cost_overrides = self._resolve_intra_node_cost_overrides(intra, server_proc_spec)
+        embodied_carbon_kg = cost_overrides.get(
+            'embodied_carbon_kg', self._model.cost.embodied_carbon_kg)
+        server_cost_usd = cost_overrides.get(
+            'server_cost_usd', self._model.cost.server_cost_usd)
+
+        # 12. Carbon/TCO math
+        embodied_carbon = num_servers * embodied_carbon_kg
+        embodied_cost = num_servers * server_cost_usd
+        total_energy_kwh = (num_servers * power_per_server *
+                            self._model.cost.lifetime_hours / 1000)
+        operational_carbon = total_energy_kwh * self._model.cost.carbon_intensity_g_kwh / 1000
+        operational_cost = total_energy_kwh * self._model.cost.electricity_cost_usd_kwh
+        total_carbon = embodied_carbon + operational_carbon
+        total_cost = embodied_cost + operational_cost
+
+        # 13. Build per-pool sub_results
+        sub_results: Dict[str, _SR] = {}
+        for pname in pool_names:
+            pd = pool_data[pname]
+            sub_results[pname] = _SR(
+                num_servers=num_servers,
+                avg_util_per_server=pd['pool_util'],
+                effective_util_per_server=pd['capacity_util_pct'],  # repurposed: capacity % used
+                power_per_server_w=0.0,  # power is node-level only
+                embodied_carbon_kg=0.0,
+                operational_carbon_kg=0.0,
+                total_carbon_kg=0.0,
+                embodied_cost_usd=0.0,
+                operational_cost_usd=0.0,
+                total_cost_usd=0.0,
+                carbon_per_vcpu_kg=0.0,
+                cost_per_vcpu_usd=0.0,
+            )
+
+        result = _SR(
+            num_servers=num_servers,
+            avg_util_per_server=aggregate_util,
+            effective_util_per_server=effective_util,
+            power_per_server_w=power_per_server,
+            embodied_carbon_kg=embodied_carbon,
+            operational_carbon_kg=operational_carbon,
+            total_carbon_kg=total_carbon,
+            embodied_cost_usd=embodied_cost,
+            operational_cost_usd=operational_cost,
+            total_cost_usd=total_cost,
+            carbon_per_vcpu_kg=total_carbon / total_vcpus if total_vcpus > 0 else 0.0,
+            cost_per_vcpu_usd=total_cost / total_vcpus if total_vcpus > 0 else 0.0,
+            sub_results=sub_results,
+        )
+
+        # Build dummy ScenarioParams from server processor
+        dummy_params = self._build_scenario_params_for_processor(
+            intra.server_processor, server_proc_spec)
+        return dummy_params, result
+
+    def _resolve_intra_node_fractions(
+        self,
+        intra: IntraNodeConfig,
+        pool_names: List[str],
+        fraction_attr: str,
+        convenience_split: Optional[float],
+    ) -> Dict[str, float]:
+        """Resolve per-pool fractions for core or demand allocation."""
+        fractions: Dict[str, float] = {}
+
+        if convenience_split is not None and len(pool_names) == 2:
+            fractions[pool_names[0]] = convenience_split
+            fractions[pool_names[1]] = 1.0 - convenience_split
+        else:
+            for pname in pool_names:
+                pool_cfg = intra.pools[pname]
+                frac = getattr(pool_cfg, fraction_attr, None)
+                if frac is None:
+                    # Default to equal split
+                    frac = 1.0 / len(pool_names)
+                fractions[pname] = frac
+
+        # Validate sum
+        frac_sum = sum(fractions.values())
+        if abs(frac_sum - 1.0) > 1e-3:
+            raise ValueError(
+                f"Intra-node {fraction_attr} fractions sum to {frac_sum:.6f}, must sum to 1.0"
+            )
+        return fractions
+
+    def _resolve_intra_node_cost_overrides(
+        self,
+        intra: IntraNodeConfig,
+        server_proc_spec: 'ProcessorSpec',
+    ) -> Dict[str, Any]:
+        """Resolve cost overrides from server processor spec."""
+        phys = server_proc_spec.physical_cores
+        tpc = server_proc_spec.threads_per_core
+        cost_overrides: Dict[str, Any] = {}
+
+        # Embodied carbon: structured > flat > global structured > global flat
+        if server_proc_spec.embodied_carbon is not None:
+            cost_overrides['embodied_carbon_kg'] = server_proc_spec.embodied_carbon.resolve_total(phys, tpc)
+        elif server_proc_spec.embodied_carbon_kg is not None:
+            cost_overrides['embodied_carbon_kg'] = server_proc_spec.embodied_carbon_kg
+        elif self._config.cost.embodied_carbon is not None:
+            cost_overrides['embodied_carbon_kg'] = self._config.cost.embodied_carbon.resolve_total(phys, tpc)
+
+        # Server cost: structured > flat > global structured > global flat
+        if server_proc_spec.server_cost is not None:
+            cost_overrides['server_cost_usd'] = server_proc_spec.server_cost.resolve_total(phys, tpc)
+        elif server_proc_spec.server_cost_usd is not None:
+            cost_overrides['server_cost_usd'] = server_proc_spec.server_cost_usd
+        elif self._config.cost.server_cost is not None:
+            cost_overrides['server_cost_usd'] = self._config.cost.server_cost.resolve_total(phys, tpc)
+
+        return cost_overrides
+
+    def _build_power_curve_for_processor(self, proc_spec: 'ProcessorSpec') -> 'PowerCurve':
+        """Build a PowerCurve from a processor spec (reusable helper)."""
+        from .model import PowerCurve, build_composite_power_curve
+
+        if proc_spec.power_breakdown:
+            global_curve = self._config.power_curve
+            power_components = {
+                comp_name: comp.to_power_component_curve(default_curve_spec=global_curve)
+                for comp_name, comp in proc_spec.power_breakdown.items()
+            }
+            return build_composite_power_curve(power_components)
+
+        if proc_spec.power_curve is not None:
+            power_fn = proc_spec.power_curve.to_callable()
+        else:
+            power_fn = self._config.power_curve.to_callable()
+
+        return PowerCurve(
+            p_idle=proc_spec.power_idle_w,
+            p_max=proc_spec.power_max_w,
+            curve_fn=power_fn,
+        )
+
+    def _build_scenario_params_for_processor(
+        self,
+        proc_name: str,
+        proc_spec: 'ProcessorSpec',
+    ) -> ScenarioParams:
+        """Build a dummy ScenarioParams from a processor spec."""
+        from .model import ProcessorConfig
+
+        power_curve = self._build_power_curve_for_processor(proc_spec)
+        processor = ProcessorConfig(
+            physical_cores=proc_spec.physical_cores,
+            threads_per_core=proc_spec.threads_per_core,
+            power_curve=power_curve,
+            thread_overhead=proc_spec.thread_overhead,
+        )
+        return ScenarioParams(
+            processor=processor,
+            oversub_ratio=1.0,
+        )
 
     def _resolve_composite_allocation(
         self,
@@ -4599,6 +5013,12 @@ class DeclarativeAnalysisEngine:
             scenario_cfg.oversub_ratio = value
         elif param == 'util_overhead':
             scenario_cfg.util_overhead = value
+        elif param == 'core_split':
+            if scenario_cfg.is_intra_node:
+                scenario_cfg.intra_node.core_split = value
+        elif param == 'demand_split':
+            if scenario_cfg.is_intra_node:
+                scenario_cfg.intra_node.demand_split = value
         elif param == 'split_point':
             scenario_cfg.split_point = value
         else:

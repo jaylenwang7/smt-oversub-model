@@ -10,7 +10,8 @@ the carbon/TCO savings of SMT with oversubscription (relative to SMT baseline).
 """
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
+import bisect
 import math
 
 
@@ -409,6 +410,77 @@ class ScenarioResult:
     resource_constraint_result: Optional[ResourceConstraintResult] = None
     sub_results: Optional[Dict[str, 'ScenarioResult']] = None
     auto_resolved_split_point: Optional[float] = None
+
+
+@dataclass
+class OverssubCapacityPoint:
+    """Single empirical data point for pool-size-dependent oversub capacity."""
+    lp_count: int       # Logical processors in the pool
+    utilization: float   # Average utilization [0, 1]
+    max_oversub: float   # Maximum safe oversubscription ratio
+
+
+class OverssubCapacityCurve:
+    """Lookup table: (pool_size_lps, utilization) -> max safe oversub ratio.
+
+    Conservative lookup: floor on lp_count (smaller pool -> lower capacity),
+    ceiling on utilization (higher util -> lower capacity).
+    Boundary: below min -> use min, above max -> use max (no extrapolation).
+    """
+    def __init__(self, points: List[OverssubCapacityPoint]):
+        self.points = points
+        # Build index: {lp_count: [(util, max_oversub), ...] sorted by util}
+        self._by_lp: Dict[int, List[Tuple[float, float]]] = {}
+        for p in points:
+            self._by_lp.setdefault(p.lp_count, []).append((p.utilization, p.max_oversub))
+        for lp in self._by_lp:
+            self._by_lp[lp].sort(key=lambda x: x[0])
+        self._sorted_lps = sorted(self._by_lp.keys())
+
+    def max_oversub_at(self, lp_count: int, utilization: float) -> float:
+        """Lookup max safe oversub ratio.
+
+        Conservative in both dimensions:
+        - Floor on lp_count (smaller pool -> lower oversub capacity)
+        - Ceiling on utilization (higher util -> lower oversub capacity)
+        """
+        if not self._sorted_lps:
+            return 1.0
+
+        # 1. Floor lp_count to nearest in data (clamp to min/max)
+        idx = bisect.bisect_right(self._sorted_lps, lp_count)
+        if idx == 0:
+            # Below all data points - clamp to min
+            floored_lp = self._sorted_lps[0]
+        else:
+            floored_lp = self._sorted_lps[idx - 1]
+
+        # 2. Ceiling utilization to nearest in that lp's data (clamp to min/max)
+        util_list = self._by_lp[floored_lp]
+        utils = [u for u, _ in util_list]
+        u_idx = bisect.bisect_left(utils, utilization)
+
+        if u_idx < len(utils) and abs(utils[u_idx] - utilization) < 1e-9:
+            # Exact match
+            return util_list[u_idx][1]
+        elif u_idx >= len(utils):
+            # Above max util - clamp to max
+            return util_list[-1][1]
+        elif u_idx == 0:
+            # Below min util - clamp to min
+            return util_list[0][1]
+        else:
+            # Between two points - take ceiling (higher util = lower capacity = conservative)
+            return util_list[u_idx][1]
+
+    @classmethod
+    def from_table(cls, data: List[Dict[str, Any]]) -> 'OverssubCapacityCurve':
+        """Build from list of {lp_count, utilization, max_oversub} dicts."""
+        points = [OverssubCapacityPoint(
+            lp_count=int(d['lp_count']), utilization=float(d['utilization']),
+            max_oversub=float(d['max_oversub'])
+        ) for d in data]
+        return cls(points)
 
 
 class OverssubModel:

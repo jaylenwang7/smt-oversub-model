@@ -21,6 +21,9 @@ from .declarative import (
     ResourceScalingConfig,
     ResourceConstraintSpec,
     ResourceConstraintsConfig,
+    OverssubCapacitySpec,
+    IntraNodePoolConfig,
+    IntraNodeConfig,
     DeclarativeAnalysisEngine,
     run_analysis,
     is_valid_analysis_config,
@@ -4682,3 +4685,400 @@ class TestAutoBreakevenSplitPoint:
         engine = DeclarativeAnalysisEngine()
         result = engine.run(config)
         assert result is not None
+
+
+def _make_intra_node_config(
+    core_split=0.5,
+    demand_split=0.5,
+    thread_overhead=0,
+    structured_costs=False,
+    oversub_capacity=None,
+    resource_constraints=None,
+    smt_oversub=None,
+    nosmt_oversub=None,
+    analysis_type='compare',
+):
+    """Build a complete analysis config dict for intra-node testing."""
+    server_proc = {
+        "physical_cores": 48,
+        "threads_per_core": 2,
+        "power_idle_w": 100.0,
+        "power_max_w": 400.0,
+        "thread_overhead": 0,
+    }
+    if structured_costs:
+        server_proc["embodied_carbon"] = {
+            "per_thread": {"cpu_die": 5.0},
+            "per_server": {"chassis": 200.0},
+        }
+        server_proc["server_cost"] = {
+            "per_thread": {"cpu": 50.0},
+            "per_server": {"base": 500.0},
+        }
+
+    config = {
+        "name": "intra_node_test",
+        "processor": {
+            "server": server_proc,
+            "smt": {
+                "physical_cores": 48,
+                "threads_per_core": 2,
+                "power_idle_w": 100.0,
+                "power_max_w": 400.0,
+            },
+            "nosmt": {
+                "physical_cores": 48,
+                "threads_per_core": 1,
+                "power_idle_w": 90.0,
+                "power_max_w": 340.0,
+            },
+        },
+        "scenarios": {
+            "smt_baseline": {
+                "processor": "smt",
+                "oversub_ratio": 1.0,
+            },
+            "intra_node_split": {
+                "intra_node": {
+                    "pools": {
+                        "smt_pool": {
+                            "processor": "smt",
+                            "oversub_ratio": smt_oversub or 1.5,
+                        },
+                        "nosmt_pool": {
+                            "processor": "nosmt",
+                            "oversub_ratio": nosmt_oversub or 2.0,
+                        },
+                    },
+                    "server_processor": "server",
+                    "core_split": core_split,
+                    "demand_split": demand_split,
+                    "thread_overhead": thread_overhead,
+                },
+            },
+        },
+        "analysis": {"type": analysis_type},
+        "workload": {"total_vcpus": 10000, "avg_util": 0.3},
+        "cost": {
+            "embodied_carbon_kg": 1000,
+            "server_cost_usd": 10000,
+            "carbon_intensity_g_kwh": 400,
+            "electricity_cost_usd_kwh": 0.10,
+            "lifetime_years": 5,
+        },
+    }
+
+    if analysis_type == 'compare':
+        config['analysis'] = {
+            "type": "compare",
+            "baseline": "smt_baseline",
+            "scenarios": ["smt_baseline", "intra_node_split"],
+        }
+
+    if resource_constraints:
+        config['scenarios']['intra_node_split']['intra_node']['resource_constraints'] = resource_constraints
+
+    if oversub_capacity:
+        config['oversub_capacity'] = oversub_capacity
+
+    return config
+
+
+class TestIntraNodeEvaluation:
+    """Tests for intra-node core pooling evaluation."""
+
+    def test_basic_evaluation(self):
+        """Basic intra-node evaluation produces result with sub_results."""
+        config_dict = _make_intra_node_config()
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+        assert result is not None
+        intra_result = result.scenario_results['intra_node_split']
+        assert intra_result['num_servers'] > 0
+        assert intra_result.get('sub_results') is not None
+        assert 'smt_pool' in intra_result['sub_results']
+        assert 'nosmt_pool' in intra_result['sub_results']
+
+    def test_server_count_max_across_pools(self):
+        """Server count is max across pools, not sum."""
+        config_dict = _make_intra_node_config(
+            core_split=0.5, demand_split=0.9,
+            smt_oversub=1.0, nosmt_oversub=1.0,
+        )
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+        intra_result = result.scenario_results['intra_node_split']
+
+        # Both pools share the same num_servers
+        for sub in intra_result['sub_results'].values():
+            assert sub['num_servers'] == intra_result['num_servers']
+
+        # Verify it's ceil(demand / capacity) for the bottleneck pool
+        import math
+        # smt_pool: 24 cores * 2 tpc = 48 LPs * 1.0 oversub = 48 capacity
+        # demand = 10000 * 0.9 = 9000
+        smt_pool_servers = math.ceil(9000 / 48)
+        # nosmt_pool: 24 cores * 1 tpc = 24 LPs * 1.0 = 24 capacity
+        # demand = 10000 * 0.1 = 1000
+        nosmt_pool_servers = math.ceil(1000 / 24)
+        assert intra_result['num_servers'] == max(smt_pool_servers, nosmt_pool_servers)
+
+    def test_aggregate_utilization(self):
+        """Utilization is physical-core-weighted average of pool utils."""
+        config_dict = _make_intra_node_config(core_split=0.5, demand_split=0.5)
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+        intra_result = result.scenario_results['intra_node_split']
+
+        smt_util = intra_result['sub_results']['smt_pool']['avg_util_per_server']
+        nosmt_util = intra_result['sub_results']['nosmt_pool']['avg_util_per_server']
+        # Core-weighted average with 24 cores each
+        expected = (24 * smt_util + 24 * nosmt_util) / 48
+        assert abs(intra_result['avg_util_per_server'] - expected) < 1e-6
+
+    def test_thread_overhead(self):
+        """Thread overhead reduces available cores and increases server count."""
+        config_dict_no_oh = _make_intra_node_config(thread_overhead=0, smt_oversub=1.0, nosmt_oversub=1.0)
+        config_dict_oh = _make_intra_node_config(thread_overhead=8, smt_oversub=1.0, nosmt_oversub=1.0)
+        engine = DeclarativeAnalysisEngine()
+
+        r_no_oh = engine.run(AnalysisConfig.from_dict(config_dict_no_oh)).scenario_results['intra_node_split']
+        r_oh = engine.run(AnalysisConfig.from_dict(config_dict_oh)).scenario_results['intra_node_split']
+
+        assert r_oh['num_servers'] >= r_no_oh['num_servers']
+
+    def test_structured_costs(self):
+        """Structured costs on server processor are used, not defaults."""
+        config_dict = _make_intra_node_config(structured_costs=True)
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+        intra_result = result.scenario_results['intra_node_split']
+
+        # structured: per_thread.cpu_die=5.0 * 96 threads + per_server.chassis=200 = 680
+        expected_carbon = 5.0 * 96 + 200.0  # 680 kg per server
+        per_server_carbon = intra_result['embodied_carbon_kg'] / intra_result['num_servers']
+        assert abs(per_server_carbon - expected_carbon) < 0.01
+        assert abs(per_server_carbon - 1000.0) > 100  # NOT the default
+
+        # structured: per_thread.cpu=50 * 96 + per_server.base=500 = 5300
+        expected_cost = 50.0 * 96 + 500.0  # 5300 USD per server
+        per_server_cost = intra_result['embodied_cost_usd'] / intra_result['num_servers']
+        assert abs(per_server_cost - expected_cost) < 0.01
+        assert abs(per_server_cost - 10000.0) > 1000  # NOT the default
+
+    def test_with_capacity_curve(self):
+        """Oversub capacity data is used for pool max oversub lookup."""
+        capacity_data = {
+            "nosmt": {
+                "points": [
+                    {"lp_count": 24, "utilization": 0.30, "max_oversub": 2.5},
+                    {"lp_count": 24, "utilization": 0.50, "max_oversub": 1.8},
+                ]
+            }
+        }
+        config_dict = _make_intra_node_config(oversub_capacity=capacity_data)
+        del config_dict['scenarios']['intra_node_split']['intra_node']['pools']['nosmt_pool']['oversub_ratio']
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+        intra_result = result.scenario_results['intra_node_split']
+        assert intra_result['num_servers'] > 0
+
+    def test_capacity_curve_conservative(self):
+        """Capacity curve uses conservative lookup (floor LP, ceil util)."""
+        capacity_data = {
+            "nosmt": {
+                "points": [
+                    {"lp_count": 16, "utilization": 0.20, "max_oversub": 3.0},
+                    {"lp_count": 16, "utilization": 0.40, "max_oversub": 2.0},
+                    {"lp_count": 32, "utilization": 0.20, "max_oversub": 3.5},
+                    {"lp_count": 32, "utilization": 0.40, "max_oversub": 2.5},
+                ]
+            }
+        }
+        config_dict = _make_intra_node_config(
+            oversub_capacity=capacity_data,
+            core_split=0.5,
+        )
+        del config_dict['scenarios']['intra_node_split']['intra_node']['pools']['nosmt_pool']['oversub_ratio']
+        config = AnalysisConfig.from_dict(config_dict)
+
+        # At lp=24 (between 16 and 32), util=0.30 (between 0.20 and 0.40):
+        # Floor LP to 16, ceil util to 0.40 -> max_oversub = 2.0 (conservative)
+        spec = config.oversub_capacity['nosmt']
+        curve = spec.to_capacity_curve()
+        assert curve.max_oversub_at(24, 0.30) == 2.0
+
+    def test_explicit_pool_fractions(self):
+        """Per-pool fractions work without core_split/demand_split."""
+        config_dict = _make_intra_node_config()
+        intra = config_dict['scenarios']['intra_node_split']['intra_node']
+        del intra['core_split']
+        del intra['demand_split']
+        intra['pools']['smt_pool']['core_fraction'] = 0.6
+        intra['pools']['nosmt_pool']['core_fraction'] = 0.4
+        intra['pools']['smt_pool']['vcpu_demand_fraction'] = 0.7
+        intra['pools']['nosmt_pool']['vcpu_demand_fraction'] = 0.3
+
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+        assert result.scenario_results['intra_node_split']['num_servers'] > 0
+
+    def test_core_split_demand_split_independent(self):
+        """Changing demand_split with fixed core_split produces different results."""
+        config1 = _make_intra_node_config(core_split=0.5, demand_split=0.3)
+        config2 = _make_intra_node_config(core_split=0.5, demand_split=0.7)
+        engine = DeclarativeAnalysisEngine()
+
+        ir1 = engine.run(AnalysisConfig.from_dict(config1)).scenario_results['intra_node_split']
+        ir2 = engine.run(AnalysisConfig.from_dict(config2)).scenario_results['intra_node_split']
+
+        assert ir1['avg_util_per_server'] != ir2['avg_util_per_server']
+
+    def test_unequal_split(self):
+        """70/30 core split assigns correct per-pool core counts."""
+        config_dict = _make_intra_node_config(core_split=0.7, demand_split=0.5)
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+
+        intra = config.scenarios['intra_node_split'].intra_node
+        assert intra.core_split == 0.7
+
+        result = engine.run(config)
+        assert result.scenario_results['intra_node_split']['num_servers'] > 0
+
+    def test_in_compare_analysis(self):
+        """Intra-node scenario works alongside normal in compare analysis."""
+        config_dict = _make_intra_node_config(analysis_type='compare')
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+
+        assert 'smt_baseline' in result.scenario_results
+        assert 'intra_node_split' in result.scenario_results
+        assert result.scenario_results['smt_baseline']['num_servers'] > 0
+        assert result.scenario_results['intra_node_split']['num_servers'] > 0
+
+    def test_core_split_sweep(self):
+        """Compare sweep with core_split as sweep parameter."""
+        config_dict = _make_intra_node_config()
+        config_dict['analysis'] = {
+            "type": "compare_sweep",
+            "baseline": "smt_baseline",
+            "sweep_scenario": "intra_node_split",
+            "sweep_parameter": "core_split",
+            "sweep_values": [0.3, 0.5, 0.7],
+        }
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+        assert result is not None
+        assert result.compare_sweep_results is not None
+        assert len(result.compare_sweep_results) == 3
+
+    def test_demand_split_sweep(self):
+        """Compare sweep with demand_split as sweep parameter."""
+        config_dict = _make_intra_node_config()
+        config_dict['analysis'] = {
+            "type": "compare_sweep",
+            "baseline": "smt_baseline",
+            "sweep_scenario": "intra_node_split",
+            "sweep_parameter": "demand_split",
+            "sweep_values": [0.3, 0.5, 0.7],
+        }
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+        assert result is not None
+        assert result.compare_sweep_results is not None
+        assert len(result.compare_sweep_results) == 3
+
+    def test_with_resource_constraints(self):
+        """Node-level resource constraints reduce effective capacity."""
+        rc = {
+            "memory_gb": {
+                "capacity_per_server": 384,
+                "demand_per_vcpu": 8,
+            }
+        }
+        config_dict = _make_intra_node_config(resource_constraints=rc)
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        r_constrained = engine.run(config).scenario_results['intra_node_split']
+
+        config_dict2 = _make_intra_node_config()
+        r_unconstrained = engine.run(AnalysisConfig.from_dict(config_dict2)).scenario_results['intra_node_split']
+
+        assert r_constrained['num_servers'] >= r_unconstrained['num_servers']
+
+    def test_pool_with_zero_demand(self):
+        """demand_split=1.0 gives all demand to first pool, second gets 0."""
+        config_dict = _make_intra_node_config(core_split=0.5, demand_split=1.0)
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+        intra_result = result.scenario_results['intra_node_split']
+        assert intra_result['num_servers'] > 0
+        nosmt_sub = intra_result['sub_results']['nosmt_pool']
+        assert nosmt_sub['avg_util_per_server'] == 0.0
+
+    def test_boundary_all_cores_one_pool(self):
+        """core_split=1.0 should approximate a normal single-processor scenario."""
+        import math
+        config_dict = _make_intra_node_config(
+            core_split=1.0, demand_split=1.0, smt_oversub=1.0,
+        )
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+        intra_result = result.scenario_results['intra_node_split']
+        baseline_result = result.scenario_results['smt_baseline']
+
+        # Both: 48 phys cores * 2 TPC = 96 LPs, R=1.0 -> ceil(10000/96)=105
+        assert intra_result['num_servers'] == baseline_result['num_servers']
+
+    def test_capacity_utilization_pct(self):
+        """Bottleneck pool has ~100% capacity utilization, non-bottleneck < 100%."""
+        config_dict = _make_intra_node_config(
+            core_split=0.5, demand_split=0.8,
+            smt_oversub=1.5, nosmt_oversub=1.5,
+        )
+        config = AnalysisConfig.from_dict(config_dict)
+        engine = DeclarativeAnalysisEngine()
+        result = engine.run(config)
+        intra_result = result.scenario_results['intra_node_split']
+
+        # effective_util_per_server on sub_results = capacity utilization %
+        cap_utils = {
+            name: sub['effective_util_per_server']
+            for name, sub in intra_result['sub_results'].items()
+        }
+        max_cap = max(cap_utils.values())
+        min_cap = min(cap_utils.values())
+        assert max_cap > 95.0
+        assert min_cap < max_cap
+
+    def test_is_intra_node_property(self):
+        """ScenarioConfig.is_intra_node works correctly."""
+        config_dict = _make_intra_node_config()
+        config = AnalysisConfig.from_dict(config_dict)
+        assert config.scenarios['intra_node_split'].is_intra_node is True
+        assert config.scenarios['smt_baseline'].is_intra_node is False
+        assert config.scenarios['intra_node_split'].is_composite is False
+
+    def test_to_dict_roundtrip(self):
+        """ScenarioConfig with intra_node round-trips through to_dict/from_dict."""
+        config_dict = _make_intra_node_config()
+        config = AnalysisConfig.from_dict(config_dict)
+        scenario = config.scenarios['intra_node_split']
+        d = scenario.to_dict()
+        assert 'intra_node' in d
+        restored = ScenarioConfig.from_dict(d)
+        assert restored.is_intra_node
+        assert restored.intra_node.core_split == 0.5
+        assert len(restored.intra_node.pools) == 2

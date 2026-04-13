@@ -11,6 +11,7 @@ from .model import (
     WorkloadParams, CostParams, OverssubModel, ScenarioResult,
     ComponentBreakdown, EmbodiedBreakdown,
     PowerComponentCurve, PowerBreakdown, build_composite_power_curve,
+    OverssubCapacityPoint, OverssubCapacityCurve,
 )
 from .sweep import ParameterSweeper, create_default_sweeper
 
@@ -1934,3 +1935,85 @@ class TestMaxVmsPerServer:
         result = model.evaluate_scenario(scenario)
         expected_servers = math.ceil(1000 / 48)  # 21 servers
         assert result.num_servers == expected_servers
+
+
+class TestOverssubCapacityCurve:
+    """Tests for OverssubCapacityCurve lookup table."""
+
+    CAPACITY_DATA = [
+        {"lp_count": 8,  "utilization": 0.10, "max_oversub": 3.0},
+        {"lp_count": 8,  "utilization": 0.20, "max_oversub": 2.5},
+        {"lp_count": 8,  "utilization": 0.40, "max_oversub": 1.5},
+        {"lp_count": 16, "utilization": 0.10, "max_oversub": 3.5},
+        {"lp_count": 16, "utilization": 0.20, "max_oversub": 3.0},
+        {"lp_count": 16, "utilization": 0.40, "max_oversub": 2.0},
+        {"lp_count": 32, "utilization": 0.10, "max_oversub": 4.0},
+        {"lp_count": 32, "utilization": 0.20, "max_oversub": 3.5},
+        {"lp_count": 32, "utilization": 0.40, "max_oversub": 2.5},
+    ]
+
+    def _make_curve(self):
+        return OverssubCapacityCurve.from_table(self.CAPACITY_DATA)
+
+    def test_exact_match(self):
+        """Exact data point returns exact value."""
+        curve = self._make_curve()
+        assert curve.max_oversub_at(16, 0.20) == 3.0
+
+    def test_floor_lp(self):
+        """LP count between data points floors to smaller pool."""
+        curve = self._make_curve()
+        # lp=20 floors to lp=16
+        assert curve.max_oversub_at(20, 0.10) == 3.5
+
+    def test_ceil_util(self):
+        """Utilization between data points ceils to higher util (conservative)."""
+        curve = self._make_curve()
+        # util=0.15 ceils to util=0.20 -> 3.0
+        assert curve.max_oversub_at(16, 0.15) == 3.0
+
+    def test_floor_lp_ceil_util(self):
+        """Both LP floor and util ceiling applied together."""
+        curve = self._make_curve()
+        # lp=24 floors to lp=16, util=0.30 ceils to util=0.40 -> 2.0
+        assert curve.max_oversub_at(24, 0.30) == 2.0
+
+    def test_below_min_lp(self):
+        """LP count below all data clamps to min LP."""
+        curve = self._make_curve()
+        # lp=4 clamps to lp=8
+        assert curve.max_oversub_at(4, 0.10) == 3.0
+
+    def test_above_max_lp(self):
+        """LP count above all data clamps to max LP."""
+        curve = self._make_curve()
+        # lp=64 clamps to lp=32
+        assert curve.max_oversub_at(64, 0.20) == 3.5
+
+    def test_below_min_util(self):
+        """Utilization below all data clamps to min util."""
+        curve = self._make_curve()
+        # util=0.05 clamps to util=0.10 (min, no lower data)
+        assert curve.max_oversub_at(16, 0.05) == 3.5
+
+    def test_above_max_util(self):
+        """Utilization above all data clamps to max util."""
+        curve = self._make_curve()
+        # util=0.50 clamps to util=0.40 (max, no higher data)
+        assert curve.max_oversub_at(16, 0.50) == 2.0
+
+    def test_single_point(self):
+        """Single data point always returns its value."""
+        curve = OverssubCapacityCurve.from_table([
+            {"lp_count": 16, "utilization": 0.20, "max_oversub": 3.0}
+        ])
+        assert curve.max_oversub_at(8, 0.10) == 3.0
+        assert curve.max_oversub_at(32, 0.40) == 3.0
+        assert curve.max_oversub_at(16, 0.20) == 3.0
+
+    def test_from_table(self):
+        """Construction from dicts works correctly."""
+        curve = self._make_curve()
+        assert len(curve.points) == 9
+        assert len(curve._sorted_lps) == 3
+        assert curve._sorted_lps == [8, 16, 32]
