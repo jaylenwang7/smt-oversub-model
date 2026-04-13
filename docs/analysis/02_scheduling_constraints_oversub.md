@@ -232,8 +232,10 @@ diminishing headroom.
    values. A production fleet would see a mix.
 
 3. **Resource constraints**: When running no-SMT at high R on existing SMT
-   hardware, memory or SSD capacity may limit effective packing. The resource
-   constraint and resource scaling configs (not covered in this doc) explore this.
+   hardware, memory or SSD capacity may limit effective packing. See
+   [02a: Resource Modeling](02a_resource_modeling.md) for the three resource
+   modeling approaches and [02b: Oversubscription Savings Scaling](02b_oversub_savings_scaling.md)
+   for how savings scale with R under each approach.
 
 4. **Non-linear power curves for no-SMT**: These configs use `genoa_nosmt_linear`
    (linear CPU power). The `non-linear/` directory contains equivalent configs

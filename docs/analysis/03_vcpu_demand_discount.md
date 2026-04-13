@@ -18,6 +18,9 @@ positive savings territory across a wider range of utilization levels.
 - [01: Naive Comparison](01_naive_comparison.md) for baseline penalty
 - [02: Scheduling Constraints](02_scheduling_constraints_oversub.md) for
   oversubscription ratios and the sweep framework
+- [02a: Resource Modeling](02a_resource_modeling.md) for the distinction between
+  fixed, scaled, and constrained resource approaches (this document references
+  "with/without resource scaling" in its results)
 - [Spine](SMT_VS_NOSMT_ANALYSIS.md) for terminology
 
 ## Key Assumptions
@@ -165,15 +168,20 @@ on carbon. Values above 1.0 mean no-SMT already wins without any discount.
 | 40% | 0.94 | 0.84 |
 | 50% | 0.82 | 0.78 |
 
-**Reading this table**:
-- **Without resource scaling**: At 20% utilization, no-SMT already breaks even
+**Reading this table** (see [02a: Resource Modeling](02a_resource_modeling.md)
+for full definitions of "fixed" vs "scaled" resources):
+- **Without resource scaling** (fixed resources): Per-server memory/SSD costs
+  stay the same regardless of R. At 20% utilization, no-SMT already breaks even
   at multiplier=1.02 (essentially no discount needed). At 10%, a multiplier of
   1.16 means no-SMT *already wins* even with 16% *more* demand (not a discount,
   but extra demand). At 30% and 50%, discounts of 13% and 18% are needed.
-- **With resource scaling**: When memory/SSD scale with vCPU count (modeling
-  purpose-built servers), breakeven multipliers are lower (more favorable to
-  no-SMT) because higher oversubscription increases per-server embodied costs.
-  The range narrows to 0.78-0.87.
+- **With resource scaling** (scaled resources): Memory and SSD are provisioned
+  per-vCPU, modeling purpose-built servers where each VM gets a fixed amount of
+  memory and SSD regardless of how densely vCPUs are packed. Breakeven
+  multipliers are lower (harder for no-SMT to break even) because higher
+  oversubscription increases per-server embodied costs. The range narrows to
+  0.78-0.87. This is the more accurate framing for projecting real deployment
+  costs.
 
 **Note on the 10% without-resource-scaling result**: The breakeven of 1.16
 differs from [02]'s value of 0.676 because the configs appear to have been
@@ -269,12 +277,15 @@ from -25% to +9% carbon -- a 34 percentage point range. This means:
 
 ### Resource Scaling Effect
 
-The breakeven curve shows that **resource scaling (purpose-built servers) makes
-no-SMT more favorable** by lowering breakeven multipliers by 0.04-0.29 across
-utilization levels. This is because at high oversubscription, memory and SSD must
-scale with vCPU count, increasing per-server embodied costs and eroding some of
-the server-count savings. This effect is most pronounced at low utilization where
-oversubscription ratios are highest.
+The breakeven curve shows that **scaled resources (purpose-built servers) shift
+breakeven multipliers lower** by 0.04-0.29 across utilization levels, making it
+*harder* for no-SMT to break even. This is because at high oversubscription,
+memory and SSD must scale with vCPU count, increasing per-server embodied costs
+and eroding some of the server-count savings. This effect is most pronounced at
+low utilization where oversubscription ratios are highest. See
+[02a: Resource Modeling](02a_resource_modeling.md) for the full explanation and
+[02b: Oversubscription Savings Scaling](02b_oversub_savings_scaling.md) for how
+this effect compounds across the R range.
 
 ### Connection to Experimental Repo
 

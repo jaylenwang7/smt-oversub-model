@@ -148,6 +148,7 @@ smt-oversub-model/
         util_10_pct_linear.jsonc           # [02] 10% util, scheduling constraints
         util_20_pct_linear.jsonc           # [02] 20% util, scheduling constraints
         util_30_pct_linear.jsonc           # [02] 30% util, scheduling constraints
+        nosmt_oversub_sweep_constrained_vs_scaled_linear.jsonc  # [02b] Savings scaling
         savings_curve.jsonc                # [03] Multi-util savings curves
         breakeven_curve_comparison.jsonc   # [03] Breakeven curves
         ...
@@ -158,6 +159,7 @@ smt-oversub-model/
         util_10pct_linear/                 # [02] Output
         util_20pct_linear/                 # [02] Output
         util_30pct_linear/                 # [02] Output
+        nosmt_oversub_sweep_constrained_vs_scaled_linear/  # [02b] Output
         savings_curve/                     # [03] Output
         breakeven_curve_comparison/        # [03] Output
         ...
@@ -166,6 +168,8 @@ smt-oversub-model/
       SMT_VS_NOSMT_ANALYSIS.md            # THIS FILE (spine)
       01_naive_comparison.md               # Sub-doc 1
       02_scheduling_constraints_oversub.md # Sub-doc 2
+      02a_resource_modeling.md             # Sub-doc 2a (side: resource modeling)
+      02b_oversub_savings_scaling.md       # Sub-doc 2b (side: savings scaling)
       03_vcpu_demand_discount.md           # Sub-doc 3
 ```
 
@@ -186,6 +190,15 @@ Layer 2: + Scheduling Constraints (oversubscription)
             does higher no-SMT oversub close the gap?
   Answer:   Yes -- at some utilization points, no-SMT with higher R
             breaks even or beats SMT on carbon/TCO
+            |
+            +--- Side: Resource Modeling (02a)
+            |    How should per-server memory/SSD costs be modeled
+            |    when R > 1.0? Fixed, scaled, or constrained.
+            |
+            +--- Side: Savings Scaling (02b)
+            |    Do carbon/TCO savings track proportionally with
+            |    server reduction? No -- resource costs and power
+            |    curves create sublinear returns.
             |
             v
 Layer 3: + vCPU Demand Discount (performance effect)
@@ -208,6 +221,8 @@ if you already have the background.
 |---|---|---|---|
 | 01 | [Naive Comparison](01_naive_comparison.md) | What is the raw cost of disabling SMT with no oversubscription? | Genoa processor specs, power curves |
 | 02 | [Scheduling Constraints + Oversubscription](02_scheduling_constraints_oversub.md) | How do experimentally-measured oversubscription limits change the picture? | Steal-time thresholds from go-cpu iso-physical-core experiments |
+| 02a | [Resource Modeling](02a_resource_modeling.md) | How should memory/SSD costs be modeled when oversubscription > 1.0? | Per-component cost structure from processor specs |
+| 02b | [Oversubscription Savings Scaling](02b_oversub_savings_scaling.md) | Do carbon/TCO savings track proportionally with server reduction at higher R? | Oversub sweep across fixed/scaled/constrained resource models |
 | 03 | [vCPU Demand Discount](03_vcpu_demand_discount.md) | How does no-SMT's higher per-vCPU performance shift the breakeven? | Peak performance ratios from 30-app benchmark suite |
 
 ---
