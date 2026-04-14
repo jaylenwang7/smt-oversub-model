@@ -313,8 +313,8 @@ is the synthesis that brings them together.
 
 1. **Resource constraints on existing hardware**: Running no-SMT at high R on
    SMT-provisioned servers (with the full 12 DIMMs / 6 SSDs) may be limited by
-   memory or SSD capacity. The `resource_constraints` configs in the `linear/`
-   directory explore this.
+   memory or SSD capacity. See [03a: Constrained Savings](03a_constrained_savings.md)
+   for how the savings in this document change under same-hardware constraints.
 
 2. **Heterogeneous fleets**: Some workloads benefit greatly from no-SMT while
    others do not. A mixed fleet that routes high-discount workloads to no-SMT

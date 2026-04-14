@@ -151,6 +151,11 @@ smt-oversub-model/
         nosmt_oversub_sweep_constrained_vs_scaled_linear.jsonc  # [02b] Savings scaling
         savings_curve.jsonc                # [03] Multi-util savings curves
         breakeven_curve_comparison.jsonc   # [03] Breakeven curves
+        util_{10,20,30}_pct_linear_resource_constraints.jsonc  # [03a] Per-util constrained
+        savings_curve_constrained_vs_unconstrained.jsonc        # [03a] Savings comparison
+        resource_packing_oversub_sweep.jsonc                    # [02b] No-SMT packing vs R
+        resource_packing_oversub_sweep_smt.jsonc                # [03a] SMT packing vs R
+        resource_packing_constrained_vs_unconstrained.jsonc     # [03a] 4-way packing
         ...
   results/
     oversub_analysis/genoa/
@@ -162,6 +167,11 @@ smt-oversub-model/
         nosmt_oversub_sweep_constrained_vs_scaled_linear/  # [02b] Output
         savings_curve/                     # [03] Output
         breakeven_curve_comparison/        # [03] Output
+        util_{10,20,30}pct_linear_resource_constraints/        # [03a] Output
+        savings_curve_constrained_vs_unconstrained/            # [03a] Output
+        resource_packing_oversub_sweep/                        # [02b] Output
+        resource_packing_oversub_sweep_smt/                    # [03a] Output
+        resource_packing_constrained_vs_unconstrained/         # [03a] Output
         ...
   docs/
     analysis/
@@ -171,6 +181,7 @@ smt-oversub-model/
       02a_resource_modeling.md             # Sub-doc 2a (side: resource modeling)
       02b_oversub_savings_scaling.md       # Sub-doc 2b (side: savings scaling)
       03_vcpu_demand_discount.md           # Sub-doc 3
+      03a_constrained_savings.md           # Sub-doc 3a (side: same-HW constraints)
 ```
 
 ---
@@ -207,6 +218,11 @@ Layer 3: + vCPU Demand Discount (performance effect)
   Answer:   It shifts breakeven significantly in no-SMT's favor.
             Experimental data (geomean ~26.5% discount) often puts
             realistic workloads past the breakeven point.
+            |
+            +--- Side: Constrained Savings (03a)
+            |    How do the Layer 3 savings change if we disable
+            |    SMT on existing hardware (same DIMMs/SSDs) instead
+            |    of purpose-building no-SMT servers?
 ```
 
 Each layer's sub-document is self-contained but references prior layers for
@@ -224,6 +240,7 @@ if you already have the background.
 | 02a | [Resource Modeling](02a_resource_modeling.md) | How should memory/SSD costs be modeled when oversubscription > 1.0? | Per-component cost structure from processor specs |
 | 02b | [Oversubscription Savings Scaling](02b_oversub_savings_scaling.md) | Do carbon/TCO savings track proportionally with server reduction at higher R? | Oversub sweep across fixed/scaled/constrained resource models |
 | 03 | [vCPU Demand Discount](03_vcpu_demand_discount.md) | How does no-SMT's higher per-vCPU performance shift the breakeven? | Peak performance ratios from 30-app benchmark suite |
+| 03a | [Constrained Savings](03a_constrained_savings.md) | How do the [03] savings change when reusing existing SMT hardware with SMT disabled? | Same HW resource constraints + vCPU demand ratios |
 
 ---
 

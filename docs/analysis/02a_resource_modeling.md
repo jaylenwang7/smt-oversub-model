@@ -162,7 +162,12 @@ approaches are identical. As R increases:
 
 See [02b: Oversubscription Savings Scaling](02b_oversub_savings_scaling.md) for
 quantitative results showing exactly how the three approaches diverge across the
-R=1.0 to R=5.0 range.
+R=1.0 to R=5.0 range, including per-server resource packing tables that show
+capacity, demand, and stranded resources at each R value.
+
+For how resource constraints affect the SMT vs no-SMT comparison specifically
+(including the counterintuitive finding that constraints can *help* no-SMT at low
+utilization), see [03a: Constrained Savings](03a_constrained_savings.md).
 
 ## Which Approach Is Used Where
 

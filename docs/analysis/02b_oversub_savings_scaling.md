@@ -231,6 +231,47 @@ an operator wants to test no-SMT by disabling SMT on existing servers:
   becomes the sole bottleneck)
 - Reprovisioning servers with right-sized memory would unlock the "scaled" curve
 
+### Per-Server Resource Packing: Why Savings Diverge
+
+The fleet-level savings tables above are driven by what is happening *inside*
+each server. The resource packing analysis makes this visible by showing
+per-server capacity, demand, and stranded resources at each R value.
+
+**Config**: [`configs/oversub_analysis/genoa/linear/resource_packing_oversub_sweep.jsonc`](../../configs/oversub_analysis/genoa/linear/resource_packing_oversub_sweep.jsonc)
+
+**Output**: `results/oversub_analysis/genoa/linear/resource_packing_oversub_sweep/`
+
+**No-SMT scaled vs constrained per-server resources (selected R values):**
+
+| R | Mode | Eff. R | vCPUs/server | Memory demand | Memory capacity | Mem stranded |
+|---|---|---|---|---|---|---|
+| 1.0 | Scaled | 1.0 | 80 | 320 GB | 384 GB | 16.7% |
+| 1.0 | Constrained | 1.0 | 72 | 288 GB | 768 GB | **62.5%** |
+| 2.0 | Scaled | 2.0 | 144 | 576 GB | 691 GB | 16.7% |
+| 2.0 | Constrained | 2.0 | 144 | 576 GB | 768 GB | 25.0% |
+| 3.0 | Scaled | 3.0 | 216 | 864 GB | 1037 GB | 16.7% |
+| 3.0 | Constrained | **2.67** | 192 | 768 GB | 768 GB | **0.0%** |
+
+Key observations:
+
+- **Scaled memory grows with vCPUs**: At R=2.0, the scaled server has 691 GB
+  (up from 384 GB at R=1.0). Memory is always provisioned at 83.3% utilization
+  because the capacity:demand ratio per-vCPU is fixed at 4.8:4.0 = 1.2x.
+
+- **Constrained memory is fixed at 768 GB**: At R=1.0 only 37.5% of memory is
+  used (62.5% stranded). As R increases, memory utilization climbs until it
+  saturates at R=2.67. The constrained server essentially "fills up" existing
+  resources rather than adding new ones.
+
+- **SSD is never the bottleneck**: At the memory ceiling (R=2.67), SSD is at
+  80% utilization with 20% stranded. The 50 GB/vCPU SSD ratio is generous
+  enough that memory always fills first.
+
+This per-server picture explains the fleet-level results: the constrained curve
+flatlines because each server cannot host more than 192 vCPUs regardless of R,
+while the scaled curve keeps improving (at diminishing rates) because servers
+grow to accommodate more vCPUs.
+
 ## What This Does Not Address
 
 1. **SMT comparison**: This analysis is purely intra-no-SMT (no-SMT at various R
