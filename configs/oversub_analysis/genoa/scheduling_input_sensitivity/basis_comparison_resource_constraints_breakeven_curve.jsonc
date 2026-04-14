@@ -1,0 +1,41 @@
+{
+  "name": "basis_comparison_resource_constraints_breakeven_curve",
+  "description": "Compare carbon breakeven multipliers across scheduling-input bases for the Same Hardware SMT-Off (Resource Constraints) deployment model.",
+  "analysis": {
+    "type": "breakeven_curve",
+    "series": [
+      {
+        "label": "Iso-LP (8 LP / 2 VM)",
+        "configs": [
+          "configs/oversub_analysis/genoa/scheduling_input_sensitivity/iso_lp/resource_constraints/util_10_pct.jsonc",
+          "configs/oversub_analysis/genoa/scheduling_input_sensitivity/iso_lp/resource_constraints/util_20_pct.jsonc",
+          "configs/oversub_analysis/genoa/scheduling_input_sensitivity/iso_lp/resource_constraints/util_30_pct.jsonc"
+        ]
+      },
+      {
+        "label": "Iso-Physical-Core (16 LP / 4 VM SMT)",
+        "configs": [
+          "configs/oversub_analysis/genoa/scheduling_input_sensitivity/iso_physical_core/resource_constraints/util_10_pct.jsonc",
+          "configs/oversub_analysis/genoa/scheduling_input_sensitivity/iso_physical_core/resource_constraints/util_20_pct.jsonc",
+          "configs/oversub_analysis/genoa/scheduling_input_sensitivity/iso_physical_core/resource_constraints/util_30_pct.jsonc"
+        ]
+      }
+    ],
+    "x_parameter": "workload.avg_util",
+    "x_display_multiplier": 100,
+    "breakeven_metric": "carbon",
+    "x_label": "Average Utilization (%)",
+    "y_label": "Breakeven vCPU Demand Multiplier",
+    "y_axis_markers": [
+      0.65,
+      0.75,
+      0.85
+    ],
+    "y_axis_marker_labels": [
+      "low",
+      "geomean",
+      "high"
+    ]
+  },
+  "output_dir": "./results/oversub_analysis/genoa/scheduling_input_sensitivity/basis_comparison_resource_constraints_breakeven_curve"
+}

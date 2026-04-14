@@ -82,6 +82,127 @@ model.
 
 [exp-perf]: /Users/jaylenw/Code/atf-benchmarking/scripts/docs/smt_no_smt_peak_performance.md
 
+### Relation to Industry / Academic SMT Gain Claims
+
+For broader context on what vendors and academic papers usually report as "SMT
+performance gain," see:
+
+- [`docs/research_reports/smt-performance-report.md`](../research_reports/smt-performance-report.md)
+
+That report shows that most published SMT claims are framed as roughly
+**+10% to +60% aggregate throughput** on the **same physical core budget**, with
+a cross-source median around **+30%**. It also shows that many sources do not
+clearly specify whether they mean throughput, instructions executed, latency, or
+IPC.
+
+This document needs a different quantity: the **no-SMT / SMT throughput ratio at
+fixed visible vCPU count**, because that is what turns into a `vcpu_demand_multiplier`.
+
+The experimental setup here compares:
+
+- **SMT**: `2 cores x 2 threads = 4 vCPUs`
+- **No-SMT**: `4 cores x 1 thread = 4 vCPUs`
+
+So to connect the literature to this model, we need a translation step.
+
+#### A Reasonable First-Order Translation
+
+Suppose a vendor-style claim says:
+
+- enabling SMT on `2 physical cores` raises throughput by `g`
+
+Then:
+
+- `throughput(SMT, 2 cores, 4 threads) = (1 + g) x throughput(no-SMT, 2 cores)`
+
+To map that onto this experiment, assume first-order linear scaling from
+`2` to `4` physical no-SMT cores:
+
+- `throughput(no-SMT, 4 cores) ≈ 2 x throughput(no-SMT, 2 cores)`
+
+Under that assumption, the implied fixed-`4 vCPU` no-SMT/SMT ratio is:
+
+```text
+no-SMT / SMT ratio ≈ 2 / (1 + g)
+vcpu_demand_multiplier ≈ (1 + g) / 2
+discount ≈ 1 - (1 + g) / 2 = (1 - g) / 2
+```
+
+This is not exact, but it is a reasonable bridge because it translates a
+same-core-budget SMT throughput uplift into the fixed-visible-vCPU framing used
+by the model.
+
+#### Translation Table
+
+Using that bridge:
+
+| Reported SMT gain on same physical cores | Implied no-SMT / SMT ratio at fixed `4 vCPU` | Implied `vcpu_demand_multiplier` | Implied discount |
+|---|---|---|---|
+| `+10%` | `1.82x` | `0.55` | `45%` |
+| `+20%` | `1.67x` | `0.60` | `40%` |
+| `+30%` | `1.54x` | `0.65` | `35%` |
+| `+40%` | `1.43x` | `0.70` | `30%` |
+| `+50%` | `1.33x` | `0.75` | `25%` |
+| `+60%` | `1.25x` | `0.80` | `20%` |
+
+This gives a much clearer comparison point for the markers used in this doc:
+
+| Marker in this doc | Implied no-SMT / SMT ratio | Back-translated same-core SMT gain |
+|---|---|---|
+| `0.65` ("high discount") | `1.54x` | `+30%` |
+| `0.75` ("geomean") | `1.33x` | `+50%` |
+| `0.85` ("low discount") | `1.18x` | `+70%` |
+
+#### What This Means
+
+This translation suggests:
+
+1. The **`0.65` marker** is actually close to the **literature median**. A
+   vendor/academic-style SMT claim of about `+30%` aggregate throughput on the
+   same physical cores maps naturally to about a **35% no-SMT vCPU discount**
+   in this fixed-`4 vCPU` framing.
+2. The **`0.75` geomean marker** corresponds to a stronger SMT claim, about
+   **`+50%`** on the same physical core budget. That sits toward the high end of
+   mainstream vendor/academic reports, but still within the broad range covered
+   by AMD / IBM and some academic server/database studies.
+3. The **`0.85` marker** is very SMT-favorable. It back-translates to about
+   **`+70%`** same-core SMT throughput, which is stronger than most of the
+   vendor-style claims summarized in the report.
+
+So after translation, the markers are not arbitrary:
+
+- `0.65` is roughly "industry-median SMT benefit"
+- `0.75` is "upper-middle / strong SMT benefit"
+- `0.85` is a deliberately conservative bound from the no-SMT point of view
+
+#### Why the Experimental Geomean Can Still Be Explainable
+
+The all-app experimental geomean here is `1.361x` no-SMT/SMT, i.e. multiplier
+`0.735` and discount `26.5%`. Using the translation above, that is roughly
+equivalent to saying:
+
+- **SMT would need to provide about `+47%` aggregate throughput on the same
+  physical core budget to make the two views line up exactly**
+
+That is above Intel's typical `10-30%` style claims, but it is still explainable:
+
+1. The experiment is **peak-throughput**, not average-load.
+2. It uses a **small fixed VM shape** (`4 vCPUs`), where each visible vCPU is
+   very sensitive to whether it maps to a full core or a sibling thread.
+3. Vendor numbers are usually **machine-throughput** claims, while this
+   experiment is a **tenant-visible per-vCPU strength** measurement.
+4. The research report itself shows broad spread: IBM and some academic
+   database/server results reach the `30-60%` region, while HPC and some SPEC
+   pairings are much lower or even negative.
+
+So the best synthesis is:
+
+> After translating same-core SMT throughput claims into this model's fixed-vCPU
+> framing, the `0.65` marker looks squarely in-family with the broader
+> literature, the `0.75` geomean marker looks somewhat stronger but still
+> explainable, and the `0.85` marker is a deliberately SMT-favorable
+> conservative case.
+
 ### Per-Application Distribution
 
 The discount varies widely across applications. Representative service results:
@@ -120,6 +241,22 @@ with markers at 0.65/0.75/0.85 is already configured:
 | [`configs/oversub_analysis/genoa/linear/util_20_pct_linear.jsonc`](../../configs/oversub_analysis/genoa/linear/util_20_pct_linear.jsonc) | `results/oversub_analysis/genoa/linear/util_20pct_linear/` |
 | [`configs/oversub_analysis/genoa/linear/util_30_pct_linear.jsonc`](../../configs/oversub_analysis/genoa/linear/util_30_pct_linear.jsonc) | `results/oversub_analysis/genoa/linear/util_30pct_linear/` |
 
+### No-Oversub Sanity Check (discount only, no scheduling-headroom effect)
+
+As a guardrail, this document also includes a **sanity-check sweep** that applies
+the vCPU demand discount back onto the naive [01](01_naive_comparison.md)
+setting: both SMT and no-SMT run at `R=1.0`, so the only advantage given to
+no-SMT is that customers need fewer vCPUs.
+
+This is useful because if no-SMT were already clearly better **without**
+oversubscription, that would be a warning sign for the broader story: cloud
+providers do in fact deploy SMT, so a model claiming strong no-SMT savings even
+before scheduling headroom is considered would need extra scrutiny.
+
+**Config**: [`configs/oversub_analysis/genoa/linear/no_oversub_vcpu_discount_sanity.jsonc`](../../configs/oversub_analysis/genoa/linear/no_oversub_vcpu_discount_sanity.jsonc)
+
+**Output**: `results/oversub_analysis/genoa/linear/no_oversub_vcpu_discount_sanity/`
+
 ### Breakeven Curve (across utilizations)
 
 Aggregates the carbon breakeven `vcpu_demand_multiplier` from each utilization
@@ -151,9 +288,41 @@ python -m smt_oversub_model configs/oversub_analysis/genoa/linear/breakeven_curv
 
 # Savings curve at discount reference points
 python -m smt_oversub_model configs/oversub_analysis/genoa/linear/savings_curve.jsonc
+
+# Sanity check: apply discount to the no-oversub baseline from [01]
+python -m smt_oversub_model configs/oversub_analysis/genoa/linear/no_oversub_vcpu_discount_sanity.jsonc
 ```
 
 ## Results
+
+### No-Oversub Sanity Check
+
+Applying demand compression alone to the [01](01_naive_comparison.md) baseline
+does **not** make no-SMT obviously better than SMT at realistic discount levels.
+Using the more favorable `nosmt_linear` power-curve variant and keeping both
+configurations at `R=1.0`:
+
+| vCPU demand multiplier | Implied discount | No-SMT Carbon vs SMT | No-SMT TCO vs SMT | No-SMT Servers vs SMT |
+|---|---|---|---|---|
+| 0.85 | 15% | `+25.8%` | `+24.1%` | `+69.9%` |
+| 0.75 | 25% | `+11.0%` | `+9.5%` | `+49.9%` |
+| 0.65 | 35% | `-3.8%` | `-5.1%` | `+29.9%` |
+
+The carbon breakeven point in this no-oversub sanity check is:
+
+- **Breakeven multiplier: `0.676`**
+- **Implied discount: `32.4%`**
+
+This is the key sanity-check result:
+
+- At the **geomean** experimental discount (`~25%`, multiplier `0.75`), no-SMT
+  is still worse than SMT with no oversubscription at all.
+- No-SMT only starts to beat SMT in this naive setting at a **stronger-than-geomean**
+  discount, around `32-35%`.
+- So the main story still makes sense: the projected no-SMT savings in the later
+  analyses are not coming from a model that says SMT is already intrinsically a
+  bad cloud deployment choice. They require the additional scheduling-headroom
+  mechanism from [02](02_scheduling_constraints_oversub.md).
 
 ### Per-Utilization Carbon Breakeven
 
@@ -242,12 +411,14 @@ Combining results from all three analyses:
 | Mechanism | Effect on no-SMT competitiveness |
 |---|---|
 | **LP count disadvantage** ([01](01_naive_comparison.md)) | -47% to -56% carbon penalty (the "hole" to dig out of) |
+| **vCPU discount only, no oversub** (sanity check in this doc) | Still `+11.0%` carbon / `+9.5%` TCO worse at geomean discount; needs ~`32%` discount to break even |
 | **Scheduling constraint headroom** ([02](02_scheduling_constraints_oversub.md)) | Closes gap to -2% to +48% depending on utilization |
 | **vCPU demand discount** (this doc) | At geomean discount, pushes to -4% to -14% savings |
 
 The progression: [01] establishes a large penalty, [02] closes most of it through
-higher oversubscription, and [03] tips the balance into no-SMT savings for most
-realistic discount levels.
+higher oversubscription, and [03] shows that demand compression tips the balance
+once it is layered on top of that headroom. The no-oversub sanity check confirms
+that discount alone is usually **not** enough at realistic geomean values.
 
 ## Interpretation
 

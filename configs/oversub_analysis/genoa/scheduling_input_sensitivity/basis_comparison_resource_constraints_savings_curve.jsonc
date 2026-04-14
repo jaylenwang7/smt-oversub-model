@@ -1,0 +1,49 @@
+{
+  "name": "basis_comparison_resource_constraints_savings_curve",
+  "description": "Compare SMT-vs-no-SMT savings across scheduling-input bases for the Same Hardware SMT-Off (Resource Constraints) deployment model.",
+  "analysis": {
+    "type": "savings_curve",
+    "config_sets": [
+      {
+        "label": "Iso-LP (8 LP / 2 VM)",
+        "configs": [
+          "configs/oversub_analysis/genoa/scheduling_input_sensitivity/iso_lp/resource_constraints/util_10_pct.jsonc",
+          "configs/oversub_analysis/genoa/scheduling_input_sensitivity/iso_lp/resource_constraints/util_20_pct.jsonc",
+          "configs/oversub_analysis/genoa/scheduling_input_sensitivity/iso_lp/resource_constraints/util_30_pct.jsonc"
+        ]
+      },
+      {
+        "label": "Iso-Physical-Core (16 LP / 4 VM SMT)",
+        "configs": [
+          "configs/oversub_analysis/genoa/scheduling_input_sensitivity/iso_physical_core/resource_constraints/util_10_pct.jsonc",
+          "configs/oversub_analysis/genoa/scheduling_input_sensitivity/iso_physical_core/resource_constraints/util_20_pct.jsonc",
+          "configs/oversub_analysis/genoa/scheduling_input_sensitivity/iso_physical_core/resource_constraints/util_30_pct.jsonc"
+        ]
+      }
+    ],
+    "x_parameter": "workload.avg_util",
+    "x_display_multiplier": 100,
+    "x_label": "Average Utilization (%)",
+    "y_label": "Savings vs SMT Baseline (%)",
+    "marker_values": [
+      1.0,
+      0.75
+    ],
+    "marker_labels": [
+      "no_discount",
+      "geomean"
+    ],
+    "metrics": [
+      "carbon",
+      "tco"
+    ],
+    "legend_title": "Scheduling Input Basis",
+    "plot": {
+      "figsize": [
+        8,
+        5
+      ]
+    }
+  },
+  "output_dir": "./results/oversub_analysis/genoa/scheduling_input_sensitivity/basis_comparison_resource_constraints_savings_curve"
+}

@@ -156,6 +156,11 @@ smt-oversub-model/
         resource_packing_oversub_sweep.jsonc                    # [02b] No-SMT packing vs R
         resource_packing_oversub_sweep_smt.jsonc                # [03a] SMT packing vs R
         resource_packing_constrained_vs_unconstrained.jsonc     # [03a] 4-way packing
+      scheduling_input_sensitivity/      # [02c] Explicit iso-LP vs iso-physical-core branch
+        iso_lp/
+        iso_physical_core/
+        basis_comparison_*_savings_curve.jsonc
+        basis_comparison_*_breakeven_curve.jsonc
         ...
   results/
     oversub_analysis/genoa/
@@ -172,6 +177,7 @@ smt-oversub-model/
         resource_packing_oversub_sweep/                        # [02b] Output
         resource_packing_oversub_sweep_smt/                    # [03a] Output
         resource_packing_constrained_vs_unconstrained/         # [03a] Output
+      scheduling_input_sensitivity/      # [02c] Output + consolidated summaries
         ...
   docs/
     analysis/
@@ -180,6 +186,7 @@ smt-oversub-model/
       02_scheduling_constraints_oversub.md # Sub-doc 2
       02a_resource_modeling.md             # Sub-doc 2a (side: resource modeling)
       02b_oversub_savings_scaling.md       # Sub-doc 2b (side: savings scaling)
+      02c_scheduling_input_basis_sensitivity.md  # Sub-doc 2c (side: input-basis sensitivity)
       03_vcpu_demand_discount.md           # Sub-doc 3
       03a_constrained_savings.md           # Sub-doc 3a (side: same-HW constraints)
 ```
@@ -211,6 +218,11 @@ Layer 2: + Scheduling Constraints (oversubscription)
             |    server reduction? No -- resource costs and power
             |    curves create sublinear returns.
             |
+            +--- Side: Input-Basis Sensitivity (02c)
+            |    How much do the conclusions depend on whether SMT
+            |    is calibrated from the fixed-8LP baseline or the
+            |    same-physical-core / 16LP follow-up?
+            |
             v
 Layer 3: + vCPU Demand Discount (performance effect)
   Question: Since no-SMT LPs are stronger, users may need fewer vCPUs.
@@ -239,6 +251,7 @@ if you already have the background.
 | 02 | [Scheduling Constraints + Oversubscription](02_scheduling_constraints_oversub.md) | How do experimentally-measured oversubscription limits change the picture? | Steal-time thresholds from go-cpu iso-physical-core experiments |
 | 02a | [Resource Modeling](02a_resource_modeling.md) | How should memory/SSD costs be modeled when oversubscription > 1.0? | Per-component cost structure from processor specs |
 | 02b | [Oversubscription Savings Scaling](02b_oversub_savings_scaling.md) | Do carbon/TCO savings track proportionally with server reduction at higher R? | Oversub sweep across fixed/scaled/constrained resource models |
+| 02c | [Scheduling Input Basis Sensitivity](02c_scheduling_input_basis_sensitivity.md) | How much do the conclusions change when the 8LP baseline is recalibrated and SMT is then given its full LP pool on the same physical cores? | Interpolated go-cpu VP/LP operating-point tables for iso-LP and iso-physical-core regimes |
 | 03 | [vCPU Demand Discount](03_vcpu_demand_discount.md) | How does no-SMT's higher per-vCPU performance shift the breakeven? | Peak performance ratios from 30-app benchmark suite |
 | 03a | [Constrained Savings](03a_constrained_savings.md) | How do the [03] savings change when reusing existing SMT hardware with SMT disabled? | Same HW resource constraints + vCPU demand ratios |
 
@@ -251,8 +264,8 @@ into the analyses here. Each is referenced by the sub-document that uses its dat
 
 | Experimental Doc | What It Provides | Used By |
 |---|---|---|
-| [`scheduling_constraints_smt_impact.md`][exp-sched] | Steal-time thresholds under VP constraints vs no-SMT across 13 applications. Mean no-SMT advantage: +14.1 pp. | [02], [03] |
-| [`scheduling_constraints_smt_iso_physical_core.md`][exp-iso] | Max safe VP/LP rates at fixed per-VM utilization targets (5%, 10%, 20%, 30%) for go-cpu under VP 8LP, VP 16LP, and no-SMT 8LP regimes. These VP/LP rates become the oversubscription ratios in the model configs. | [02] |
+| [`scheduling_constraints_smt_impact.md`][exp-sched] | Steal-time thresholds under VP constraints vs no-SMT across 13 applications. Mean no-SMT advantage: +14.1 pp. | [02], [03], [02c] |
+| [`scheduling_constraints_smt_iso_physical_core.md`][exp-iso] | Max safe VP/LP rates at fixed per-VM utilization targets (5%, 10%, 20%, 30%) for go-cpu under VP 8LP, VP 16LP, and no-SMT 8LP regimes. These VP/LP rates become the oversubscription ratios in the model configs, and also enable the additive iso-LP vs iso-physical-core sensitivity branch. | [02], [02c] |
 | [`smt_no_smt_power_proportionality.md`][exp-power] | Package-power vs host-CPU-utilization curves showing no-SMT is more linear. At matched utilization, no-SMT uses 8-29W less. | [01] |
 | [`smt_no_smt_peak_performance.md`][exp-perf] | Peak throughput ratios (no-SMT/SMT) across 30 applications. Geomean 1.361x (all), 1.311x (services), 1.406x (batch). Implied vCPU discount: ~24-29%. | [03] |
 | [`oversubscription_research_synthesis.md`][exp-synth] | Master synthesis of the broader oversubscription research. Claim status board and document map for all experimental threads. | Context |

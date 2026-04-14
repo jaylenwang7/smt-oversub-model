@@ -15,6 +15,11 @@ steal-time thresholds on real hardware running real applications.
 - [01: Naive Comparison](01_naive_comparison.md) for the baseline penalty
 - [Spine](SMT_VS_NOSMT_ANALYSIS.md) for terminology
 
+**Additive follow-up**: [`02c_scheduling_input_basis_sensitivity.md`](02c_scheduling_input_basis_sensitivity.md)
+keeps this original branch intact, then reruns the same question with the newer
+interpolated `iso_lp` and `iso_physical_core` operating-point bases from the
+experiment repo.
+
 ## Key Assumptions
 
 Relative to [01](01_naive_comparison.md), this analysis **relaxes** the
