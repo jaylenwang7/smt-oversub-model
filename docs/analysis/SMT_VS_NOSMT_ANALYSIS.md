@@ -128,6 +128,10 @@ as the reference platform, with per-component cost and power data from the
 
 Processor definitions: [`configs/shared/genoa_processors.jsonc`](../../configs/shared/genoa_processors.jsonc)
 
+For full per-component breakdowns (embodied carbon, cost, power by component),
+data provenance (GreenSKU), and the complete set of processor variants, see
+[00: Modeling Setup](00_modeling_setup.md).
+
 **Key modeling choice**: The no-SMT server is assumed to be the *same physical
 chassis* with SMT disabled, but with memory and SSD scaled proportionally to HW
 thread count (half the DIMMs and SSDs, since there are half as many threads to
@@ -182,6 +186,7 @@ smt-oversub-model/
   docs/
     analysis/
       SMT_VS_NOSMT_ANALYSIS.md            # THIS FILE (spine)
+      00_modeling_setup.md                 # Sub-doc 0 (modeling setup & assumptions)
       01_naive_comparison.md               # Sub-doc 1
       02_scheduling_constraints_oversub.md # Sub-doc 2
       02a_resource_modeling.md             # Sub-doc 2a (side: resource modeling)
@@ -198,6 +203,11 @@ smt-oversub-model/
 The analysis builds in layers. Each layer adds one new consideration:
 
 ```
+Layer 0: Modeling Setup (reference)
+  What does the model compute? What data goes in?
+  See: 00_modeling_setup.md
+            |
+            v
 Layer 1: Naive Comparison (no oversubscription)
   Question: If you just disable SMT, what happens to fleet carbon/TCO?
   Answer:   No-SMT is ~48-56% worse (needs ~2x servers)
@@ -247,6 +257,7 @@ if you already have the background.
 
 | # | Document | Question | Key Inputs |
 |---|---|---|---|
+| 00 | [Modeling Setup](00_modeling_setup.md) | What does the model compute, what numbers go in, and where do they come from? | GreenSKU data, Genoa processor specs, cost/environmental constants |
 | 01 | [Naive Comparison](01_naive_comparison.md) | What is the raw cost of disabling SMT with no oversubscription? | Genoa processor specs, power curves |
 | 02 | [Scheduling Constraints + Oversubscription](02_scheduling_constraints_oversub.md) | How do experimentally-measured oversubscription limits change the picture? | Steal-time thresholds from go-cpu iso-physical-core experiments |
 | 02a | [Resource Modeling](02a_resource_modeling.md) | How should memory/SSD costs be modeled when oversubscription > 1.0? | Per-component cost structure from processor specs |

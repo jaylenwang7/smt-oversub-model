@@ -12,6 +12,7 @@ steal-time thresholds on real hardware running real applications.
 
 ## Prerequisites
 
+- [00: Modeling Setup](00_modeling_setup.md) for model description and data provenance
 - [01: Naive Comparison](01_naive_comparison.md) for the baseline penalty
 - [Spine](SMT_VS_NOSMT_ANALYSIS.md) for terminology
 

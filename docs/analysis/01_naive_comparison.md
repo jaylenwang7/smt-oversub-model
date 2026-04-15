@@ -13,7 +13,10 @@ headroom, vCPU demand compression, etc.) to be competitive.
 ## Prerequisites
 
 - Read the [spine document](SMT_VS_NOSMT_ANALYSIS.md) for terminology and
-  processor specs.
+  context.
+- Read [00: Modeling Setup](00_modeling_setup.md) for the model description,
+  processor specs, data provenance, and cost/environmental constants used
+  throughout.
 
 ## Key Assumptions
 
@@ -103,6 +106,9 @@ informed by the c6620 experiment.
 - Carbon intensity: 175 g CO2/kWh
 - Electricity cost: $0.28/kWh
 - Server lifetime: 6 years
+
+See [00: Modeling Setup](00_modeling_setup.md) for derivation and context for
+these values.
 
 ### How to run
 
