@@ -4,8 +4,8 @@
 
 > Instead of converting the entire fleet to no-SMT (homogeneous switch), what if
 > you partition the fleet into an SMT pool and a no-SMT pool, routing workloads
-> to the pool that minimizes fleet-wide carbon and TCO? How much does this mixed
-> fleet strategy save, and how sensitive is it to the partition boundary?
+> using per-workload carbon or TCO breakeven thresholds? How much does this
+> mixed fleet strategy save, and how sensitive is it to the partition boundary?
 
 This analysis extends the homogeneous switch story from
 [03](03_vcpu_demand_discount.md) and [03a](03a_constrained_savings.md) by
@@ -50,10 +50,12 @@ instead of the legacy R values.
    above a **split point**. Workloads below the split (strong no-SMT advantage)
    go to no-SMT; workloads above it (weak or no advantage) stay on SMT.
 
-6. **Auto-computed split point**: The split point is set to the **carbon
-   breakeven vCPU demand multiplier** -- the discount level at which a single
-   workload evaluated on no-SMT matches the same workload on SMT for carbon.
-   This is a per-workload breakeven, not a fleet optimization.
+6. **Metric-specific auto-computed split points**: The split point is set to a
+   per-workload breakeven vCPU demand multiplier. For carbon reporting, the
+   split point is the discount level at which a single workload evaluated on
+   no-SMT matches SMT on carbon. For TCO reporting, the split point is the
+   discount level at which the same per-workload comparison matches on TCO.
+   These are per-workload breakevens, not fleet-wide optima.
 
 7. **Two scheduling-input bases**: All analyses run under both the iso-LP
    (8 LP / 2 VM baseline) and iso-physical-core (16 LP / 4 VM SMT with
@@ -101,28 +103,33 @@ distribution from 0.50 to 1.00, with fleet-average 0.75.
 
 ### Auto-Breakeven Split Points
 
-The split point is the vCPU demand multiplier at which no-SMT matches SMT on
-carbon for a single workload. These are computed via binary search at runtime
-(`auto_breakeven`). The resolved values:
+The split point is the vCPU demand multiplier at which no-SMT matches SMT for a
+single workload on the metric being reported. These are computed via binary
+search at runtime (`auto_breakeven`). Carbon and TCO therefore use separate
+split points.
 
 **Purpose-Built (Resource Scaling):**
 
-| Basis | 10% util | 20% util | 30% util |
-|---|---|---|---|
-| Iso-LP | 0.868 | 0.885 | 0.887 |
-| Iso-Physical-Core | 0.852 | 0.834 | 0.824 |
+| Basis | Carbon split: 10% | 20% | 30% | TCO split: 10% | 20% | 30% |
+|---|---|---|---|---|---|---|
+| Iso-LP | 0.868 | 0.885 | 0.887 | 0.936 | 0.947 | 0.943 |
+| Iso-Physical-Core | 0.852 | 0.834 | 0.824 | 0.902 | 0.879 | 0.865 |
 
 **Same Hardware (Resource Constraints):**
 
-| Basis | 10% util | 20% util | 30% util |
-|---|---|---|---|
-| Iso-LP | 0.898 | 0.893 | 0.827 |
-| Iso-Physical-Core | 0.898 | 0.871 | 0.770 |
+| Basis | Carbon split: 10% | 20% | 30% | TCO split: 10% | 20% | 30% |
+|---|---|---|---|---|---|---|
+| Iso-LP | 0.898 | 0.893 | 0.827 | 0.946 | 0.953 | 0.871 |
+| Iso-Physical-Core | 0.898 | 0.871 | 0.770 | 0.946 | 0.926 | 0.797 |
 
-**Reading these**: A split point of 0.868 means workloads with `vcpu_demand_multiplier < 0.868` (i.e., discount > 13.2%) go to no-SMT, and those above
-stay on SMT. At the fleet-average discount of 0.75 (25% discount), the
-average workload falls below all split points, meaning most workloads are
-routed to no-SMT in the mixed fleet.
+**Reading these**: A split point of `0.868` means workloads with
+`vcpu_demand_multiplier < 0.868` (i.e., discount > 13.2%) go to no-SMT, and
+those above stay on SMT. Higher split points route more demand to no-SMT.
+
+The TCO-selected split is usually higher than the carbon-selected split. That
+is because embodied cost weighs more heavily in TCO than embodied carbon weighs
+in total carbon, so TCO typically prefers routing slightly more demand to
+no-SMT before keeping workloads on SMT becomes worthwhile.
 
 The iso-physical-core split points are lower than iso-LP because SMT is more
 competitive with its larger LP pool, so a stronger discount is needed before
@@ -149,11 +156,14 @@ resource model. Fleet-level carbon and TCO are the sum across pools.
 
 ### Example: 20% util, iso-LP, purpose-built
 
-With a split point at 0.885:
-- **No-SMT pool** receives bins 0.50 through 0.85 (8 bins, ~72.7% of vCPU demand).
-  Weighted average discount = 0.675 (i.e., 32.5% demand reduction).
-- **SMT pool** receives bins 0.90 through 1.00 (3 bins, ~27.3% of vCPU demand).
-  No demand reduction.
+At 20% utilization under the iso-LP purpose-built model:
+
+- The **carbon-selected split** is `0.885`. No-SMT receives bins `0.50` through
+  `0.85` (8 bins, ~72.7% of vCPU demand), with weighted-average multiplier
+  `0.675`. SMT receives bins `0.90` through `1.00` (3 bins, ~27.3% of demand).
+- The **TCO-selected split** is `0.947`. No-SMT still receives bins `0.50`
+  through `0.90` (9 bins, ~81.8% of demand), but now SMT receives only the
+  `0.95` and `1.00` bins.
 
 Each pool then determines its server count, power consumption, and carbon/cost
 independently.
@@ -178,11 +188,16 @@ disabling SMT. This means:
    weighted average of the strong-discount workloads, which is lower than the
    fleet average.
 
-The net effect is that the mixed fleet typically achieves **more carbon savings**
-than homogeneous no-SMT (because of better demand matching) while sometimes
-using **slightly more servers** (because the SMT pool still operates at a
-lower R). But the carbon and cost advantages dominate because the no-SMT pool
-runs at a more aggressive discount.
+The net effect is that the mixed fleet typically achieves **more savings than
+homogeneous no-SMT** because it uses a stronger weighted-average discount in the
+no-SMT pool while avoiding the penalty of placing weak-discount workloads on
+no-SMT. The exact gain depends on which metric sets the split point:
+
+1. A **carbon-selected split** is slightly more selective, because carbon puts
+   more weight on operational savings from better demand matching.
+2. A **TCO-selected split** is usually slightly higher, because TCO places more
+   weight on embodied cost and therefore tolerates routing somewhat more demand
+   to no-SMT before keeping it on SMT becomes beneficial.
 
 ## Model Configuration
 
@@ -196,7 +211,7 @@ All configs are generated by a single script:
 configs/oversub_analysis/genoa/mixed_fleet/
   iso_lp/
     resource_scaling/
-      util_{10,20,30}_pct_compare.jsonc     # 3-way bar chart
+      util_{10,20,30}_pct_compare.jsonc     # compare: SMT, no-SMT, mixed (carbon/TCO splits)
       util_{10,20,30}_pct_sweep.jsonc        # Split-point sensitivity
     resource_constraints/
       util_{10,20,30}_pct_compare.jsonc
@@ -226,7 +241,7 @@ results/oversub_analysis/genoa/mixed_fleet/
   plots/
     {basis}_{mode}_carbon_summary.png        # Cross-utilization bar charts
     {basis}_{mode}_tco_summary.png
-    {basis}_{mode}_server_breakdown.png     # Server type breakdown (stacked)
+    {basis}_{mode}_server_breakdown_{carbon,tco}.png   # Server type breakdown (stacked)
     basis_comparison_{mode}_carbon_summary.png  # Iso-LP vs Iso-Physical-Core
     basis_comparison_{mode}_tco_summary.png
 ```
@@ -253,49 +268,33 @@ memory and SSD scale with vCPU count (each vCPU gets a fixed allocation).
 
 #### Iso-LP Basis
 
-| Util % | SMT R | No-SMT R | Split Point | No-SMT Homo. Carbon | Mixed Fleet Carbon | No-SMT Homo. TCO | Mixed Fleet TCO |
-|---|---|---|---|---|---|---|---|
-| 10 | 2.59 | 5.58 | 0.868 | **-13.6%** | **-15.8%** | -19.9% | -19.9% |
-| 20 | 1.29 | 2.79 | 0.885 | **-15.2%** | **-17.2%** | -20.8% | -20.9% |
-| 30 | 1.00 | 1.86 | 0.887 | **-15.4%** | **-17.3%** | -20.5% | -20.6% |
+| Util % | SMT R | No-SMT R | Carbon Split | TCO Split | No-SMT Homo. Carbon | Mixed Carbon | No-SMT Homo. TCO | Mixed TCO |
+|---|---|---|---|---|---|---|---|---|
+| 10 | 2.59 | 5.58 | 0.868 | 0.936 | **-13.6%** | **-15.8%** | -19.9% | **-20.5%** |
+| 20 | 1.29 | 2.79 | 0.885 | 0.947 | **-15.2%** | **-17.2%** | -20.8% | **-21.3%** |
+| 30 | 1.00 | 1.86 | 0.887 | 0.943 | **-15.4%** | **-17.3%** | -20.5% | **-21.0%** |
 
-The mixed fleet improves on homogeneous no-SMT by **1.9-2.2 pp on carbon**
-across all utilization levels.
+Under iso-LP, the mixed fleet improves on homogeneous no-SMT by **1.9-2.2 pp
+on carbon** and **0.5-0.6 pp on TCO**. The TCO-selected split is consistently
+higher than the carbon-selected split, so TCO keeps a smaller SMT pool than
+carbon does.
 
-**Why TCO converges while carbon diverges**: Under iso-LP, the no-SMT R
-advantage is large (e.g., 5.58 vs 2.59 at 10%), producing a high split point
-(~0.87-0.89). This means ~73% of demand goes to no-SMT and only ~27% stays
-on SMT. The mixed fleet uses slightly more total servers (e.g., 197 vs 187 at
-10%) because it maintains a separate SMT pool, but its no-SMT pool runs at a
-more aggressive discount (~0.67 vs fleet-average 0.75) and thus needs fewer
-no-SMT servers than the homogeneous fleet.
+The reason the TCO gain is still much smaller than the carbon gain is not that
+the routing is wrong; it is that the two metrics weight the same physical trade
+differently. Under iso-LP, no-SMT already has a strong oversubscription
+advantage, so homogeneous no-SMT is already very good. The mixed fleet mostly
+adds operational savings by preventing weak-discount workloads from taking the
+no-SMT path, but it partly gives that back through the cost of keeping an SMT
+pool alive.
 
-The near-exact TCO cancellation stems from an asymmetry in cost composition:
+At 10% utilization, for example, the TCO-selected split improves TCO from
+`-19.9%` to `-20.5%`, but carbon moves from `-13.6%` to `-15.7%`. The same
+direction holds at 20% and 30%: the mixed fleet still helps on both metrics,
+but carbon moves more because lifetime electricity is a larger share of carbon
+than of cost.
 
-- **Embodied cost is 62% of total cost** for the homogeneous no-SMT fleet.
-  The mixed fleet's 10 extra servers add ~$127K in embodied cost.
-- **Operational cost is 38% of total cost**. The mixed fleet's better demand
-  matching saves ~$125K in electricity.
-- **Net TCO: +$1,608** on a $6.6M base (effectively zero).
-
-For carbon, the same physical tradeoff plays out differently because the
-composition is inverted:
-
-- **Embodied carbon is only 31% of total carbon**. The 10 extra servers add
-  only ~20K kg embodied carbon.
-- **Operational carbon is 69% of total carbon**. Better demand matching saves
-  ~78K kg.
-- **Net carbon: -58K kg** (a 2.6% improvement).
-
-In short, buying servers is expensive but their manufacturing carbon is modest
-relative to lifetime electricity carbon. The mixed fleet saves real electricity
-through better demand matching, and that electricity saving is a bigger lever
-for carbon (where operational dominates) than for cost (where embodied
-dominates). Under iso-physical-core, the lower split point creates a more
-balanced fleet where the demand-matching savings exceed the embodied penalty
-for *both* metrics, opening a TCO gap as well.
-
-The server breakdown plots (`iso_lp_resource_scaling_server_breakdown.png`)
+The server breakdown plots (`iso_lp_resource_scaling_server_breakdown_carbon.png`
+and `iso_lp_resource_scaling_server_breakdown_tco.png`)
 visualize the fleet composition differences.
 
 The iso-LP basis produces fairly uniform savings across utilization levels,
@@ -304,21 +303,23 @@ that the mixed fleet benefit is consistent.
 
 #### Iso-Physical-Core Basis
 
-| Util % | SMT R | No-SMT R | Split Point | No-SMT Homo. Carbon | Mixed Fleet Carbon | No-SMT Homo. TCO | Mixed Fleet TCO |
-|---|---|---|---|---|---|---|---|
-| 10 | 3.32 | 5.58 | 0.852 | -11.8% | **-14.6%** | -16.8% | **-17.8%** |
-| 20 | 1.66 | 2.79 | 0.834 | -10.1% | **-14.0%** | -14.6% | **-16.5%** |
-| 30 | 1.11 | 1.86 | 0.824 | -9.0% | **-13.5%** | -13.2% | **-15.8%** |
+| Util % | SMT R | No-SMT R | Carbon Split | TCO Split | No-SMT Homo. Carbon | Mixed Carbon | No-SMT Homo. TCO | Mixed TCO |
+|---|---|---|---|---|---|---|---|---|
+| 10 | 3.32 | 5.58 | 0.852 | 0.902 | -11.8% | **-14.6%** | -16.8% | **-17.9%** |
+| 20 | 1.66 | 2.79 | 0.834 | 0.879 | -10.1% | **-14.0%** | -14.6% | **-16.7%** |
+| 30 | 1.11 | 1.86 | 0.824 | 0.865 | -9.0% | **-13.5%** | -13.2% | **-15.9%** |
 
 The iso-physical-core basis gives SMT a larger LP pool, reducing homogeneous
 no-SMT savings. But the mixed fleet advantage **grows** to **2.8-4.5 pp on
-carbon**. This is because:
+carbon** and **1.1-2.7 pp on TCO**. This is because:
 
-1. The lower split point (0.824-0.852 vs 0.868-0.887) means only the
-   strongest-benefit workloads go to no-SMT, getting a more aggressive
-   weighted average discount.
-2. The remaining workloads stay on SMT where they do not incur the penalty of
-   being on no-SMT hardware with a discount they do not actually experience.
+1. The lower split points mean only the strongest-benefit workloads go to
+   no-SMT, so the no-SMT pool gets a more aggressive weighted-average discount.
+2. The remaining workloads stay on SMT, where they avoid the penalty of being
+   forced onto no-SMT hardware with little or no true benefit.
+3. The TCO-selected split is again a bit higher than the carbon-selected split,
+   but the ranking does not change: the mixed fleet improves on homogeneous
+   no-SMT for both metrics at all three utilizations.
 
 ### 2. Same Hardware SMT-Off (Resource Constraints)
 
@@ -328,36 +329,39 @@ full memory/SSD complement and packing is limited by whichever resource
 
 #### Iso-LP Basis
 
-| Util % | SMT R | No-SMT R | Split Point | No-SMT Homo. Carbon | Mixed Fleet Carbon | No-SMT Homo. TCO | Mixed Fleet TCO |
-|---|---|---|---|---|---|---|---|
-| 10 | 2.59 | 5.58 | 0.898 | **-16.5%** | **-17.9%** | -20.8% | -20.7% |
-| 20 | 1.29 | 2.79 | 0.893 | -15.9% | **-17.7%** | -21.2% | -21.2% |
-| 30 | 1.00 | 1.86 | 0.827 | -9.3% | **-13.6%** | -13.8% | **-16.1%** |
+| Util % | SMT R | No-SMT R | Carbon Split | TCO Split | No-SMT Homo. Carbon | Mixed Carbon | No-SMT Homo. TCO | Mixed TCO |
+|---|---|---|---|---|---|---|---|---|
+| 10 | 2.59 | 5.58 | 0.898 | 0.946 | **-16.5%** | **-17.9%** | -20.8% | **-21.2%** |
+| 20 | 1.29 | 2.79 | 0.893 | 0.953 | -15.9% | **-17.7%** | -21.2% | **-21.6%** |
+| 30 | 1.00 | 1.86 | 0.827 | 0.871 | -9.3% | **-13.6%** | -13.8% | **-16.3%** |
 
 At 10-20% utilization, memory is the bottleneck for the same-hardware model,
 compressing the differences between homogeneous and mixed. But at 30% util,
 where cores become the bottleneck and R values are lower, the mixed fleet
-provides a substantial **4.3 pp carbon improvement** over homogeneous no-SMT.
+provides a substantial **4.3 pp carbon improvement** and **2.5 pp TCO
+improvement** over homogeneous no-SMT.
 
 #### Iso-Physical-Core Basis
 
-| Util % | SMT R | No-SMT R | Split Point | No-SMT Homo. Carbon | Mixed Fleet Carbon | No-SMT Homo. TCO | Mixed Fleet TCO |
-|---|---|---|---|---|---|---|---|
-| 10 | 3.32 | 5.58 | 0.898 | **-16.5%** | **-17.9%** | -20.8% | -20.7% |
-| 20 | 1.66 | 2.79 | 0.871 | -13.9% | **-16.2%** | -19.0% | **-19.5%** |
-| 30 | 1.11 | 1.86 | 0.770 | **-2.4%** | **-10.1%** | -5.9% | **-11.7%** |
+| Util % | SMT R | No-SMT R | Carbon Split | TCO Split | No-SMT Homo. Carbon | Mixed Carbon | No-SMT Homo. TCO | Mixed TCO |
+|---|---|---|---|---|---|---|---|---|
+| 10 | 3.32 | 5.58 | 0.898 | 0.946 | **-16.5%** | **-17.9%** | -20.8% | **-21.2%** |
+| 20 | 1.66 | 2.79 | 0.871 | 0.926 | -13.9% | **-16.2%** | -19.0% | **-19.8%** |
+| 30 | 1.11 | 1.86 | 0.770 | 0.797 | **-2.4%** | **-10.1%** | -5.9% | **-11.7%** |
 
 This is the most dramatic case. At 30% utilization:
 
 - **Homogeneous no-SMT** saves only **2.4%** on carbon (marginal)
 - **Mixed fleet** saves **10.1%** on carbon -- a **7.7 pp improvement**
+- On TCO, the same comparison moves from **-5.9%** to **-11.7%** -- a
+  **5.8 pp improvement**
 
 The mixed fleet is transformative here because at 30% util with the
 iso-physical-core basis, SMT is quite competitive (R=1.11 vs no-SMT R=1.86).
 The homogeneous switch applies the fleet-average discount to all workloads,
 including those that barely benefit from no-SMT. The mixed fleet avoids this
-by only routing the strong-discount workloads (below multiplier 0.770) to
-no-SMT.
+by only routing the strong-discount workloads (below multiplier `0.770` on
+carbon, `0.797` on TCO) to no-SMT.
 
 At 10% utilization, the same-hardware memory constraint binds for both bases,
 producing identical results regardless of the scheduling-input basis.
@@ -372,19 +376,24 @@ Key patterns:
 - **Mixed fleet carbon savings increase** as the split point rises from 0.50
   toward a peak around 0.80-0.90, then decrease as the split point approaches
   1.01 (converging to the homogeneous no-SMT result).
+- **Mixed fleet TCO savings follow the same qualitative shape**, but their peak
+  is often at a slightly higher split point than carbon.
 - At split point **0.50**, all demand goes to SMT (no partition), yielding 0%
   savings.
 - At split point **1.01**, all demand goes to no-SMT (homogeneous), yielding
   the same result as the no-SMT homogeneous scenario.
-- The **auto-breakeven split point** sits near but not exactly at the peak
-  because it is determined by per-workload carbon breakeven, not by
-  optimizing the composite fleet objective.
+- The **carbon-selected** and **TCO-selected** split points both sit near, but
+  not exactly at, their respective fleet-level peaks because they are
+  determined by per-workload breakeven rather than by direct composite-fleet
+  optimization.
 
 The sweep plots are in each utilization-specific output directory, e.g.:
 
 - `results/oversub_analysis/genoa/mixed_fleet/iso_physical_core/resource_constraints/util_30pct_sweep/plots/`
 
-### 4. Summary: Mixed Fleet Advantage (Carbon, pp vs Homogeneous No-SMT)
+### 4. Summary: Mixed Fleet Advantage (pp vs Homogeneous No-SMT)
+
+**Carbon improvement (using carbon-selected split):**
 
 | | **Purpose-Built** | | **Same HW** | |
 |---|---|---|---|---|
@@ -393,10 +402,19 @@ The sweep plots are in each utilization-specific output directory, e.g.:
 | 20 | +2.0 pp | +3.9 pp | +1.8 pp | +2.3 pp |
 | 30 | +1.9 pp | +4.5 pp | +4.3 pp | +7.7 pp |
 
+**TCO improvement (using TCO-selected split):**
+
+| | **Purpose-Built** | | **Same HW** | |
+|---|---|---|---|---|
+| **Util %** | **Iso-LP** | **Iso-Phys-Core** | **Iso-LP** | **Iso-Phys-Core** |
+| 10 | +0.6 pp | +1.1 pp | +0.4 pp | +0.4 pp |
+| 20 | +0.5 pp | +2.1 pp | +0.4 pp | +0.8 pp |
+| 30 | +0.5 pp | +2.7 pp | +2.5 pp | +5.8 pp |
+
 ### 5. Server Composition
 
-The server breakdown plots (`{basis}_{mode}_server_breakdown.png`) show the
-fleet composition for each scenario as stacked bars. Key observations:
+The server breakdown plots (`{basis}_{mode}_server_breakdown_{carbon,tco}.png`)
+show the fleet composition for each scenario as stacked bars. Key observations:
 
 - Under **iso-LP / purpose-built**, the mixed fleet uses *more total servers*
   than homogeneous no-SMT at low utilization (197 vs 187 at 10%) but still
@@ -410,9 +428,8 @@ fleet composition for each scenario as stacked bars. Key observations:
   compensates for the demand kept on SMT.
 
 - The **pool ratio** (no-SMT / total) in the mixed fleet reflects the split
-  point: a high split point (~0.89) means most demand goes to no-SMT
-  (62-66% of servers), while a low split point (~0.77) means a roughly even
-  split (~47% no-SMT).
+  point: a high split point (~0.90-0.95) means most demand goes to no-SMT,
+  while a low split point (~0.77-0.82) produces a more balanced fleet.
 
 The mixed fleet advantage is **largest where homogeneous no-SMT is weakest**:
 iso-physical-core at 30% utilization with same-hardware constraints. This is
@@ -444,16 +461,17 @@ The mixed fleet strategy provides the most value when:
 ### Where the mixed fleet matters less
 
 At 10% utilization under the same-hardware model, memory is the bottleneck for
-both pools, and the mixed fleet provides only a modest 1.4 pp improvement.
-Similarly, under the iso-LP basis where no-SMT already saves 13-17% carbon
-homogeneously, the mixed fleet adds only 1.9-2.2 pp.
+both pools, so the mixed fleet only modestly improves on homogeneous no-SMT.
+Similarly, under the iso-LP basis where no-SMT already saves strongly
+homogeneously, the mixed fleet adds only a small incremental gain.
 
 ### Practical implications
 
 1. **The mixed fleet is not a replacement for the homogeneous switch** -- it is
-   an incremental improvement that matters most at the margin. If a provider
-   can deploy homogeneous no-SMT and capture 10-17% carbon savings, the mixed
-   fleet adds 2-8 pp on top.
+   an incremental improvement that matters most at the margin. Under the
+   current model it adds roughly **2-8 pp on carbon** and **0.4-5.8 pp on
+   TCO**, with the largest gains in the cases where homogeneous no-SMT is
+   weakest.
 
 2. **Workload classification is the key enabler**. The mixed fleet requires
    knowing (or estimating) each workload's vCPU discount to route it

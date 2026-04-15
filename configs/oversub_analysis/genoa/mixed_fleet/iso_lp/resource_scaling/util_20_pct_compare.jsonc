@@ -1,6 +1,6 @@
 {
   "name": "iso_lp_resource_scaling_util_20pct_compare",
-  "description": "At 20% utilization: Three-way comparison of homogeneous SMT (R=1.29), homogeneous no-SMT (R=2.79, discount=0.75), and mixed fleet (auto-breakeven split). Iso-LP basis, Purpose-Built resource model.",
+  "description": "At 20% utilization: Comparison of homogeneous SMT (R=1.29), homogeneous no-SMT (R=2.79, discount=0.75), and mixed fleet with metric-specific auto-breakeven splits. Iso-LP basis, Purpose-Built resource model.",
   "scenarios": {
     "smt_homogeneous": {
       "processor": "smt",
@@ -44,7 +44,7 @@
         ]
       }
     },
-    "mixed_fleet": {
+    "mixed_fleet_carbon": {
       "composite": {
         "nosmt_pool": {
           "allocation": "below_split",
@@ -66,6 +66,35 @@
           "target_scenario": "nosmt_pool",
           "target_parameter": "vcpu_demand_multiplier",
           "match_metric": "carbon",
+          "search_bounds": [
+            0.5,
+            1.0
+          ]
+        }
+      }
+    },
+    "mixed_fleet_tco": {
+      "composite": {
+        "nosmt_pool": {
+          "allocation": "below_split",
+          "parameter_effects": {
+            "vcpu_demand_multiplier": "weighted_average"
+          }
+        },
+        "smt_pool": {
+          "allocation": "above_split",
+          "parameter_effects": {
+            "vcpu_demand_multiplier": 1.0
+          }
+        }
+      },
+      "split_trait": "vcpu_discount",
+      "split_point": {
+        "auto_breakeven": {
+          "baseline_scenario": "smt_pool",
+          "target_scenario": "nosmt_pool",
+          "target_parameter": "vcpu_demand_multiplier",
+          "match_metric": "tco",
           "search_bounds": [
             0.5,
             1.0
@@ -135,14 +164,16 @@
     "scenarios": [
       "smt_homogeneous",
       "nosmt_homogeneous",
-      "mixed_fleet"
+      "mixed_fleet_carbon",
+      "mixed_fleet_tco"
     ],
     "separate_metric_plots": true,
     "show_plot_title": false,
     "labels": {
       "smt_homogeneous": "SMT\n(R=1.29)",
       "nosmt_homogeneous": "No-SMT\n(R=2.79)",
-      "mixed_fleet": "Mixed Fleet\n(auto-breakeven)"
+      "mixed_fleet_carbon": "Mixed Fleet\n(CARBON split)",
+      "mixed_fleet_tco": "Mixed Fleet\n(TCO split)"
     }
   },
   "processor": {

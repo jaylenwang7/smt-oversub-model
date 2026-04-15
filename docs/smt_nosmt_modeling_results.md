@@ -340,15 +340,92 @@ The linear power curve model reduces the penalty by ~8 percentage points on carb
 
 ---
 
-## 7. Layer 2: Scheduling Constraints and Oversubscription Headroom
+## 7. Modeling Choice: How Oversubscription Changes Per-Server Resources
 
 ### Question
 
-> VP scheduling constraints limit how much SMT can safely oversubscribe. No-SMT, free of these constraints, can oversubscribe more aggressively. Does this higher no-SMT oversubscription headroom close the carbon/TCO gap?
+> Once CPU is oversubscribed (`R > 1.0`), how should memory, SSD, and per-server costs be modeled, and how far do real savings fall below the naive ideal?
+
+Before introducing the oversubscription layers, one modeling choice needs to be explicit. A higher oversubscription ratio reduces server count, but that alone does not determine what happens to memory, SSD, embodied carbon, or power. The answer depends on how per-server resources are treated once more vCPUs are packed onto each server.
+
+This section is therefore not a separate causal "layer" in the SMT vs no-SMT story. Instead, it defines the accounting framework that the later layers use.
+
+### 7.1 Three Resource Models
+
+When a server hosts more vCPUs than pCPUs, each vCPU still implies some memory and storage entitlement. The model uses three distinct resource treatments:
+
+| Resource model | What stays fixed per server | What scales or caps | Intended interpretation |
+|---|---|---|---|
+| **Fixed-resource model** | CPU, memory, SSD, NIC, chassis, rack | Nothing; only server count changes | Optimistic upper bound, useful as a structural sensitivity check |
+| **Purpose-built scaling model** | CPU, NIC, chassis, rack | Memory and SSD scale with hosted vCPU count | Default model for projected no-SMT deployment |
+| **Same-hardware constrained model** | Full SMT-provisioned server configuration | Effective R is capped by the first resource bottleneck | "Disable SMT on existing servers" transition case |
+
+Two clarifications matter for the later sections:
+
+- In the **purpose-built scaling model**, the no-SMT `R = 1.0` base server from Section 4.3 starts with 6 DIMMs and 3 SSDs. As `R` rises, the model scales memory and SSD capacity, cost, carbon, and power linearly with hosted vCPU count. It does **not** model whole-device step effects such as adding one DIMM or one SSD at a time.
+- In the **same-hardware constrained model**, no-SMT inherits the full SMT-provisioned server (12 DIMMs and 6 SSDs). This can help at low oversubscription, but it also creates stranded-resource overhead and an eventual hard ceiling. For example, at `R = 1.0`, 72 no-SMT vCPUs at 4 GB/vCPU use only 288 GB of the installed 768 GB, so much of the memory footprint is paid for but unused; at high requested `R`, that same 768 GB caps the server at 192 vCPUs, so effective `R` cannot rise above `192 / 72 = 2.67`.
+
+### 7.2 Ideal Savings vs Modeled Savings as R Increases
+
+To see why the resource model matters, it helps to step back from the SMT vs no-SMT comparison and run a structural sweep on no-SMT alone. This is meant as a structural example for one fixed baseline deployment, not as a claim that the exact percentages are the same for every processor type or utilization level. The tables below use no-SMT at 30% average VM utilization and compare higher `R` values against the no-SMT `R = 1.0` baseline because 30% is the upper end of the main 10/20/30 utilization range used throughout the analysis and makes the non-idealities easy to see.
+
+The **ideal savings** column is the naive upper bound. In simple terms: if `R = 2.0` cuts server count in half, the ideal line assumes that carbon and TCO also fall by exactly 50%. If `R = 5.0` cuts server count by 80%, the ideal line assumes 80% savings. Real modeled savings fall below that line.
+
+The exact gap below ideal does depend on the baseline operating point, especially average utilization, because higher `R` pushes the surviving servers further up the power curve. Additional no-SMT validation sweeps at 10%, 20%, and 30% utilization keep the same qualitative ordering (`ideal > fixed-resource > purpose-built scaling > same-hardware constrained`) and the same memory-driven ceiling in the constrained case, but the exact savings move by several percentage points. For example, at `R = 2.0` under the purpose-built scaling model, carbon savings are `-29.3%` at 10% utilization, `-25.3%` at 20% utilization, and `-23.8%` at 30% utilization, all well below the ideal `-50.0%`.
+
+#### Carbon Savings Across Oversubscription Points
+
+| Requested R | Ideal savings | Fixed-resource model | Purpose-built scaling model | Same-hardware constrained model | Effective R in same-hardware model |
+|---|---|---|---|---|---|
+| 1.0 | 0.0% | +0.0% | +0.0% | +28.1% | 1.00 |
+| 1.5 | -33.3% | -24.1% | -16.8% | -3.4% | 1.50 |
+| 2.0 | -50.0% | -37.1% | -23.8% | -20.5% | 2.00 |
+| 2.5 | -60.0% | -45.7% | -28.3% | -31.8% | 2.50 |
+| 3.0 | -66.7% | -51.9% | -31.8% | -34.9% | 2.67 |
+| 5.0 | -80.0% | -70.1% | -45.1% | -34.9% | 2.67 |
+
+#### TCO Savings Across Oversubscription Points
+
+| Requested R | Ideal savings | Fixed-resource model | Purpose-built scaling model | Same-hardware constrained model | Effective R in same-hardware model |
+|---|---|---|---|---|---|
+| 1.0 | 0.0% | +0.0% | +0.0% | +32.8% | 1.00 |
+| 1.5 | -33.3% | -28.2% | -20.2% | -5.3% | 1.50 |
+| 2.0 | -50.0% | -42.9% | -28.6% | -25.1% | 2.00 |
+| 2.5 | -60.0% | -52.1% | -33.8% | -37.5% | 2.50 |
+| 3.0 | -66.7% | -58.5% | -37.6% | -40.7% | 2.67 |
+| 5.0 | -80.0% | -74.5% | -48.6% | -40.7% | 2.67 |
+
+These tables show four distinct effects:
+
+1. **The ideal line is very optimistic.** At `R = 2.0`, the naive expectation is 50% lower carbon and TCO. None of the modeled cases achieve that.
+2. **The fixed-resource model still falls short of ideal.** Even when memory and SSD do not scale, fewer servers run at higher utilization, so operational energy per surviving server rises.
+3. **The purpose-built scaling model falls further below ideal.** The removed servers eliminate fixed components, but memory and SSD are partly redistributed to the surviving servers rather than eliminated.
+4. **The same-hardware constrained model has both an initial overhead and a hard ceiling.** At `R = 1.0`, it is worse than the no-SMT baseline because the full SMT-sized memory and SSD footprint remains installed. At higher requested `R`, savings improve, but once memory caps effective `R` at `2.67`, requesting `R = 3.0` or `R = 5.0` produces the same result.
+
+The most important practical comparison is the one used later in the main narrative: at `R = 2.0`, ideal carbon savings would be `-50.0%`, but the **purpose-built scaling model** yields only `-23.8%`. At `R = 5.0`, ideal carbon savings would be `-80.0%`, but the purpose-built result is `-45.1%` and the same-hardware constrained result plateaus at `-34.9%`.
+
+### 7.3 Default Resource Model Used in the Main Results
+
+From this point onward, the main layer-by-layer narrative uses the **purpose-built scaling model** unless stated otherwise. That choice is deliberate:
+
+- It is the appropriate model for the main deployment question: what would a real no-SMT fleet look like if the servers were provisioned for that fleet?
+- It preserves per-vCPU memory and storage entitlement instead of silently assuming that denser CPU packing comes "for free."
+- It makes the later savings numbers harder to obtain than in the fixed-resource model, which is the conservative choice for the main story.
+- It cleanly separates the **same-hardware constrained model** into its own transition-focused analysis in Section 11.
+
+> **Takeaway**: Once `R > 1.0`, oversubscription savings are not equal to server reduction. The later sections therefore use the **purpose-built scaling model** as the default and treat the fixed-resource and same-hardware constrained models as explicit comparison cases.
+
+---
+
+## 8. Layer 2: Scheduling Constraints and Oversubscription Headroom
+
+### Question
+
+> VP scheduling constraints limit how much SMT can safely oversubscribe. No-SMT, free of these constraints, can oversubscribe more aggressively. Under the default resource model from Section 7, does this higher no-SMT oversubscription headroom close the carbon/TCO gap?
 
 ### Approach
 
-Replace R = 1.0 with the experimentally measured safe R values from Section 5.3. SMT uses the VP-constrained iso-physical-core safe R; no-SMT uses the unconstrained safe R. No-SMT uses the linear CPU power curve. The vCPU demand multiplier is still M = 1.0 (no demand discount yet).
+Using the **purpose-built scaling model** from Section 7 as the default resource treatment, replace `R = 1.0` with the experimentally measured safe `R` values from Section 5.3. SMT uses the VP-constrained iso-physical-core safe `R`; no-SMT uses the unconstrained safe `R`. No-SMT uses the linear CPU power curve. The vCPU demand multiplier is still `M = 1.0` (no demand discount yet).
 
 ### Why No-SMT Can Oversubscribe More
 
@@ -356,29 +433,29 @@ Under SMT, VP constraints prevent cross-VM sibling thread co-execution. When the
 
 No-SMT eliminates this constraint entirely. Each LP is the sole thread on its physical core, so there are no sibling threads to conflict with. The scheduler can freely assign any vCPU to any available LP. This means steal time rises purely as a function of aggregate demand exceeding aggregate capacity, without the combinatorial scheduling overhead of SMT.
 
-### Results (Iso-Physical-Core, No Demand Discount)
+### Results (Iso-Physical-Core, Purpose-Built, No Demand Discount)
 
 | Avg VM util | SMT R | No-SMT R | No-SMT carbon vs SMT | No-SMT TCO vs SMT | No-SMT servers vs SMT |
 |---|---|---|---|---|---|
-| 10% | 3.32 | 5.58 | **+2.3%** | **-5.2%** | +18.6% |
-| 20% | 1.66 | 2.79 | **+2.4%** | **-5.0%** | +18.9% |
-| 30% | 1.11 | 1.86 | **+2.7%** | **-4.7%** | +19.3% |
+| 10% | 3.32 | 5.58 | **+17.4%** | **+10.8%** | +18.6% |
+| 20% | 1.66 | 2.79 | **+19.8%** | **+13.7%** | +18.9% |
+| 30% | 1.11 | 1.86 | **+21.2%** | **+15.6%** | +19.3% |
 
-With the iso-physical-core calibration, no-SMT at M = 1.0 is essentially at carbon parity (+2--3%) and already saves modestly on TCO (-5%). The oversubscription headroom advantage closes most of the ~50% gap from Layer 1 but does not fully overcome the LP count disadvantage without demand compression.
+Under the iso-physical-core calibration and the purpose-built scaling model, no-SMT at `M = 1.0` is still clearly behind SMT: about `+17--21%` on carbon and `+11--16%` on TCO. The oversubscription headroom advantage closes a large share of the ~50% gap from Layer 1, but once the non-CPU resource accounting from Section 7 is included, it does not bring no-SMT close to parity by itself.
 
-For comparison, under the iso-LP calibration (where SMT does not benefit from its larger LP pool), no-SMT already saves **~4--14% on carbon** at M = 1.0 --- the difference is entirely attributable to whether SMT is given credit for its 2x LP pool on the same physical cores.
+For context, the same safe-`R` values would look much better under the **fixed-resource model** from Section 7: roughly `+2--3%` on carbon and `-5%` on TCO. That difference is not a change in scheduling behavior; it is purely a change in how memory and SSD are accounted for once more vCPUs are packed onto each server.
 
-> **Takeaway**: Oversubscription headroom alone closes the ~50% baseline gap to within **~2--3% carbon** and **~5% TCO** of SMT. The scheduling constraint disadvantage is the primary cost of SMT under oversubscription.
+> **Takeaway**: Oversubscription headroom alone closes the ~50% baseline gap to about a **~17--21% carbon** and **~11--16% TCO** penalty under the default purpose-built scaling model. The scheduling constraint disadvantage is still a major part of SMT's cost under oversubscription, but it is not sufficient by itself to make no-SMT a win.
 
 ---
 
-## 8. Layer 3: vCPU Demand Discount --- The Headline Result
+## 9. Layer 3: vCPU Demand Discount --- The Headline Result
 
 ### Question
 
 > Since no-SMT logical processors deliver more performance per vCPU (no co-running overhead from a sibling thread), users may need fewer vCPUs for the same workload. How does this demand compression change the picture?
 
-### 8.1 Experimental Basis for the Demand Discount
+### 9.1 Experimental Basis for the Demand Discount
 
 Peak throughput was measured for 30 applications (14 services, 16 batch workloads) on a c6620 server, comparing 2-core SMT (4 HW threads / 4 vCPUs) versus 4-core no-SMT (4 HW threads / 4 vCPUs). The key aggregate results:
 
@@ -388,7 +465,7 @@ Peak throughput was measured for 30 applications (14 services, 16 batch workload
 | Batch | 16 | 1.41x | 28.9% |
 | All applications | 30 | 1.36x | 26.5% |
 
-A discount of 26.5% means that a workload needing 100 vCPUs under SMT would need only ~74 vCPUs under no-SMT for the same throughput. This translates to M = 0.735 (rounded to 0.75 for the modeling reference point).
+A discount of 26.5% means that a workload needing 100 vCPUs under SMT would need only ~74 vCPUs under no-SMT for the same throughput. This translates to `M = 0.735` (rounded to `0.75` for the modeling reference point).
 
 The discount varies widely across applications:
 
@@ -408,7 +485,7 @@ CPU-intensive workloads consistently show 20--33% discounts. Memory-latency-domi
 
 **[Requires validation]**: The proportional scaling assumption --- that users would actually re-size their VMs or reduce VM count in proportion to the per-vCPU performance gain --- has not been empirically validated. In practice, VM sizing depends on pricing models, application architecture, and organizational inertia. Validating this assumption is a priority; one approach is to examine how first-party cloud workloads have historically scaled VM count when migrating between hardware generations with different per-vCPU performance (e.g., Ice Lake to Emerald Rapids). Specific validation questions are noted in Section 14.
 
-### 8.2 Contextualizing the Discount Against Industry SMT Claims
+### 9.2 Contextualizing the Discount Against Industry SMT Claims
 
 Vendor and academic sources report SMT throughput gains in the range of +10% to +60%, with a cross-source median around +30%.[^smt-survey] However, these figures are typically framed as "aggregate throughput gain on the *same physical core budget*" (e.g., 2 cores with SMT vs 2 cores without SMT), which is a different quantity than the "per-vCPU performance at fixed visible vCPU count" used in this model.
 
@@ -431,11 +508,11 @@ Under this translation:
 - The **M = 0.75 geomean marker** (~25% discount) corresponds to a same-core SMT gain of ~+50%, toward the upper end of mainstream claims but within the AMD and IBM ranges.
 - The **M = 0.85 marker** ("low discount" / ~15%) corresponds to ~+70% same-core gain, which is stronger than most reported values and serves as a deliberately conservative bound from the no-SMT perspective.
 
-The experimental geomean of 1.36x (M = 0.735, ~26.5% discount) back-translates to an equivalent same-core SMT gain of ~+47%. This is above Intel's typical claims of +10--30% but is explainable: the experiment measures *peak throughput at fixed visible vCPU count* on a small VM (4 vCPUs), where each vCPU is highly sensitive to whether it maps to a full core or a sibling thread. Vendor numbers are typically *machine throughput* claims using full core budgets and multi-socket systems.
+The experimental geomean of 1.36x (`M = 0.735`, ~26.5% discount) back-translates to an equivalent same-core SMT gain of ~+47%. This is above Intel's typical claims of +10--30% but is explainable: the experiment measures *peak throughput at fixed visible vCPU count* on a small VM (4 vCPUs), where each vCPU is highly sensitive to whether it maps to a full core or a sibling thread. Vendor numbers are typically *machine throughput* claims using full core budgets and multi-socket systems.
 
-**[Requires validation]**: Connecting the per-vCPU peak throughput measurement to real fleet vCPU demand changes requires validating the proportional scaling assumption (see Section 8.1 and Section 14).
+**[Requires validation]**: Connecting the per-vCPU peak throughput measurement to real fleet vCPU demand changes requires validating the proportional scaling assumption (see Section 9.1 and Section 14).
 
-### 8.3 Three Reference Points for Sensitivity
+### 9.3 Three Reference Points for Sensitivity
 
 The analysis evaluates savings at three reference points that bracket the range of realistic vCPU discounts:
 
@@ -445,9 +522,9 @@ The analysis evaluates savings at three reference points that bracket the range 
 | **Geomean** | 0.75 | ~1.33x | Close to the all-app experimental geomean (1.36x) |
 | **Low discount** | 0.85 | ~1.18x | Conservative; near weakest measured gains (InfluxDB, Go-MemChase) |
 
-### 8.4 Sanity Check: Demand Discount Alone Is Not Sufficient
+### 9.4 Sanity Check: Demand Discount Alone Is Not Sufficient
 
-Before presenting the full results, a sanity check confirms that the demand discount alone --- without oversubscription headroom --- does not make no-SMT obviously better. With both configurations at R = 1.0 and no-SMT using a linear power curve:
+Before presenting the full results, a sanity check confirms that the demand discount alone --- without oversubscription headroom --- does not make no-SMT obviously better. With both configurations at `R = 1.0` and no-SMT using a linear power curve, this check isolates only the demand-discount mechanism; because there is no oversubscription, it is effectively unchanged by the resource-model choice:
 
 | M | Implied discount | No-SMT carbon vs SMT | No-SMT TCO vs SMT |
 |---|---|---|---|
@@ -455,13 +532,13 @@ Before presenting the full results, a sanity check confirms that the demand disc
 | 0.75 | 25% | +11.0% | +9.5% |
 | 0.65 | 35% | -3.8% | -5.1% |
 
-At the geomean discount, no-SMT is still 11% *worse* on carbon without oversubscription. No-SMT only breaks even in this setting at a ~32% discount (M = 0.676), which is stronger than the geomean. This confirms that the projected savings in the headline results require *both* the oversubscription headroom advantage (Section 7) and the demand discount --- neither alone is sufficient at realistic geomean values.
+At the geomean discount, no-SMT is still 11% *worse* on carbon without oversubscription. No-SMT only breaks even in this setting at a ~32% discount (`M = 0.676`), which is stronger than the geomean. This confirms that the projected savings in the headline results require *both* the oversubscription headroom advantage (Section 8) and the demand discount --- neither alone is sufficient at realistic geomean values.
 
-### 8.5 Headline Results: Purpose-Built No-SMT with Resource Scaling
+### 9.5 Headline Results Under the Default Resource Model
 
-With all three mechanisms active --- scheduling-constraint-limited oversubscription, linear no-SMT power curves, and experimentally-grounded vCPU demand discounts --- the iso-physical-core comparison produces:
+With all three mechanisms active --- the purpose-built scaling model from Section 7, scheduling-constraint-limited oversubscription from Section 8, and experimentally grounded vCPU demand discounts --- the iso-physical-core comparison produces:
 
-**At geomean discount (M = 0.75, ~1.33x performance ratio):**
+**At geomean discount (`M = 0.75`, ~1.33x performance ratio):**
 
 | Avg VM utilization | Carbon savings | TCO savings | Server reduction |
 |---|---|---|---|
@@ -469,7 +546,7 @@ With all three mechanisms active --- scheduling-constraint-limited oversubscript
 | 20% | **-10.1%** | **-14.6%** | -10.7% |
 | 30% | **-9.0%** | **-13.2%** | -10.4% |
 
-**At high discount (M = 0.65, ~1.54x performance ratio):**
+**At high discount (`M = 0.65`, ~1.54x performance ratio):**
 
 | Avg VM utilization | Carbon savings | TCO savings |
 |---|---|---|
@@ -477,7 +554,7 @@ With all three mechanisms active --- scheduling-constraint-limited oversubscript
 | 20% | -22.1% | -26.1% |
 | 30% | -21.2% | -24.8% |
 
-**At low discount (M = 0.85, ~1.18x performance ratio):**
+**At low discount (`M = 0.85`, ~1.18x performance ratio):**
 
 | Avg VM utilization | Carbon savings | TCO savings |
 |---|---|---|
@@ -485,61 +562,20 @@ With all three mechanisms active --- scheduling-constraint-limited oversubscript
 | 20% | +1.9% | -3.2% |
 | 30% | +3.0% | -1.8% |
 
-The carbon breakeven M (the demand multiplier at which no-SMT exactly matches SMT on carbon) is approximately **0.83--0.85** across utilization levels under the iso-physical-core basis with resource scaling. This means a discount of ~15--17% is sufficient for no-SMT to break even on carbon; the geomean discount of 26.5% pushes well past breakeven.
+The carbon breakeven `M` (the demand multiplier at which no-SMT exactly matches SMT on carbon) is approximately **0.83--0.85** across utilization levels under the iso-physical-core basis with the purpose-built scaling model. This means a discount of ~15--17% is sufficient for no-SMT to break even on carbon; the geomean discount of 26.5% pushes well past breakeven.
 
-### 8.6 How the Three Mechanisms Stack Up
+### 9.6 How the Three Mechanisms Stack Up
 
 | Mechanism | Effect on no-SMT competitiveness |
 |---|---|
 | LP count disadvantage (Section 6) | ~50% carbon penalty --- the baseline "hole" |
-| Scheduling constraint headroom (Section 7) | Closes gap to ~2--3% carbon penalty |
-| vCPU demand discount at geomean (this section) | Pushes to **~10--12% carbon savings** |
-| Combined headline | **~10% carbon, ~15% TCO savings** |
+| Scheduling constraint headroom only (Section 8) | Reduces the gap to a **~17--21% carbon** and **~11--16% TCO** penalty |
+| vCPU demand discount only (Section 9.4, 10% util sanity check) | Still **+11.0% carbon** and **+9.5% TCO** worse at geomean discount |
+| Combined headline (Section 9.5) | **~10% carbon, ~15% TCO savings** |
 
-The progression: Section 6 establishes a large penalty; Section 7 closes most of it through higher oversubscription; this section shows that demand compression tips the balance. The sanity check (Section 8.4) confirms that the demand discount alone is usually not enough --- both mechanisms are needed.
+The progression is therefore: Section 6 establishes the baseline penalty; Section 7 defines the non-ideal resource accounting that later sections must obey; Section 8 shows that higher no-SMT oversubscription closes a substantial but incomplete share of the gap; Section 9.4 shows that demand discount alone is also insufficient at the geomean; and Section 9.5 shows that the two mechanisms together tip the result into savings.
 
 > **Takeaway**: With experimentally grounded oversubscription ratios, linear no-SMT power, and the geomean vCPU demand discount, a homogeneous no-SMT fleet saves approximately **10% on carbon and 15% on TCO** at 10--20% average VM utilization, using purpose-built servers under the iso-physical-core comparison.
-
----
-
-## 9. Resource Modeling: How Per-Server Costs Scale with Oversubscription
-
-### Question
-
-> When a server oversubscribes CPU (packing more vCPUs than pCPUs), what happens to per-server memory, SSD, and power costs, and how should the model account for this?
-
-### 9.1 Three Approaches
-
-When R > 1.0, the server hosts more vCPUs than it has pCPUs. Each vCPU belongs to a VM that expects a certain allocation of memory and storage. The question is where that additional capacity comes from. The model supports three approaches:
-
-**Fixed resources (unscaled)**: Per-server hardware is unchanged regardless of R. Appropriate if memory and SSD are already over-provisioned or if VMs have small memory footprints. This is the simplest model and produces the most optimistic savings projections. However, at high R it becomes unrealistic --- a server with 80 HW threads hosting 200 vCPUs would need ~2.5x its baseline memory.
-
-**Scaled resources (purpose-built)**: Memory and SSD are provisioned proportionally to the number of vCPUs the server hosts. A server running 2x as many vCPUs has 2x the DIMMs and SSDs. This models a purpose-built deployment where servers are configured for their target oversubscription level. Only CPU, NIC, chassis, and rack remain fixed. This is the most appropriate framing for projecting real deployment costs where each VM is entitled to a fixed memory/storage allocation. The headline results in Section 8.5 use this approach.
-
-**Resource-constrained (existing hardware)**: The server has fixed resource capacities (e.g., 12 DIMM slots) that cannot be expanded. Oversubscription is limited by whichever resource runs out first (typically memory). This models disabling SMT on existing SMT-provisioned servers without reprovisioning --- the "just flip the switch" scenario examined in Section 11.
-
-### 9.2 Savings Scaling: Diminishing Returns from Oversubscription
-
-Even under the most optimistic (fixed) resource model, carbon and TCO savings do not track proportionally with server reduction:
-
-| R | Server reduction | Carbon savings (fixed) | Carbon savings (scaled) |
-|---|---|---|---|
-| 1.5 | -33.3% | -24.1% | -16.8% |
-| 2.0 | -50.0% | -37.1% | -23.8% |
-| 3.0 | -66.7% | -51.9% | -31.8% |
-| 5.0 | -80.0% | -70.1% | -45.1% |
-
-(Measured for no-SMT at 30% utilization, comparing against no-SMT at R = 1.0)
-
-Two effects create the sublinearity:
-
-1. **Operational carbon drag**: Fewer servers each run at higher utilization. Per-server energy increases even as total server count drops. The net operational carbon reduction is less than the server reduction.
-
-2. **Resource cost redistribution (scaled model only)**: When servers are purpose-built for higher R, each remaining server needs more DIMMs and SSDs. Memory and SSD embodied carbon and power are redistributed to surviving servers rather than eliminated.
-
-Under the constrained model, savings plateau at the memory ceiling. For a no-SMT server with 768 GB of memory (12 DIMMs from the SMT configuration) and 4 GB per vCPU demand, the maximum vCPUs per server is 192, giving an effective R ceiling of 192/72 = 2.67. Beyond this point, additional CPU oversubscription is wasted.
-
-> **Takeaway**: A 50% server reduction does not yield 50% carbon savings. Under scaled resources, the actual savings are **~24% carbon** at R = 2.0. The headline results account for this sublinearity by using the scaled resource model.
 
 ---
 
@@ -562,7 +598,7 @@ The difference is entirely on the SMT side: the iso-physical-core calibration gi
 
 ### 10.2 Impact on Headline Numbers
 
-Under the purpose-built (resource scaling) model at M = 0.75:
+Under the **purpose-built scaling model** at `M = 0.75`:
 
 | Basis | 10% util carbon | 20% util carbon | 30% util carbon |
 |---|---|---|---|
@@ -612,15 +648,15 @@ At 10% utilization, memory constrains both configurations. But the impact is asy
 
 ### 11.3 Results (Iso-Physical-Core, M = 0.75)
 
-| Avg VM util | Carbon savings (purpose-built) | Carbon savings (same hardware) | TCO savings (purpose-built) | TCO savings (same hardware) |
+| Avg VM util | Carbon savings (purpose-built scaling) | Carbon savings (same-hardware constrained) | TCO savings (purpose-built scaling) | TCO savings (same-hardware constrained) |
 |---|---|---|---|---|
 | 10% | -11.8% | **-16.5%** | -16.8% | **-20.8%** |
 | 20% | -10.1% | **-13.9%** | -14.6% | **-19.0%** |
 | 30% | -9.0% | **-2.4%** | -13.2% | **-5.9%** |
 
-**At 10% utilization, the same-hardware scenario saves *more* than purpose-built.** This counterintuitive result arises because memory constraints eliminate SMT's oversubscription advantage at low utilization. Both configurations are capped at the same absolute vCPU count per server (192, determined by memory), but no-SMT reaches this with a higher effective R (2.67 vs 1.33), leveling the playing field. Additionally, SMT strands significant SSD capacity (40--50% unused) that no-SMT does not.
+**At 10% utilization, the same-hardware constrained scenario saves *more* than the purpose-built scaling scenario.** This counterintuitive result arises because memory constraints eliminate SMT's oversubscription advantage at low utilization. Both configurations are capped at the same absolute vCPU count per server (192, determined by memory), but no-SMT reaches this with a higher effective R (2.67 vs 1.33), leveling the playing field. Additionally, SMT strands significant SSD capacity (40--50% unused) that no-SMT does not.
 
-**At 30% utilization, same-hardware savings shrink to marginal levels (-2.4% carbon).** Here, neither configuration is memory-constrained, but no-SMT carries the full embodied cost of 12 DIMMs and 6 SSDs per server (1,784 kg instead of 1,120 kg for purpose-built). This ~60% higher per-server embodied cost nearly offsets the server count reduction.
+**At 30% utilization, same-hardware constrained savings shrink to marginal levels (-2.4% carbon).** Here, neither configuration is memory-constrained, but no-SMT carries the full embodied cost of 12 DIMMs and 6 SSDs per server (1,784 kg instead of 1,120 kg for the purpose-built scaling case). This ~60% higher per-server embodied cost nearly offsets the server count reduction.
 
 > **Takeaway**: Disabling SMT on existing hardware delivers the **largest relative savings at low utilization** (-16.5% carbon, -20.8% TCO at 10%) because memory constraints disproportionately limit SMT. At moderate utilization (30%), same-hardware savings are marginal (-2.4% carbon) because of the overhead from carrying unused resources. **For a "just flip the switch" pilot, low-utilization fleet segments produce the most favorable numbers.**
 
@@ -636,7 +672,7 @@ At 10% utilization, memory constrains both configurations. But the impact is asy
 
 The fleet's workloads are assumed to have a distribution of vCPU demand discounts, modeled as a uniform distribution from M = 0.50 to M = 1.00 (fleet average M = 0.75, matching the experimental geomean). Each workload is assigned to a pool based on a **split point**: workloads with M below the split (strong no-SMT advantage) go to the no-SMT pool; those above (weak or no advantage) stay on SMT.
 
-The split point is set to the **carbon breakeven M** --- the discount level at which a single workload evaluated on no-SMT matches the same workload on SMT for carbon. This is computed automatically via binary search.
+The split point is set by a per-workload breakeven calculation. For carbon, the split is the **carbon breakeven M** --- the discount level at which a single workload evaluated on no-SMT matches the same workload on SMT for carbon. For TCO, the split is the analogous **TCO breakeven M**. Both are computed automatically via binary search.
 
 Each pool is evaluated independently with its own processor type, oversubscription ratio, and resource model. Fleet-level totals are the sum across pools.
 
@@ -644,27 +680,29 @@ Each pool is evaluated independently with its own processor type, oversubscripti
 
 **Purpose-built no-SMT servers, iso-physical-core basis:**
 
-| Avg VM util | Split point | Homogeneous no-SMT carbon | Mixed fleet carbon | Improvement (pp) |
-|---|---|---|---|---|
-| 10% | 0.852 | -11.8% | **-14.6%** | +2.8 |
-| 20% | 0.834 | -10.1% | **-14.0%** | +3.9 |
-| 30% | 0.824 | -9.0% | **-13.5%** | +4.5 |
+| Avg VM util | Carbon split | TCO split | Homogeneous no-SMT carbon | Mixed fleet carbon | Carbon improvement (pp) | Homogeneous no-SMT TCO | Mixed fleet TCO | TCO improvement (pp) |
+|---|---|---|---|---|---|---|---|---|
+| 10% | 0.852 | 0.902 | -11.8% | **-14.6%** | +2.8 | -16.8% | **-17.9%** | +1.1 |
+| 20% | 0.834 | 0.879 | -10.1% | **-14.0%** | +3.9 | -14.6% | **-16.7%** | +2.1 |
+| 30% | 0.824 | 0.865 | -9.0% | **-13.5%** | +4.5 | -13.2% | **-15.9%** | +2.7 |
 
-**Same hardware, iso-physical-core basis:**
+**Same-hardware constrained model, iso-physical-core basis:**
 
-| Avg VM util | Split point | Homogeneous no-SMT carbon | Mixed fleet carbon | Improvement (pp) |
-|---|---|---|---|---|
-| 10% | 0.898 | -16.5% | **-17.9%** | +1.4 |
-| 20% | 0.871 | -13.9% | **-16.2%** | +2.3 |
-| 30% | 0.770 | -2.4% | **-10.1%** | +7.7 |
+| Avg VM util | Carbon split | TCO split | Homogeneous no-SMT carbon | Mixed fleet carbon | Carbon improvement (pp) | Homogeneous no-SMT TCO | Mixed fleet TCO | TCO improvement (pp) |
+|---|---|---|---|---|---|---|---|---|
+| 10% | 0.898 | 0.946 | -16.5% | **-17.9%** | +1.4 | -20.8% | **-21.2%** | +0.4 |
+| 20% | 0.871 | 0.926 | -13.9% | **-16.2%** | +2.3 | -19.0% | **-19.8%** | +0.8 |
+| 30% | 0.770 | 0.797 | -2.4% | **-10.1%** | +7.7 | -5.9% | **-11.7%** | +5.8 |
 
 ### 12.3 When the Mixed Fleet Matters Most
 
-The mixed fleet advantage is **largest where homogeneous no-SMT is weakest**: at 30% utilization under the iso-physical-core same-hardware scenario, where homogeneous no-SMT saves only 2.4% but the mixed fleet saves 10.1% --- a 7.7 pp improvement.
+The mixed fleet advantage is **largest where homogeneous no-SMT is weakest**: at 30% utilization under the iso-physical-core same-hardware constrained scenario, where homogeneous no-SMT saves only 2.4% on carbon and 5.9% on TCO, while the mixed fleet saves 10.1% on carbon and 11.7% on TCO.
 
-The mixed fleet helps because the homogeneous approach applies the fleet-average discount (M = 0.75) to all workloads, including those with near-zero no-SMT advantage. These workloads are better served by SMT. The mixed fleet avoids this mismatch by only routing genuinely-benefiting workloads to no-SMT.
+The mechanism is the same in both metrics: the homogeneous approach applies the fleet-average discount (M = 0.75) to every workload, including workloads with little true no-SMT benefit. The mixed fleet avoids that mismatch by routing only the stronger-benefit workloads to no-SMT. The gain is largest when SMT remains competitive enough that this selectivity matters.
 
-The split point is not highly sensitive near the optimum. Sweep analyses show broad plateaus of near-optimal savings across a range of split points (typically 0.70--0.95), meaning workload routing does not need to be precisely calibrated to capture most of the benefit.
+The carbon-selected and TCO-selected splits are close, but not identical. The TCO-selected split is usually slightly higher, meaning TCO prefers routing a bit more demand to no-SMT. Even so, the cross-metric sensitivity is small: for example, in the purpose-built case at 20% utilization, the mixed fleet saves 14.0% on carbon at the carbon-selected split and 13.7% on carbon at the TCO-selected split. This indicates that the mixed-fleet conclusion is not fragile to the exact split choice.
+
+The split point is also not highly sensitive near the optimum. Sweep analyses show broad plateaus of near-optimal savings across a range of split points (typically 0.70--0.95), meaning workload routing does not need to be precisely calibrated to capture most of the benefit.
 
 ### 12.4 Practical Requirements
 
@@ -676,7 +714,7 @@ The mixed fleet strategy requires knowing (or estimating) each workload's vCPU d
 
 **[Requires validation]**: The uniform discount distribution (M = 0.50 to 1.00) is a modeling assumption. The true distribution across a real cloud fleet is unknown. A right-skewed distribution (most workloads near M = 1.0) would increase the mixed fleet advantage; a left-skewed one would decrease it.
 
-> **Takeaway**: A mixed fleet saves an additional **2--8 pp on carbon** beyond homogeneous no-SMT, with the largest gains where SMT is most competitive and the homogeneous switch is weakest. The mixed fleet is an incremental improvement, not a replacement for the homogeneous switch.
+> **Takeaway**: A mixed fleet saves an additional **1.4--7.7 pp on carbon** and **0.4--5.8 pp on TCO** beyond homogeneous no-SMT in the iso-physical-core cases summarized here, with the largest gains where SMT is most competitive and the homogeneous switch is weakest. The mixed fleet is an incremental improvement, not a replacement for the homogeneous switch.
 
 ---
 
@@ -710,7 +748,7 @@ The assumptions underlying the analysis fall into three categories: those ground
 | **Single contention threshold (1% CWT)** | All oversubscription ratios | Evaluate sensitivity by repeating the analysis with thresholds at 0.5%, 2%, 5%. |
 | **Go-CPU representativeness** | R values at each utilization level | Repeat with cross-application median R values or per-application R curves. |
 | **Power curve generalization** | No-SMT power advantage magnitude | Measure SMT vs no-SMT power proportionality on AMD Genoa hardware. |
-| **4 GB/vCPU memory demand** | Memory constraint ceiling in same-hardware analysis | Validate against actual fleet VM memory size distributions. |
+| **4 GB/vCPU memory demand** | Memory constraint ceiling in the same-hardware constrained analysis | Validate against actual fleet VM memory size distributions. |
 | **Uniform vCPU discount distribution** | Mixed fleet analysis savings magnitude | Characterize the actual distribution of per-workload discounts from fleet data. |
 
 ---
@@ -745,7 +783,7 @@ This work connects to the broader oversubscription research question: developing
 
 ### 14.4 Deployment and Operational Considerations
 
-- **Transition path**: The same-hardware analysis (Section 11) provides a starting point for pilot evaluations. The most favorable scenario for a pilot is low-utilization fleet segments.
+- **Transition path**: The same-hardware constrained analysis (Section 11) provides a starting point for pilot evaluations. The most favorable scenario for a pilot is low-utilization fleet segments.
 - **Mixed fleet operations**: The mixed fleet (Section 12) requires workload classification infrastructure. The sensitivity analysis shows the split point need not be precise --- a coarse classification (e.g., "CPU-bound" vs "memory-bound") may be sufficient.
 - **Dynamic threshold setting**: Developing a practical, profiling-informed threshold-setting policy that can adapt to different hardware configurations and workload mixes. This connects the SMT vs no-SMT modeling story to the broader oversubscription characterization research.
 
@@ -755,7 +793,7 @@ This work connects to the broader oversubscription research question: developing
 
 ### A.1 Homogeneous No-SMT Savings (Carbon % vs SMT Baseline)
 
-All values use iso-physical-core basis, purpose-built no-SMT servers (resource scaling), linear no-SMT CPU power.
+All values use iso-physical-core basis, the purpose-built scaling model for no-SMT servers, and linear no-SMT CPU power.
 
 | Avg VM util | M = 0.65 | M = 0.75 (geomean) | M = 0.85 | M = 1.0 (no discount) |
 |---|---|---|---|---|
@@ -771,7 +809,7 @@ All values use iso-physical-core basis, purpose-built no-SMT servers (resource s
 | 20% | -26.1% | **-14.6%** | -3.2% | +13.7% |
 | 30% | -24.8% | **-13.2%** | -1.8% | +15.6% |
 
-### A.3 Carbon Breakeven M (Iso-Physical-Core, Resource Scaling)
+### A.3 Carbon Breakeven M (Iso-Physical-Core, Purpose-Built Scaling Model)
 
 The demand multiplier M at which no-SMT exactly matches SMT on carbon:
 
@@ -785,7 +823,7 @@ Values below 1.0 mean no-SMT needs *some* demand discount to break even. These b
 
 ### A.4 Mixed Fleet Summary (Carbon % vs SMT Baseline)
 
-| Avg VM util | Purpose-built homogeneous | Purpose-built mixed | Same-HW homogeneous | Same-HW mixed |
+| Avg VM util | Purpose-built homogeneous | Purpose-built mixed | Same-hardware constrained homogeneous | Same-hardware constrained mixed |
 |---|---|---|---|---|
 | 10% | -11.8% | -14.6% | -16.5% | -17.9% |
 | 20% | -10.1% | -14.0% | -13.9% | -16.2% |

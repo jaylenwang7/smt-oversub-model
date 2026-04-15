@@ -57,6 +57,8 @@ SPLIT_SWEEP_VALUES = [
     0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.01,
 ]
 
+BREAKEVEN_METRICS = ("carbon", "tco")
+
 # Scheduling-input bases: R values from the iso-LP and iso-physical-core
 # experimental calibrations (02c).
 INPUT_BASES: dict[str, dict[str, Any]] = {
@@ -151,7 +153,7 @@ def build_compare_config(
     mode: str,
     util: float,
 ) -> tuple[Path, dict[str, Any]]:
-    """Build a 3-way compare config: SMT homo, no-SMT homo, mixed fleet."""
+    """Build a compare config with metric-specific mixed-fleet split points."""
     basis = INPUT_BASES[basis_key]
     raw_ratios = basis["ratios"][util]
     smt_r = modeled_ratio(raw_ratios["smt"])
@@ -186,34 +188,41 @@ def build_compare_config(
     }
     nosmt_pool.update(json.loads(json.dumps(mode_info["nosmt_scenario_patch"])))
 
-    # Mixed fleet composite
-    mixed_fleet = {
-        "composite": {
-            "nosmt_pool": {
-                "allocation": "below_split",
-                "parameter_effects": {"vcpu_demand_multiplier": "weighted_average"},
+    mixed_fleet_scenarios: dict[str, dict[str, Any]] = {}
+    mixed_fleet_labels: dict[str, str] = {}
+    mixed_fleet_analysis_names: list[str] = []
+
+    for metric in BREAKEVEN_METRICS:
+        scenario_name = f"mixed_fleet_{metric}"
+        mixed_fleet_scenarios[scenario_name] = {
+            "composite": {
+                "nosmt_pool": {
+                    "allocation": "below_split",
+                    "parameter_effects": {"vcpu_demand_multiplier": "weighted_average"},
+                },
+                "smt_pool": {
+                    "allocation": "above_split",
+                    "parameter_effects": {"vcpu_demand_multiplier": 1.0},
+                },
             },
-            "smt_pool": {
-                "allocation": "above_split",
-                "parameter_effects": {"vcpu_demand_multiplier": 1.0},
+            "split_trait": "vcpu_discount",
+            "split_point": {
+                "auto_breakeven": {
+                    "baseline_scenario": "smt_pool",
+                    "target_scenario": "nosmt_pool",
+                    "target_parameter": "vcpu_demand_multiplier",
+                    "match_metric": metric,
+                    "search_bounds": [0.5, 1.0],
+                }
             },
-        },
-        "split_trait": "vcpu_discount",
-        "split_point": {
-            "auto_breakeven": {
-                "baseline_scenario": "smt_pool",
-                "target_scenario": "nosmt_pool",
-                "target_parameter": "vcpu_demand_multiplier",
-                "match_metric": "carbon",
-                "search_bounds": [0.5, 1.0],
-            }
-        },
-    }
+        }
+        mixed_fleet_labels[scenario_name] = f"Mixed Fleet\n({metric.upper()} split)"
+        mixed_fleet_analysis_names.append(scenario_name)
 
     description = (
-        f"At {util_pct}% utilization: Three-way comparison of homogeneous SMT "
+        f"At {util_pct}% utilization: Comparison of homogeneous SMT "
         f"(R={smt_r:.2f}), homogeneous no-SMT (R={nosmt_r:.2f}, discount=0.75), "
-        f"and mixed fleet (auto-breakeven split). {basis['label']} basis, "
+        f"and mixed fleet with metric-specific auto-breakeven splits. {basis['label']} basis, "
         f"{mode_info['short_label']} resource model."
     )
 
@@ -225,7 +234,7 @@ def build_compare_config(
             "nosmt_homogeneous": nosmt_homo,
             "smt_pool": smt_pool,
             "nosmt_pool": nosmt_pool,
-            "mixed_fleet": mixed_fleet,
+            **mixed_fleet_scenarios,
         },
         "workload": {
             "total_vcpus": 100000,
@@ -240,13 +249,13 @@ def build_compare_config(
         "analysis": {
             "type": "compare",
             "baseline": "smt_homogeneous",
-            "scenarios": ["smt_homogeneous", "nosmt_homogeneous", "mixed_fleet"],
+            "scenarios": ["smt_homogeneous", "nosmt_homogeneous", *mixed_fleet_analysis_names],
             "separate_metric_plots": True,
             "show_plot_title": False,
             "labels": {
                 "smt_homogeneous": f"SMT\n(R={smt_r:.2f})",
                 "nosmt_homogeneous": f"No-SMT\n(R={nosmt_r:.2f})",
-                "mixed_fleet": "Mixed Fleet\n(auto-breakeven)",
+                **mixed_fleet_labels,
             },
         },
         "processor": {
@@ -446,13 +455,11 @@ def extract_compare_savings(basis_key: str, mode: str, util: float) -> dict[str,
     scenarios = result["scenario_results"]
     baseline = scenarios["smt_homogeneous"]
     nosmt = scenarios["nosmt_homogeneous"]
-    mixed = scenarios["mixed_fleet"]
+    mixed_carbon = scenarios["mixed_fleet_carbon"]
+    mixed_tco = scenarios["mixed_fleet_tco"]
 
     def pct_change(a: float, b: float) -> float:
         return (a - b) / b * 100 if b != 0 else 0.0
-
-    # Extract auto-resolved split point from the mixed fleet result
-    split_point = mixed.get("auto_resolved_split_point")
 
     return {
         "basis": basis_key,
@@ -462,17 +469,35 @@ def extract_compare_savings(basis_key: str, mode: str, util: float) -> dict[str,
         "nosmt_r": modeled_ratio(INPUT_BASES[basis_key]["ratios"][util]["nosmt"]),
         "smt_servers": baseline["num_servers"],
         "nosmt_servers": nosmt["num_servers"],
-        "mixed_servers": mixed["num_servers"],
         "nosmt_carbon_pct": pct_change(nosmt["total_carbon_kg"], baseline["total_carbon_kg"]),
         "nosmt_tco_pct": pct_change(nosmt["total_cost_usd"], baseline["total_cost_usd"]),
-        "mixed_carbon_pct": pct_change(mixed["total_carbon_kg"], baseline["total_carbon_kg"]),
-        "mixed_tco_pct": pct_change(mixed["total_cost_usd"], baseline["total_cost_usd"]),
         "nosmt_server_pct": pct_change(nosmt["num_servers"], baseline["num_servers"]),
-        "mixed_server_pct": pct_change(mixed["num_servers"], baseline["num_servers"]),
-        "auto_split_point": split_point,
-        # Per-pool server breakdown for the mixed fleet
-        "mixed_nosmt_pool_servers": mixed.get("sub_results", {}).get("nosmt_pool", {}).get("num_servers", 0),
-        "mixed_smt_pool_servers": mixed.get("sub_results", {}).get("smt_pool", {}).get("num_servers", 0),
+        "carbon_split_point": mixed_carbon.get("auto_resolved_split_point"),
+        "tco_split_point": mixed_tco.get("auto_resolved_split_point"),
+        "mixed_carbon_pct_at_carbon_split": pct_change(
+            mixed_carbon["total_carbon_kg"], baseline["total_carbon_kg"]
+        ),
+        "mixed_tco_pct_at_carbon_split": pct_change(
+            mixed_carbon["total_cost_usd"], baseline["total_cost_usd"]
+        ),
+        "mixed_server_pct_at_carbon_split": pct_change(
+            mixed_carbon["num_servers"], baseline["num_servers"]
+        ),
+        "mixed_carbon_servers": mixed_carbon["num_servers"],
+        "mixed_carbon_nosmt_pool_servers": mixed_carbon.get("sub_results", {}).get("nosmt_pool", {}).get("num_servers", 0),
+        "mixed_carbon_smt_pool_servers": mixed_carbon.get("sub_results", {}).get("smt_pool", {}).get("num_servers", 0),
+        "mixed_carbon_pct_at_tco_split": pct_change(
+            mixed_tco["total_carbon_kg"], baseline["total_carbon_kg"]
+        ),
+        "mixed_tco_pct_at_tco_split": pct_change(
+            mixed_tco["total_cost_usd"], baseline["total_cost_usd"]
+        ),
+        "mixed_server_pct_at_tco_split": pct_change(
+            mixed_tco["num_servers"], baseline["num_servers"]
+        ),
+        "mixed_tco_servers": mixed_tco["num_servers"],
+        "mixed_tco_nosmt_pool_servers": mixed_tco.get("sub_results", {}).get("nosmt_pool", {}).get("num_servers", 0),
+        "mixed_tco_smt_pool_servers": mixed_tco.get("sub_results", {}).get("smt_pool", {}).get("num_servers", 0),
     }
 
 
@@ -507,8 +532,9 @@ def write_summary_markdown(rows: list[dict[str, Any]]) -> None:
     lines = [
         "# Mixed Fleet Partitioning Summary",
         "",
-        "Three-way comparison at each utilization point: homogeneous SMT (baseline), "
-        "homogeneous no-SMT (geomean discount 0.75), and mixed fleet (auto-breakeven split).",
+        "Comparison at each utilization point: homogeneous SMT (baseline), "
+        "homogeneous no-SMT (geomean discount 0.75), mixed fleet with a carbon-selected split, "
+        "and mixed fleet with a TCO-selected split.",
         "",
         "% change values are relative to SMT homogeneous baseline.",
         "",
@@ -526,22 +552,29 @@ def write_summary_markdown(rows: list[dict[str, Any]]) -> None:
             ]
             lines.extend([f"### {basis['label']}", ""])
             lines.append(
-                "| Util % | SMT R | No-SMT R | Split Pt | "
-                "No-SMT Carbon | Mixed Carbon | No-SMT TCO | Mixed TCO | "
-                "No-SMT Servers | Mixed Servers |"
+                "| Util % | SMT R | No-SMT R | Carbon Split | TCO Split | "
+                "No-SMT Carbon | Mixed Carbon (C split) | Mixed Carbon (T split) | "
+                "No-SMT TCO | Mixed TCO (C split) | Mixed TCO (T split) | "
+                "No-SMT Servers | Mixed Servers (C) | Mixed Servers (T) |"
             )
-            lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+            lines.append(
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+            )
             for r in mode_rows:
                 lines.append(
                     f"| {r['avg_util_pct']} "
                     f"| {r['smt_r']:.2f} | {r['nosmt_r']:.2f} "
-                    f"| {fmt_float(r['auto_split_point'])} "
+                    f"| {fmt_float(r['carbon_split_point'])} "
+                    f"| {fmt_float(r['tco_split_point'])} "
                     f"| {fmt_pct(r['nosmt_carbon_pct'])} "
-                    f"| {fmt_pct(r['mixed_carbon_pct'])} "
+                    f"| {fmt_pct(r['mixed_carbon_pct_at_carbon_split'])} "
+                    f"| {fmt_pct(r['mixed_carbon_pct_at_tco_split'])} "
                     f"| {fmt_pct(r['nosmt_tco_pct'])} "
-                    f"| {fmt_pct(r['mixed_tco_pct'])} "
+                    f"| {fmt_pct(r['mixed_tco_pct_at_carbon_split'])} "
+                    f"| {fmt_pct(r['mixed_tco_pct_at_tco_split'])} "
                     f"| {fmt_pct(r['nosmt_server_pct'])} "
-                    f"| {fmt_pct(r['mixed_server_pct'])} |"
+                    f"| {fmt_pct(r['mixed_server_pct_at_carbon_split'])} "
+                    f"| {fmt_pct(r['mixed_server_pct_at_tco_split'])} |"
                 )
             lines.append("")
 
@@ -573,7 +606,12 @@ def plot_cross_utilization_summary(rows: list[dict[str, Any]]) -> None:
 
             for metric, metric_label in [("carbon", "Carbon"), ("tco", "TCO")]:
                 nosmt_vals = [r[f"nosmt_{metric}_pct"] for r in mode_rows]
-                mixed_vals = [r[f"mixed_{metric}_pct"] for r in mode_rows]
+                mixed_vals = [
+                    r["mixed_carbon_pct_at_carbon_split"]
+                    if metric == "carbon"
+                    else r["mixed_tco_pct_at_tco_split"]
+                    for r in mode_rows
+                ]
 
                 fig, ax = plt.subplots(figsize=(7, 4.5))
                 x = np.arange(len(utils))
@@ -644,7 +682,12 @@ def plot_cross_utilization_summary(rows: list[dict[str, Any]]) -> None:
                 basis_label = INPUT_BASES[basis_key]["label"]
 
                 nosmt_vals = [r[f"nosmt_{metric}_pct"] for r in basis_rows]
-                mixed_vals = [r[f"mixed_{metric}_pct"] for r in basis_rows]
+                mixed_vals = [
+                    r["mixed_carbon_pct_at_carbon_split"]
+                    if metric == "carbon"
+                    else r["mixed_tco_pct_at_tco_split"]
+                    for r in basis_rows
+                ]
 
                 offset_nosmt = -total_width / 2 + bar_width * (i * 2) + bar_width / 2
                 offset_mixed = -total_width / 2 + bar_width * (i * 2 + 1) + bar_width / 2
@@ -694,6 +737,11 @@ def plot_server_breakdown(rows: list[dict[str, Any]]) -> None:
     plots_dir = RESULTS_ROOT / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
 
+    metric_views = [
+        ("carbon", "mixed_carbon_nosmt_pool_servers", "mixed_carbon_smt_pool_servers", "mixed_carbon_servers"),
+        ("tco", "mixed_tco_nosmt_pool_servers", "mixed_tco_smt_pool_servers", "mixed_tco_servers"),
+    ]
+
     for basis_key in INPUT_BASES:
         for mode in RESOURCE_MODES:
             mode_rows = [
@@ -703,95 +751,89 @@ def plot_server_breakdown(rows: list[dict[str, Any]]) -> None:
             mode_rows.sort(key=lambda r: r["avg_util_pct"])
             utils = [r["avg_util_pct"] for r in mode_rows]
 
-            fig, ax = plt.subplots(figsize=(8, 5))
-            n_scenarios = 3  # SMT homo, no-SMT homo, mixed fleet
-            x = np.arange(len(utils))
-            total_width = 0.75
-            bar_width = total_width / n_scenarios
+            for metric, nosmt_key, smt_key, total_key in metric_views:
+                fig, ax = plt.subplots(figsize=(8, 5))
+                n_scenarios = 3  # SMT homo, no-SMT homo, mixed fleet
+                x = np.arange(len(utils))
+                total_width = 0.75
+                bar_width = total_width / n_scenarios
 
-            for r in mode_rows:
-                util_idx = utils.index(r["avg_util_pct"])
+                for r in mode_rows:
+                    util_idx = utils.index(r["avg_util_pct"])
 
-                # Bar 1: SMT Homogeneous (all SMT servers)
-                ax.bar(
-                    util_idx - bar_width,
-                    r["smt_servers"], bar_width,
-                    color="#5C6BC0", alpha=0.85,
-                    label="SMT Homogeneous" if util_idx == 0 else None,
-                )
-
-                # Bar 2: No-SMT Homogeneous (all no-SMT servers)
-                ax.bar(
-                    util_idx,
-                    r["nosmt_servers"], bar_width,
-                    color="#26A69A", alpha=0.85,
-                    label="No-SMT Homogeneous" if util_idx == 0 else None,
-                )
-
-                # Bar 3: Mixed Fleet (stacked: no-SMT pool + SMT pool)
-                nosmt_pool = r["mixed_nosmt_pool_servers"]
-                smt_pool = r["mixed_smt_pool_servers"]
-                ax.bar(
-                    util_idx + bar_width,
-                    nosmt_pool, bar_width,
-                    color="#FF7043", alpha=0.85,
-                    label="Mixed: No-SMT Pool" if util_idx == 0 else None,
-                )
-                ax.bar(
-                    util_idx + bar_width,
-                    smt_pool, bar_width,
-                    bottom=nosmt_pool,
-                    color="#FFA726", alpha=0.85,
-                    label="Mixed: SMT Pool" if util_idx == 0 else None,
-                )
-
-                # Add total count labels above each bar
-                for offset, count in [
-                    (-bar_width, r["smt_servers"]),
-                    (0, r["nosmt_servers"]),
-                    (bar_width, nosmt_pool + smt_pool),
-                ]:
-                    ax.text(
-                        util_idx + offset, count + 5,
-                        str(count), ha="center", va="bottom",
-                        fontsize=8, fontweight="bold",
+                    ax.bar(
+                        util_idx - bar_width,
+                        r["smt_servers"], bar_width,
+                        color="#5C6BC0", alpha=0.85,
+                        label="SMT Homogeneous" if util_idx == 0 else None,
                     )
 
-                # Add pool breakdown label inside mixed fleet bar
-                if nosmt_pool + smt_pool > 0:
-                    # Label no-SMT portion
-                    if nosmt_pool > 30:
+                    ax.bar(
+                        util_idx,
+                        r["nosmt_servers"], bar_width,
+                        color="#26A69A", alpha=0.85,
+                        label="No-SMT Homogeneous" if util_idx == 0 else None,
+                    )
+
+                    nosmt_pool = r[nosmt_key]
+                    smt_pool = r[smt_key]
+                    ax.bar(
+                        util_idx + bar_width,
+                        nosmt_pool, bar_width,
+                        color="#FF7043", alpha=0.85,
+                        label="Mixed: No-SMT Pool" if util_idx == 0 else None,
+                    )
+                    ax.bar(
+                        util_idx + bar_width,
+                        smt_pool, bar_width,
+                        bottom=nosmt_pool,
+                        color="#FFA726", alpha=0.85,
+                        label="Mixed: SMT Pool" if util_idx == 0 else None,
+                    )
+
+                    for offset, count in [
+                        (-bar_width, r["smt_servers"]),
+                        (0, r["nosmt_servers"]),
+                        (bar_width, r[total_key]),
+                    ]:
                         ax.text(
-                            util_idx + bar_width, nosmt_pool / 2,
-                            str(nosmt_pool), ha="center", va="center",
-                            fontsize=7, color="white", fontweight="bold",
-                        )
-                    # Label SMT portion
-                    if smt_pool > 30:
-                        ax.text(
-                            util_idx + bar_width, nosmt_pool + smt_pool / 2,
-                            str(smt_pool), ha="center", va="center",
-                            fontsize=7, color="white", fontweight="bold",
+                            util_idx + offset, count + 5,
+                            str(count), ha="center", va="bottom",
+                            fontsize=8, fontweight="bold",
                         )
 
-            ax.set_xlabel("Average Utilization (%)", fontsize=11)
-            ax.set_ylabel("Server Count", fontsize=11)
-            ax.set_xticks(x)
-            ax.set_xticklabels([f"{u}%" for u in utils])
-            ax.legend(loc="upper left", fontsize=8)
+                    if nosmt_pool + smt_pool > 0:
+                        if nosmt_pool > 30:
+                            ax.text(
+                                util_idx + bar_width, nosmt_pool / 2,
+                                str(nosmt_pool), ha="center", va="center",
+                                fontsize=7, color="white", fontweight="bold",
+                            )
+                        if smt_pool > 30:
+                            ax.text(
+                                util_idx + bar_width, nosmt_pool + smt_pool / 2,
+                                str(smt_pool), ha="center", va="center",
+                                fontsize=7, color="white", fontweight="bold",
+                            )
 
-            basis_label = INPUT_BASES[basis_key]["label"]
-            mode_label = RESOURCE_MODES[mode]["short_label"]
-            ax.set_title(
-                f"Server Breakdown: {basis_label}, {mode_label}",
-                fontsize=12, fontweight="bold",
-            )
+                ax.set_xlabel("Average Utilization (%)", fontsize=11)
+                ax.set_ylabel("Server Count", fontsize=11)
+                ax.set_xticks(x)
+                ax.set_xticklabels([f"{u}%" for u in utils])
+                ax.legend(loc="upper left", fontsize=8)
 
-            plt.tight_layout()
-            fname = f"{basis_key}_{mode}_server_breakdown.png"
-            fig.savefig(plots_dir / fname, dpi=150)
-            plt.close(fig)
-            print(f"  Saved {fname}")
+                basis_label = INPUT_BASES[basis_key]["label"]
+                mode_label = RESOURCE_MODES[mode]["short_label"]
+                ax.set_title(
+                    f"Server Breakdown ({metric.upper()} split): {basis_label}, {mode_label}",
+                    fontsize=12, fontweight="bold",
+                )
+
+                plt.tight_layout()
+                fname = f"{basis_key}_{mode}_server_breakdown_{metric}.png"
+                fig.savefig(plots_dir / fname, dpi=150)
+                plt.close(fig)
+                print(f"  Saved {fname}")
 
 
 def write_summary_files() -> None:
