@@ -1,0 +1,162 @@
+{
+  "name": "iso_lp_resource_scaling_util_20pct_compare",
+  "description": "At 20% utilization: Three-way comparison of homogeneous SMT (R=1.29), homogeneous no-SMT (R=2.79, discount=0.75), and mixed fleet (auto-breakeven split). Iso-LP basis, Purpose-Built resource model.",
+  "scenarios": {
+    "smt_homogeneous": {
+      "processor": "smt",
+      "oversub_ratio": 1.29,
+      "resource_scaling": {
+        "scale_with_vcpus": [
+          "memory",
+          "ssd"
+        ]
+      }
+    },
+    "nosmt_homogeneous": {
+      "processor": "nosmt_linear",
+      "oversub_ratio": 2.79,
+      "vcpu_demand_multiplier": 0.75,
+      "resource_scaling": {
+        "scale_with_vcpus": [
+          "memory",
+          "ssd"
+        ]
+      }
+    },
+    "smt_pool": {
+      "processor": "smt",
+      "oversub_ratio": 1.29,
+      "resource_scaling": {
+        "scale_with_vcpus": [
+          "memory",
+          "ssd"
+        ]
+      }
+    },
+    "nosmt_pool": {
+      "processor": "nosmt_linear",
+      "oversub_ratio": 2.79,
+      "vcpu_demand_multiplier": 1.0,
+      "resource_scaling": {
+        "scale_with_vcpus": [
+          "memory",
+          "ssd"
+        ]
+      }
+    },
+    "mixed_fleet": {
+      "composite": {
+        "nosmt_pool": {
+          "allocation": "below_split",
+          "parameter_effects": {
+            "vcpu_demand_multiplier": "weighted_average"
+          }
+        },
+        "smt_pool": {
+          "allocation": "above_split",
+          "parameter_effects": {
+            "vcpu_demand_multiplier": 1.0
+          }
+        }
+      },
+      "split_trait": "vcpu_discount",
+      "split_point": {
+        "auto_breakeven": {
+          "baseline_scenario": "smt_pool",
+          "target_scenario": "nosmt_pool",
+          "target_parameter": "vcpu_demand_multiplier",
+          "match_metric": "carbon",
+          "search_bounds": [
+            0.5,
+            1.0
+          ]
+        }
+      }
+    }
+  },
+  "workload": {
+    "total_vcpus": 100000,
+    "avg_util": 0.2,
+    "traits": {
+      "vcpu_discount": {
+        "type": "discrete",
+        "bins": [
+          {
+            "value": 0.5,
+            "vcpu_fraction": 0.0909
+          },
+          {
+            "value": 0.55,
+            "vcpu_fraction": 0.0909
+          },
+          {
+            "value": 0.6,
+            "vcpu_fraction": 0.0909
+          },
+          {
+            "value": 0.65,
+            "vcpu_fraction": 0.0909
+          },
+          {
+            "value": 0.7,
+            "vcpu_fraction": 0.0909
+          },
+          {
+            "value": 0.75,
+            "vcpu_fraction": 0.0909
+          },
+          {
+            "value": 0.8,
+            "vcpu_fraction": 0.0909
+          },
+          {
+            "value": 0.85,
+            "vcpu_fraction": 0.0909
+          },
+          {
+            "value": 0.9,
+            "vcpu_fraction": 0.0909
+          },
+          {
+            "value": 0.95,
+            "vcpu_fraction": 0.0909
+          },
+          {
+            "value": 1.0,
+            "vcpu_fraction": 0.0909
+          }
+        ]
+      }
+    }
+  },
+  "analysis": {
+    "type": "compare",
+    "baseline": "smt_homogeneous",
+    "scenarios": [
+      "smt_homogeneous",
+      "nosmt_homogeneous",
+      "mixed_fleet"
+    ],
+    "separate_metric_plots": true,
+    "show_plot_title": false,
+    "labels": {
+      "smt_homogeneous": "SMT\n(R=1.29)",
+      "nosmt_homogeneous": "No-SMT\n(R=2.79)",
+      "mixed_fleet": "Mixed Fleet\n(auto-breakeven)"
+    }
+  },
+  "processor": {
+    "smt": "configs/shared/genoa_processors.jsonc:genoa_smt",
+    "nosmt_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_linear",
+    "nosmt_smt_hw_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_smt_hw_linear"
+  },
+  "cost": {
+    "carbon_intensity_g_kwh": 175,
+    "electricity_cost_usd_kwh": 0.28,
+    "lifetime_years": 6
+  },
+  "power_curve": {
+    "type": "polynomial"
+  },
+  "output_dir": "./results/oversub_analysis/genoa/mixed_fleet/iso_lp/resource_scaling/util_20pct_compare"
+}

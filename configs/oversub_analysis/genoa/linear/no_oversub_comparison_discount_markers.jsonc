@@ -1,0 +1,70 @@
+{
+  "name": "no_oversub_comparison_discount_markers",
+  "description": "Like no_oversub_comparison (SMT vs no-SMT polynomial vs no-SMT linear at R=1.0), plus two extra bars: no-SMT linear at sweep markers geomean (m=0.75) and low (m=0.65) — pairs with no_oversub_vcpu_discount_sanity as a bar-chart sanity check.",
+  "scenarios": {
+    "smt_no_oversub": {
+      "processor": "smt",
+      "oversub_ratio": 1.0
+    },
+    "nosmt_no_oversub": {
+      "processor": "nosmt",
+      "oversub_ratio": 1.0
+    },
+    "nosmt_linear_no_oversub": {
+      "processor": "nosmt_linear",
+      "oversub_ratio": 1.0,
+      "vcpu_demand_multiplier": 1.0
+    },
+    "nosmt_linear_geomean": {
+      "processor": "nosmt_linear",
+      "oversub_ratio": 1.0,
+      "vcpu_demand_multiplier": 0.75
+    },
+    "nosmt_linear_low_discount": {
+      "processor": "nosmt_linear",
+      "oversub_ratio": 1.0,
+      "vcpu_demand_multiplier": 0.65
+    }
+  },
+  "workload": {
+    "total_vcpus": 100000,
+    "avg_util": 0.1
+  },
+  "analysis": {
+    "type": "compare",
+    "baseline": "smt_no_oversub",
+    "scenarios": [
+      "smt_no_oversub",
+      "nosmt_no_oversub",
+      "nosmt_linear_no_oversub",
+      "nosmt_linear_geomean",
+      "nosmt_linear_low_discount"
+    ],
+    "labels": {
+      "smt_no_oversub": "SMT\n(R=1.0)",
+      "nosmt_no_oversub": "No-SMT\n(R=1.0)",
+      "nosmt_linear_no_oversub": "No-SMT linear\n(R=1.0)",
+      "nosmt_linear_geomean": "No-SMT linear\ngeomean (m=0.75)",
+      "nosmt_linear_low_discount": "No-SMT linear\nlow (m=0.65)"
+    },
+    "show_plot_title": false,
+    "plot": {
+      "figsize": [18, 6],
+      "bar_width": 0.6
+    }
+  },
+  "processor": {
+    "smt": "configs/shared/genoa_processors.jsonc:genoa_smt",
+    "nosmt": "configs/shared/genoa_processors.jsonc:genoa_nosmt",
+    "nosmt_linear": "configs/shared/genoa_processors.jsonc:genoa_nosmt_linear"
+  },
+  "cost": {
+    "carbon_intensity_g_kwh": 175,
+    "electricity_cost_usd_kwh": 0.28,
+    "lifetime_years": 6
+  },
+  "power_curve": {
+    "type": "polynomial"
+  },
+  "output_dir": "./results/oversub_analysis/genoa/linear/no_oversub_comparison_discount_markers"
+}

@@ -166,6 +166,13 @@ smt-oversub-model/
         basis_comparison_*_savings_curve.jsonc
         basis_comparison_*_breakeven_curve.jsonc
         ...
+      mixed_fleet/                         # [04] Mixed fleet partitioning (generated)
+        iso_lp/
+          resource_scaling/
+          resource_constraints/
+        iso_physical_core/
+          resource_scaling/
+          resource_constraints/
   results/
     oversub_analysis/genoa/
       no_oversub_comparison/               # [01] Output
@@ -183,6 +190,12 @@ smt-oversub-model/
         resource_packing_constrained_vs_unconstrained/         # [03a] Output
       scheduling_input_sensitivity/      # [02c] Output + consolidated summaries
         ...
+      mixed_fleet/                         # [04] Output + summary plots
+        iso_lp/
+        iso_physical_core/
+        summary.csv
+        summary.md
+        plots/
   docs/
     analysis/
       SMT_VS_NOSMT_ANALYSIS.md            # THIS FILE (spine)
@@ -194,6 +207,7 @@ smt-oversub-model/
       02c_scheduling_input_basis_sensitivity.md  # Sub-doc 2c (side: input-basis sensitivity)
       03_vcpu_demand_discount.md           # Sub-doc 3
       03a_constrained_savings.md           # Sub-doc 3a (side: same-HW constraints)
+      04_mixed_fleet_partitioning.md       # Sub-doc 4
 ```
 
 ---
@@ -245,6 +259,16 @@ Layer 3: + vCPU Demand Discount (performance effect)
             |    How do the Layer 3 savings change if we disable
             |    SMT on existing hardware (same DIMMs/SSDs) instead
             |    of purpose-building no-SMT servers?
+            |
+            v
+Layer 4: + Mixed Fleet Partitioning (heterogeneous deployment)
+  Question: Instead of switching the entire fleet to no-SMT, can a
+            mixed fleet (SMT pool + no-SMT pool) with workload-aware
+            routing capture more savings than a homogeneous switch?
+  Answer:   Yes -- the mixed fleet saves an additional 2-8 pp on
+            carbon vs homogeneous no-SMT, with the largest gains
+            where SMT is most competitive (iso-physical-core, 30% util).
+            Uses updated iso-LP and iso-physical-core R values from [02c].
 ```
 
 Each layer's sub-document is self-contained but references prior layers for
@@ -265,6 +289,7 @@ if you already have the background.
 | 02c | [Scheduling Input Basis Sensitivity](02c_scheduling_input_basis_sensitivity.md) | How much do the conclusions change when the 8LP baseline is recalibrated and SMT is then given its full LP pool on the same physical cores? | Interpolated go-cpu VP/LP operating-point tables for iso-LP and iso-physical-core regimes |
 | 03 | [vCPU Demand Discount](03_vcpu_demand_discount.md) | How does no-SMT's higher per-vCPU performance shift the breakeven? | Peak performance ratios from 30-app benchmark suite |
 | 03a | [Constrained Savings](03a_constrained_savings.md) | How do the [03] savings change when reusing existing SMT hardware with SMT disabled? | Same HW resource constraints + vCPU demand ratios |
+| 04 | [Mixed Fleet Partitioning](04_mixed_fleet_partitioning.md) | Can a mixed SMT + no-SMT fleet with workload-aware routing outperform a homogeneous switch? | Updated iso-LP and iso-physical-core R values from [02c], vCPU discount distribution, composite scenario framework |
 
 ---
 

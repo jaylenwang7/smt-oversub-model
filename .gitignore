@@ -39,3 +39,4 @@ htmlcov/
 
 # Results output (gitignored by default - contains experiment outputs)
 results/
+.claude/

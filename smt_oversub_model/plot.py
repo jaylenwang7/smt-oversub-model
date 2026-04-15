@@ -379,13 +379,19 @@ def plot_scenarios(
 
         # Customize axes
         ax.set_xticks(x)
-        ax.set_xticklabels(labels, fontsize=style.annotation_fontsize)
+        tick_labels = ax.set_xticklabels(labels, fontsize=style.annotation_fontsize)
+        for tl in tick_labels:
+            tl.set_linespacing(0.95)
 
         # Add server count below x-axis labels if available
         if show_server_count:
-            # Extra offset when labels contain newlines (multi-line)
+            # Offset scales slightly when category labels wrap (keep tight to ticks)
             has_multiline = any('\n' in l for l in labels)
-            server_offset = -40 if has_multiline else -28
+            max_tick_lines = max((l.count('\n') + 1 for l in labels), default=1)
+            if has_multiline:
+                server_offset = -22 - 8 * max_tick_lines
+            else:
+                server_offset = -28
             for i, s in enumerate(scenarios):
                 servers = s.get('num_servers')
                 if servers is not None:
@@ -423,9 +429,15 @@ def plot_scenarios(
         mpatches.Patch(color=colors.get('embodied', COLORS['embodied']), label='Embodied (CapEx)'),
         mpatches.Patch(color=colors.get('operational', COLORS['operational']), label='Operational (OpEx)'),
     ]
-    fig.legend(handles=handles, loc='upper center', ncol=2,
-               bbox_to_anchor=(0.5, 0.01), frameon=False,
-               fontsize=style.legend_fontsize)
+    fig.legend(
+        handles=handles,
+        loc='upper center',
+        ncol=2,
+        bbox_to_anchor=(0.5, 0.055),
+        frameon=False,
+        fontsize=style.legend_fontsize,
+        borderaxespad=0.0,
+    )
 
     # Title (only if show_plot_title is True)
     if title and show_plot_title:
@@ -434,7 +446,13 @@ def plot_scenarios(
 
     # Adjust layout based on whether title is shown
     has_multiline = any('\n' in s.get('name', '') for s in scenarios)
-    bottom_margin = 0.06 if has_multiline else 0.02
+    has_servers = show_server_count and any(s.get('num_servers') is not None for s in scenarios)
+    if has_multiline and has_servers:
+        bottom_margin = 0.085
+    elif has_multiline:
+        bottom_margin = 0.06
+    else:
+        bottom_margin = 0.02
     if show_plot_title and title:
         plt.tight_layout(rect=[0, bottom_margin, 1, 0.94])
     else:
