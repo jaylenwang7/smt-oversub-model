@@ -139,9 +139,9 @@ results/oversub_analysis/genoa/no_oversub_comparison/
 
 | Scenario | Servers | vs Baseline |
 |---|---|---|
-| SMT (R=1.0) | 70 | -- |
-| No-SMT polynomial (R=1.0) | 139 | +98.6% |
-| No-SMT linear (R=1.0) | 139 | +98.6% |
+| SMT (R=1.0) | 695 | -- |
+| No-SMT polynomial (R=1.0) | 1,389 | +99.9% |
+| No-SMT linear (R=1.0) | 1,389 | +99.9% |
 
 No-SMT needs nearly **2x as many servers** because each server exposes only 72
 available pCPUs (vs 144 for SMT). The server count is identical for both no-SMT
@@ -151,35 +151,35 @@ power curve variants since it depends only on pCPU capacity.
 
 | Scenario | Embodied (kg) | Operational (kg) | Total (kg) | vs Baseline |
 |---|---|---|---|---|
-| SMT | 124,809 | 225,188 | 349,997 | -- |
-| No-SMT poly | 155,649 | 389,220 | 544,870 | **+55.7%** |
-| No-SMT linear | 155,649 | 359,497 | 515,147 | **+47.2%** |
+| SMT | 1,239,171 | 2,240,319 | 3,479,490 | -- |
+| No-SMT poly | 1,555,374 | 3,890,169 | 5,445,543 | **+56.5%** |
+| No-SMT linear | 1,555,374 | 3,592,967 | 5,148,342 | **+48.0%** |
 
 ### TCO
 
 | Scenario | Embodied ($) | Operational ($) | Total ($) | vs Baseline |
 |---|---|---|---|---|
-| SMT | 800,856 | 360,301 | 1,161,157 | -- |
-| No-SMT poly | 1,109,554 | 622,753 | 1,732,306 | **+49.2%** |
-| No-SMT linear | 1,109,554 | 575,196 | 1,684,749 | **+45.1%** |
+| SMT | 7,951,356 | 3,584,510 | 11,535,866 | -- |
+| No-SMT poly | 11,087,554 | 6,224,270 | 17,311,823 | **+50.1%** |
+| No-SMT linear | 11,087,554 | 5,748,748 | 16,836,301 | **+45.9%** |
 
 ### Decomposition
 
 Where does the penalty come from?
 
-**Embodied carbon**: +24.7% for no-SMT. Even though no-SMT servers have lower
+**Embodied carbon**: +25.5% for no-SMT. Even though no-SMT servers have lower
 per-server embodied carbon (1,120 kg vs 1,783 kg, due to fewer DIMMs/SSDs), the
 2x server count more than offsets this. The per-server fixed costs (CPU die, NIC,
 chassis, rack share) are identical and are simply duplicated across twice as many
 servers.
 
-**Operational carbon**: +72.8% (polynomial) or +59.6% (linear). This is the
+**Operational carbon**: +73.6% (polynomial) or +60.4% (linear). This is the
 larger driver. Two factors compound:
 1. 2x more servers, each consuming idle power even at low utilization
 2. Higher per-server utilization does not occur (both are at R=1.0, so utilization
    is similar), but the 2x server count directly doubles total energy
 
-**Power curve effect**: The linear no-SMT model saves ~30,000 kg CO2 (5.5 pp)
+**Power curve effect**: The linear no-SMT model saves ~297,000 kg CO2 (8.5 pp)
 compared to polynomial no-SMT. At 10% utilization this is a modest effect because
 utilization is low and both curves are similar near idle. The difference grows at
 higher utilization where the polynomial curve's sublinearity becomes more
@@ -199,10 +199,10 @@ SMT advantage comes from:
 | Chassis (per-server) | 255.5 kg | 255.5 kg | Same chassis |
 | Rack (per-server) | 51.9 kg | 51.9 kg | Same rack share |
 | **Total per server** | **1,783 kg** | **1,120 kg** | No-SMT is 37% less per server |
-| **Fleet total** | 70 x 1,783 = **124,809 kg** | 139 x 1,120 = **155,649 kg** | But 2x servers -> +24.7% |
+| **Fleet total** | 695 x 1,783 = **1,239,171 kg** | 1,389 x 1,120 = **1,555,374 kg** | But 2x servers -> +25.5% |
 
 The per-server fixed costs (CPU + NIC + chassis + rack = 457 kg) are identical
-and represent 26% of SMT per-server carbon but 41% of no-SMT per-server carbon.
+and represent 25.6% of SMT per-server carbon but 40.8% of no-SMT per-server carbon.
 This fixed-cost dilution is a key structural advantage of SMT: more threads per
 server means the fixed overhead is amortized over more vCPUs.
 
@@ -211,11 +211,11 @@ server means the fixed overhead is amortized over more vCPUs.
 Under the most favorable assumptions for SMT (no oversubscription, no vCPU demand
 discount, no scheduling constraints), disabling SMT incurs:
 
-- **+47% to +56% carbon penalty** (depending on power curve model)
-- **+45% to +49% TCO penalty**
+- **+48% to +57% carbon penalty** (depending on power curve model)
+- **+46% to +50% TCO penalty**
 - **~2x server count**
 
-This is the "bar" that no-SMT must clear through other mechanisms. The penalty is
+This is the baseline penalty against which the later mechanisms are evaluated. The penalty is
 large but not insurmountable -- subsequent analyses show that oversubscription
 headroom ([02](02_scheduling_constraints_oversub.md)) and vCPU demand compression
 ([03](03_vcpu_demand_discount.md)) can close and in some cases reverse this gap.
