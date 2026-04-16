@@ -3,9 +3,10 @@
 ## Question
 
 > Instead of converting the entire fleet to no-SMT (homogeneous switch), what if
-> you partition the fleet into an SMT pool and a no-SMT pool, routing workloads
-> using per-workload carbon or TCO breakeven thresholds? How much does this
-> mixed fleet strategy save, and how sensitive is it to the partition boundary?
+> a provider offers both SMT and no-SMT options and demand splits between them
+> according to per-workload carbon or TCO breakeven thresholds? How much does
+> this mixed fleet strategy save, and how sensitive is it to the partition
+> boundary?
 
 This analysis extends the homogeneous switch story from
 [03](03_vcpu_demand_discount.md) and [03a](03a_constrained_savings.md) by
@@ -45,10 +46,11 @@ instead of the legacy R values.
    fleet-average discount is 0.75, matching the geomean from
    [03](03_vcpu_demand_discount.md).
 
-5. **Binary routing by breakeven threshold**: Each workload is assigned to the
-   no-SMT pool or the SMT pool based on whether its vCPU discount is below or
-   above a **split point**. Workloads below the split (strong no-SMT advantage)
-   go to no-SMT; workloads above it (weak or no advantage) stay on SMT.
+5. **Binary self-selection proxy**: Each workload is modeled as choosing the
+   no-SMT option or the SMT option based on whether its vCPU discount is below
+   or above a **split point**. Workloads below the split (strong no-SMT
+   advantage) are treated as choosing no-SMT; workloads above it (weak or no
+   advantage) are treated as staying on SMT.
 
 6. **Metric-specific auto-computed split points**: The split point is set to a
    per-workload breakeven vCPU demand multiplier. For carbon reporting, the
@@ -72,12 +74,13 @@ instead of the legacy R values.
   modeling baseline. A right-skewed distribution (most workloads near 1.0)
   would reduce mixed fleet savings; a left-skewed one would increase them.
 
-- **Binary pool assignment**: Workloads are assigned to exactly one pool.
-  Real cloud schedulers might use softer routing or multi-tier pools.
+- **Binary option selection**: Workloads are assigned to exactly one option in
+  the model. Real providers might offer multiple no-SMT tiers or more complex
+  product menus.
 
-- **No scheduling interaction between pools**: Each pool is evaluated
-  independently. In practice, workload migration between pools adds
-  operational complexity and could affect utilization distributions.
+- **No interaction between pools after selection**: Each pool is evaluated
+  independently. The model does not represent operational churn from customers
+  switching instance types over time.
 
 - **Single discount per workload**: Each workload is assumed to have a fixed
   discount. In reality, the discount depends on the specific application, VM
@@ -123,13 +126,14 @@ split points.
 | Iso-Physical-Core | 0.898 | 0.871 | 0.770 | 0.946 | 0.926 | 0.797 |
 
 **Reading these**: A split point of `0.868` means workloads with
-`vcpu_demand_multiplier < 0.868` (i.e., discount > 13.2%) go to no-SMT, and
-those above stay on SMT. Higher split points route more demand to no-SMT.
+`vcpu_demand_multiplier < 0.868` (i.e., discount > 13.2%) are modeled as
+choosing no-SMT, and those above are modeled as staying on SMT. Higher split
+points send more demand to the no-SMT option.
 
 The TCO-selected split is usually higher than the carbon-selected split. That
 is because embodied cost weighs more heavily in TCO than embodied carbon weighs
-in total carbon, so TCO typically prefers routing slightly more demand to
-no-SMT before keeping workloads on SMT becomes worthwhile.
+in total carbon, so TCO typically prefers sending slightly more demand to the
+no-SMT option before keeping workloads on SMT becomes worthwhile.
 
 The iso-physical-core split points are lower than iso-LP because SMT is more
 competitive with its larger LP pool, so a stronger discount is needed before
@@ -168,6 +172,13 @@ At 20% utilization under the iso-LP purpose-built model:
 Each pool then determines its server count, power consumption, and carbon/cost
 independently.
 
+This should not be interpreted as a live cloud scheduler transparently moving a
+running VM between SMT and no-SMT hosts. The more realistic interpretation is a
+**user-visible choice** between SMT and no-SMT instance options. The model is
+trying to estimate the resulting steady-state split of demand between those
+options if users that benefit from no-SMT choose it and resize their requested
+vCPUs accordingly.
+
 ### Why the mixed fleet can outperform homogeneous no-SMT
 
 The homogeneous no-SMT scenario applies the fleet-average discount (0.75) to
@@ -181,7 +192,7 @@ disabling SMT. This means:
 
 2. The mixed fleet **avoids this mismatch** by keeping high-multiplier
    workloads on SMT (where they need the full vCPU count anyway) and only
-   routing genuinely-benefiting workloads to no-SMT.
+   treating genuinely-benefiting workloads as choosing no-SMT.
 
 3. This trades off fewer no-SMT servers (because only a subset of demand goes
    there) against more accurate demand modeling -- the no-SMT pool uses the
@@ -196,7 +207,7 @@ no-SMT. The exact gain depends on which metric sets the split point:
 1. A **carbon-selected split** is slightly more selective, because carbon puts
    more weight on operational savings from better demand matching.
 2. A **TCO-selected split** is usually slightly higher, because TCO places more
-   weight on embodied cost and therefore tolerates routing somewhat more demand
+   weight on embodied cost and therefore tolerates sending somewhat more demand
    to no-SMT before keeping it on SMT becomes beneficial.
 
 ## Model Configuration
@@ -280,7 +291,7 @@ higher than the carbon-selected split, so TCO keeps a smaller SMT pool than
 carbon does.
 
 The reason the TCO gain is still much smaller than the carbon gain is not that
-the routing is wrong; it is that the two metrics weight the same physical trade
+the selection rule is wrong; it is that the two metrics weight the same physical trade
 differently. Under iso-LP, no-SMT already has a strong oversubscription
 advantage, so homogeneous no-SMT is already very good. The mixed fleet mostly
 adds operational savings by preventing weak-discount workloads from taking the
@@ -360,8 +371,8 @@ The mixed fleet is transformative here because at 30% util with the
 iso-physical-core basis, SMT is quite competitive (R=1.11 vs no-SMT R=1.86).
 The homogeneous switch applies the fleet-average discount to all workloads,
 including those that barely benefit from no-SMT. The mixed fleet avoids this
-by only routing the strong-discount workloads (below multiplier `0.770` on
-carbon, `0.797` on TCO) to no-SMT.
+by only treating the strong-discount workloads (below multiplier `0.770` on
+carbon, `0.797` on TCO) as choosing no-SMT.
 
 At 10% utilization, the same-hardware memory constraint binds for both bases,
 producing identical results regardless of the scheduling-input basis.
@@ -369,7 +380,7 @@ producing identical results regardless of the scheduling-input basis.
 ### 3. Split-Point Sensitivity
 
 The sweep configs vary the split point from 0.50 to 1.01 to show how the
-mixed fleet savings change with different routing thresholds.
+mixed fleet savings change with different adoption thresholds.
 
 Key patterns:
 
@@ -434,7 +445,9 @@ show the fleet composition for each scenario as stacked bars. Key observations:
 The mixed fleet advantage is **largest where homogeneous no-SMT is weakest**:
 iso-physical-core at 30% utilization with same-hardware constraints. This is
 precisely the case where SMT is most competitive and the fleet-average discount
-is least representative of any individual workload.
+is least representative of any individual workload. That 30% point is best read
+as an upper-end stress case for the 10/20/30 sweep, not as the default
+fleet-wide planning point when average utilization is closer to ~10-11%.
 
 ## Interpretation
 
@@ -444,14 +457,14 @@ The mixed fleet strategy provides the most value when:
 
 1. **SMT is relatively competitive** (iso-physical-core basis, moderate
    utilization). In these cases, the breakeven discount is low (~0.77-0.85),
-   meaning only workloads with strong no-SMT gains should be routed there. A
+   meaning only workloads with strong no-SMT gains should be sent there. A
    homogeneous switch applies the fleet-average discount uniformly, which
    wastes the headroom on workloads that do not benefit.
 
 2. **The discount distribution is heterogeneous**. If all workloads had exactly
    the same discount, the mixed fleet would offer no advantage over
    homogeneous. The more spread the distribution, the more value in selective
-   routing.
+   uptake.
 
 3. **Utilization is moderate to high** (20-30%). At very low utilization (10%),
    the oversubscription headroom advantage is so large that even a
@@ -468,33 +481,41 @@ homogeneously, the mixed fleet adds only a small incremental gain.
 ### Practical implications
 
 1. **The mixed fleet is not a replacement for the homogeneous switch** -- it is
-   an incremental improvement that matters most at the margin. Under the
-   current model it adds roughly **2-8 pp on carbon** and **0.4-5.8 pp on
-   TCO**, with the largest gains in the cases where homogeneous no-SMT is
-   weakest.
+   an incremental improvement that matters most at the margin. For fleets
+   closer to ~10-11% average utilization, the 10% row is the most relevant
+   reference point. Under the **purpose-built scaling model**, the mixed fleet
+   adds **+2.8 pp on carbon** and **+1.1 pp on TCO** beyond homogeneous no-SMT
+   at 10% utilization (rising to **+3.9 pp** and **+2.1 pp** at 20%). Under
+   the **same-hardware constrained model**, the 10% increment is smaller:
+   **+1.4 pp on carbon** and **+0.4 pp on TCO**, because memory already limits
+   both pools. The much larger 30% same-hardware gain (**+7.7 pp carbon** and
+   **+5.8 pp TCO**) is an upper-end case where homogeneous no-SMT becomes
+   weak, not the default fleet-wide expectation.
 
-2. **Workload classification is the key enabler**. The mixed fleet requires
-   knowing (or estimating) each workload's vCPU discount to route it
-   correctly. This could come from:
-   - Historical performance profiling
-   - Application class heuristics (CPU-bound services tend to have higher
+2. **Estimating user uptake is the key enabler**. The mixed fleet requires
+   knowing (or estimating) which workloads would actually choose a no-SMT
+   option and how much they would resize. This could come from:
+   - Historical evidence from hardware-generation migrations with different
+     per-vCPU performance
+   - Application-class heuristics (CPU-bound services tend to have higher
      discounts than memory-bound ones)
-   - Online measurement and migration
+   - Pricing or product experiments for a no-SMT offering
 
 3. **The split point is not highly sensitive** near the optimum. The sweep plots
    show broad plateaus of near-optimal savings across a range of split points
-   (typically 0.70-0.95). This means the routing does not need to be precise
-   to capture most of the benefit.
+   (typically 0.70-0.95). This means the uptake threshold does not need to be
+   precise to capture most of the benefit.
 
 ### Assumptions that could change these results
 
 | Assumption | If changed to... | Effect on mixed fleet value |
 |---|---|---|
-| Uniform discount distribution | Right-skewed (most workloads near 1.0) | Increases value -- more workloads correctly stay on SMT |
+| Uniform discount distribution | Right-skewed (most workloads near 1.0) | Increases value -- more workloads rationally stay on SMT |
 | Uniform discount distribution | Left-skewed (most workloads near 0.5) | Decreases value -- homogeneous switch already captures most savings |
 | Go-CPU calibration for R values | Cross-application R values | Changes the breakeven split point; likely varies by application |
 | Fleet-average discount 0.75 | Higher (0.85, conservative) | Reduces homogeneous savings more than mixed fleet, increasing the gap |
 | Fleet-average discount 0.75 | Lower (0.65, aggressive) | Increases homogeneous savings, reducing the mixed fleet advantage |
+| Provider pricing pass-through | Weaker/no discount on no-SMT offering | Reduces customer uptake of no-SMT, shrinking the mixed-fleet value |
 | Binary pool assignment | Continuous per-workload optimization | Further improves on mixed fleet (upper bound) |
 
 ### Connection to the analysis progression
@@ -530,9 +551,10 @@ and a manually-created config set. This document supersedes that analysis with:
 2. **More than two pools**: A real fleet could have multiple tiers (e.g.,
    high-discount no-SMT, moderate-discount no-SMT at lower R, SMT).
 
-3. **Dynamic routing and migration costs**: The model evaluates steady-state
-   fleet composition without accounting for the operational cost of
-   classifying workloads and migrating VMs between pools.
+3. **Customer adoption and resizing behavior**: The model assumes that
+   workloads with sufficient benefit choose the no-SMT option and resize in
+   line with the measured performance gain. It does not model how providers
+   would price such an option or how users would actually respond.
 
 4. **Non-uniform utilization across pools**: Both pools use the same average
    utilization. In practice, the no-SMT pool might see different utilization

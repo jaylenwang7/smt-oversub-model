@@ -2,10 +2,11 @@
 """Generate and optionally run mixed-fleet (SMT + no-SMT) partitioning analyses.
 
 This script generates analyses that explore what happens when a fleet is split
-into two pools — one running SMT, one running no-SMT — and workloads are routed
-based on their vCPU demand discount.  The split point is determined by the
-per-workload breakeven: workloads whose discount is below the breakeven go to
-the no-SMT pool, those above stay on SMT.
+into two pools — one running SMT, one running no-SMT — and demand is modeled as
+self-selecting between them based on vCPU demand discount. The split point is
+determined by the per-workload breakeven: workloads whose discount is below the
+breakeven are treated as choosing no-SMT, while those above are treated as
+staying on SMT.
 
 It uses the updated scheduling-input R values from the iso-LP and
 iso-physical-core experimental calibrations (see 02c).
