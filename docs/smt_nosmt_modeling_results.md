@@ -10,6 +10,8 @@ This document presents the current results of a fleet-level carbon and TCO model
 
 > On the same physical CPU, does disabling SMT and leveraging the resulting higher safe oversubscription headroom produce net carbon and cost savings at fleet scale?
 
+**Scope note**: This document does **not** address the separate question of whether a processor designed from the ground up without SMT would have lower carbon or cost than an SMT-capable processor. That comparison would likely require a processor-design study, not just an SMT-on vs SMT-off study. Existing no-SMT processors can be compared in the market, but they usually differ from SMT processors in other ways besides SMT itself (for example ISA, core design, cache and memory system, frequency targets, etc.). A hypothetical "same processor, but redesigned for no-SMT" would also require specifying what changes the redesign makes with the saved area and power budget: more cores, different caches, higher frequency, lower package power, or some combination. That kind of redesign is possible and processors without SMT have existed in industry, so people have already considered such questions. For now, the analysis here takes the narrower same-CPU comparison: **on the same CPU**, what changes when SMT is enabled versus disabled?
+
 **Headline result (homogeneous no-SMT fleet, purpose-built servers):**
 
 | Average VM utilization | Carbon savings vs SMT | TCO savings vs SMT |
@@ -27,7 +29,7 @@ These numbers assume:
 
 The document builds up to these numbers layer by layer, starting from a ~50% no-SMT *penalty* when neither oversubscription nor demand compression is considered, and progressively introducing the mechanisms that reverse the picture.
 
-**A note on the contention threshold**: All oversubscription ratios in this analysis are derived from a single contention threshold --- a maximum 1% CPU wait time (steal time) --- measured for one application (go-cpu) on one machine (c6620). This threshold implicitly sets the "maximum safe oversubscription ratio" at each utilization level. For instance, at 10% average VM utilization, no-SMT can safely oversubscribe at ~5.6x, while at 20% utilization the safe ratio drops to ~2.8x. The threshold is a first-order simplification: in practice, the safe oversubscription limit depends on application behavior, hardware configuration, and scheduling policy, and would need to be calibrated per deployment. Evaluating the sensitivity of the results to different threshold values is noted as future work in Section 14.
+**A note on the contention threshold**: All oversubscription ratios in this analysis are derived from a single contention threshold --- a maximum 1% CPU wait time (steal time) --- measured for one application (go-cpu) on one machine (c6620). This threshold implicitly sets the "maximum safe oversubscription ratio" at each utilization level. For instance, at 10% average VM utilization, no-SMT can safely oversubscribe at ~5.6x, while at 20% utilization the safe ratio drops to ~2.8x. This is a single-threshold approximation: it treats one observed steal-time cutoff as the fleet-wide limit at each utilization level. In practice, the safe oversubscription limit depends on application behavior, hardware configuration, and scheduling policy, and would need to be calibrated per deployment. Evaluating the sensitivity of the results to different threshold values is noted as future work in Section 14.
 
 ---
 
@@ -78,7 +80,7 @@ The following terms are used consistently throughout this document.
 | **Oversubscription ratio (R)** | The ratio of allocated vCPUs to available pCPUs per server: `R = total_allocated_vCPUs / available_pCPUs`. R = 1.0 means no oversubscription (each vCPU maps to one pCPU); R = 2.0 means two vCPUs share each pCPU on average. |
 | **Steal time / CPU wait time (CWT)** | The fraction of time a vCPU is runnable (wants to execute) but cannot because its LP is occupied by another vCPU. This is the primary quality-of-service metric for oversubscription safety. |
 | **Contention threshold** | The maximum tolerable steal time, set at **1%** in this analysis. At a given average VM utilization, the contention threshold determines the maximum safe oversubscription ratio: the highest R at which steal time remains below 1%. See Section 5 for details. |
-| **VP constraints / Core scheduling** | A Linux kernel security feature that prevents tasks with different security domains from co-executing on sibling SMT threads of the same physical core. In cloud deployments, this is the operationally realistic minimum: vCPUs from different VMs must not share a physical core's SMT threads simultaneously. This constraint limits SMT oversubscription by creating scheduling conflicts. It is irrelevant for no-SMT, where each LP is the sole thread on its core. |
+| **VP constraints / Core scheduling** | A Linux kernel security feature that prevents tasks with different security domains from co-executing on sibling SMT threads of the same physical core. In this analysis, it is the assumed cross-VM isolation rule: vCPUs from different VMs must not share a physical core's SMT threads simultaneously. This constraint limits SMT oversubscription by creating scheduling conflicts. It is irrelevant for no-SMT, where each LP is the sole thread on its core. |
 
 ### 3.3 Model Concepts
 
@@ -91,8 +93,8 @@ The following terms are used consistently throughout this document.
 | **Embodied carbon** | CO2-equivalent emissions from manufacturing the server hardware (CPU die, memory DIMMs, SSDs, NIC, chassis, rack). Scales with the number of servers in the fleet. |
 | **Operational carbon** | CO2-equivalent emissions from electricity consumed during the server's operational lifetime. Scales with per-server power draw and fleet size. |
 | **TCO (Total Cost of Ownership)** | Capital cost (server purchase) plus operational cost (electricity) over the server's lifetime. |
-| **Iso-LP comparison** | Holding the LP pool size fixed between SMT and no-SMT (e.g., both get 8 LPs). Useful for isolating the pure scheduling constraint cost, but not physically realistic since disabling SMT on the same hardware halves the LPs. |
-| **Iso-physical-core comparison** | Holding physical cores fixed and letting SMT expose its full LP count (e.g., 8 physical cores yield 16 LPs with SMT and 8 LPs without). This is the operationally realistic "disable SMT on the same CPU" scenario. |
+| **Iso-LP comparison** | Holding the LP pool size fixed between SMT and no-SMT (e.g., both get 8 LPs). Useful for isolating the pure scheduling constraint cost, but it is not the same-hardware comparison studied here: on the same 8 physical cores, SMT would expose 16 LPs and no-SMT would expose 8 LPs. |
+| **Iso-physical-core comparison** | Holding physical cores fixed and letting SMT expose its full LP count (e.g., 8 physical cores yield 16 LPs with SMT and 8 LPs without). This is the same-hardware comparison studied in the rest of the document. |
 
 ---
 
@@ -273,11 +275,11 @@ The relationship between utilization and safe R is highly nonlinear. At low util
 
 ### 5.2 Experimental Setup
 
-The oversubscription ratios are derived from experiments on a CloudLab c6620 server using a synthetic CPU-bound benchmark (go-cpu). The experimental setup uses 8-vCPU/8-core VMs in a client-server configuration with realistic load generation. VMs are pinned to specific LP sets to create controlled oversubscription scenarios.
+The oversubscription ratios are derived from experiments on a CloudLab c6620 server using a synthetic CPU-bound benchmark (go-cpu). The experimental setup uses 8-vCPU/8-core VMs in a client-server configuration with load generated to hit fixed utilization targets. VMs are pinned to specific LP sets to create controlled oversubscription scenarios.
 
 Two scheduling regimes are compared:
 
-- **SMT with VP constraints**: Core scheduling is enabled with topology-aware VP constraints --- the cloud-realistic minimum. vCPUs from different VMs cannot co-execute on sibling SMT threads.
+- **SMT with VP constraints**: Core scheduling is enabled with topology-aware VP constraints --- the minimum cross-VM isolation rule assumed in this analysis. vCPUs from different VMs cannot co-execute on sibling SMT threads.
 - **No-SMT**: Core scheduling is irrelevant since each LP is the sole thread on its core.
 
 The experiments measure the VP/LP rate (effectively the oversubscription ratio) at which steal time crosses the 1% threshold, for each regime at fixed per-VM utilization targets (5%, 10%, 20%, 30%).
@@ -286,11 +288,11 @@ The experiments measure the VP/LP rate (effectively the oversubscription ratio) 
 
 The experiments support two distinct comparisons, corresponding to two different questions:
 
-**Iso-LP (8 LPs for both)**: Both SMT and no-SMT are given the same LP pool size (8 LPs from 4 physical cores under SMT, 8 LPs from 8 physical cores under no-SMT). This isolates the pure cost of VP scheduling constraints but is not physically realistic, since disabling SMT on 8 physical cores would yield 8 LPs while keeping SMT enabled would yield 16 LPs.
+**Iso-LP (8 LPs for both)**: Both SMT and no-SMT are given the same LP pool size (8 LPs from 4 physical cores under SMT, 8 LPs from 8 physical cores under no-SMT). This isolates the pure cost of VP scheduling constraints, but it is not the same-hardware comparison studied in the rest of this document: on the same 8 physical cores, SMT would expose 16 LPs and no-SMT would expose 8 LPs.
 
-**Iso-physical-core (same 8 physical cores, SMT gets 16 LPs)**: SMT exposes its full 16 LPs from 8 physical cores, while no-SMT exposes 8 LPs from the same cores. This is the operationally realistic "disable SMT on the same CPU" scenario. SMT benefits from a larger LP pool, which gives it more scheduling flexibility and higher safe R values.
+**Iso-physical-core (same 8 physical cores, SMT gets 16 LPs)**: SMT exposes its full 16 LPs from 8 physical cores, while no-SMT exposes 8 LPs from the same cores. This is the same-hardware "disable SMT on the same CPU" scenario studied in the main results. SMT benefits from a larger LP pool, which gives it more scheduling flexibility and higher safe R values.
 
-The oversubscription ratios used in this analysis (and the resulting headline numbers) come from the **iso-physical-core** calibration, as it represents the realistic deployment decision:
+The oversubscription ratios used in this analysis (and the resulting headline numbers) come from the **iso-physical-core** calibration, because it matches the same-CPU decision being modeled here:
 
 | Avg VM utilization | SMT safe R (16 LP) | No-SMT safe R (8 LP) |
 |---|---|---|
@@ -304,9 +306,9 @@ These values are interpolated from the experimental steal-time curves at the 1% 
 
 The contention threshold approach introduces several assumptions that should be noted:
 
-**Assumption 1: Single application calibration.** The safe R values are derived from go-cpu, a synthetic CPU-bound benchmark. Go-cpu sits near the cross-application median in terms of steal-time behavior (its no-SMT/VP ratio of 2.16x is close to the 13-application mean of 2.34x), but different applications produce different steal-time curves at the same utilization. For example, across 13 tested applications at 10% utilization under the iso-physical-core regime, the no-SMT safe VP/LP rate ranges from 3.0x (Elasticsearch, worst case) to 7.9x (PgBench, best case), with go-cpu at 5.6x. The model uses a single application's calibration as representative; a production deployment would encounter a mix of applications.
+**Assumption 1: Single application calibration.** The safe R values are derived from go-cpu, a synthetic CPU-bound benchmark. Go-cpu sits near the cross-application median in terms of steal-time behavior (its no-SMT/VP ratio of 2.16x is close to the 13-application mean of 2.34x), but different applications produce different steal-time curves at the same utilization. For example, across 13 tested applications at 10% utilization under the iso-physical-core regime, the no-SMT safe VP/LP rate ranges from 3.0x (Elasticsearch, worst case) to 7.9x (PgBench, best case), with go-cpu at 5.6x. The model uses go-cpu as the single calibration point for all workloads, even though a production deployment would encounter a mix of applications.
 
-**Assumption 2: Single machine.** The experiments are conducted on a c6620 server (Intel Xeon, 28 physical cores). The qualitative findings (VP constraints limit SMT oversubscription, no-SMT permits higher R) are expected to generalize, but the exact R values at each utilization level will differ on other hardware --- particularly on the Genoa 80-core platform used in the model, which has a significantly larger LP pool. Larger LP pools generally permit higher safe oversubscription due to statistical smoothing effects (law of large numbers applied to VP demand).
+**Assumption 2: Single machine.** The experiments are conducted on a c6620 server (Intel Xeon, 28 physical cores). The model assumes the direction of the effect persists on other hardware --- VP constraints still limit SMT oversubscription and no-SMT still permits higher R --- but the exact R values at each utilization level will differ on other hardware, particularly on the Genoa 80-core platform used in the model, which has a significantly larger LP pool. Larger LP pools generally permit higher safe oversubscription due to statistical smoothing effects (law of large numbers applied to VP demand).
 
 **Assumption 3: Fixed 1% threshold.** The analyses assume a single, fixed steal-time threshold of 1%. In practice, different cloud providers or service tiers might use different thresholds. A more permissive threshold (e.g., 5%) would allow higher R values for both configurations but would disproportionately benefit SMT (which loses more headroom to VP constraints); a stricter threshold (e.g., 0.1%) would reduce both. The sensitivity of the results to different threshold values has not yet been evaluated. **[Future work]**: Evaluate how the headline savings change across a range of contention thresholds.
 
@@ -402,7 +404,7 @@ These tables show four distinct effects:
 3. **The purpose-built scaling model falls further below ideal.** The removed servers eliminate fixed components, but memory and SSD are partly redistributed to the surviving servers rather than eliminated.
 4. **The same-hardware constrained model has both an initial overhead and a hard ceiling.** At `R = 1.0`, it is worse than the no-SMT baseline because the full SMT-sized memory and SSD footprint remains installed. At higher requested `R`, savings improve, but once memory caps effective `R` at `2.67`, requesting `R = 3.0` or `R = 5.0` produces the same result.
 
-The most important practical comparison is the one used later in the main narrative: at `R = 2.0`, ideal carbon savings would be `-50.0%`, but the **purpose-built scaling model** yields only `-23.8%`. At `R = 5.0`, ideal carbon savings would be `-80.0%`, but the purpose-built result is `-45.1%` and the same-hardware constrained result plateaus at `-34.9%`.
+The comparison used later in the main narrative is: at `R = 2.0`, ideal carbon savings would be `-50.0%`, but the **purpose-built scaling model** yields only `-23.8%`. At `R = 5.0`, ideal carbon savings would be `-80.0%`, but the purpose-built result is `-45.1%` and the same-hardware constrained result plateaus at `-34.9%`.
 
 ### 7.3 Default Resource Model Used in the Main Results
 
@@ -411,7 +413,7 @@ From this point onward, the main layer-by-layer narrative uses the **purpose-bui
 - It is the appropriate model for the main deployment question: what would a real no-SMT fleet look like if the servers were provisioned for that fleet?
 - It preserves per-vCPU memory and storage entitlement instead of silently assuming that denser CPU packing comes "for free."
 - It makes the later savings numbers harder to obtain than in the fixed-resource model, which is the conservative choice for the main story.
-- It cleanly separates the **same-hardware constrained model** into its own transition-focused analysis in Section 11.
+- It treats the **same-hardware constrained model** separately in Section 11 as a transition-focused analysis.
 
 > **Takeaway**: Once `R > 1.0`, oversubscription savings are not equal to server reduction. The later sections therefore use the **purpose-built scaling model** as the default and treat the fixed-resource and same-hardware constrained models as explicit comparison cases.
 
@@ -491,7 +493,7 @@ Vendor and academic sources report SMT throughput gains in the range of +10% to 
 
 [^smt-survey]: A survey of vendor and academic SMT performance claims finds: Intel reports ~10--30% depending on source and workload class ([Intel HT Technical Guide](https://read.seas.harvard.edu/cs161/2022/pdf/intel-hyperthreading.pdf); [Intel Technology Journal 2002](https://www.intel.com/content/dam/www/public/us/en/documents/research/2002-vol06-iss-1-intel-technology-journal.pdf); [Intel virtualization white paper](https://www.intel.com/content/dam/www/public/us/en/documents/white-papers/virtualization-xeon-core-count-impacts-performance-paper.pdf)); AMD claims "often 30--50%" for EPYC ([AMD EPYC SMT Technology Brief](https://www.amd.com/content/dam/amd/en/documents/epyc-business-docs/white-papers/amd-epyc-smt-technology-brief.pdf)); IBM reports 25--40% throughput and 30--60% instructions executed for SMT-2/SMT-4 ([IBM support documentation](https://www.ibm.com/support/pages/power-cpu-memory-affinity-3-scheduling-processes-smt-and-virtual-processors); [IBM AIX docs](https://www.ibm.com/docs/en/aix/7.2.0?topic=concepts-simultaneous-multithreading)). Academic measurements on SPEC CPU2000 multiprogrammed pairs show average speedups of ~1.20x with ranges from 0.86x to 1.58x ([Tuck & Tullsen 2003](https://users.cs.utah.edu/~rajeev/cs7810/papers/tuck03.pdf); [Bulpin 2004](https://pharm.ece.wisc.edu/wddd/2004/06_bulpin.pdf)). HPC applications show 0--22% gains depending on workload ([Saini et al. 2011](https://www.nas.nasa.gov/assets/nas/pdf/papers/saini_s_impact_hyper_threading_2011.pdf)).
 
-To connect vendor-style claims to this model's framing, a first-order translation is needed. If enabling SMT on `N` physical cores raises aggregate throughput by a factor `(1 + g)`, and linear core scaling holds for no-SMT, then the implied no-SMT/SMT ratio at fixed vCPU count is approximately `2 / (1 + g)`, giving `M = (1 + g) / 2`.
+To connect vendor-style claims to this model's framing, an approximate translation is needed. If enabling SMT on `N` physical cores raises aggregate throughput by a factor `(1 + g)`, and linear core scaling holds for no-SMT, then the implied no-SMT/SMT ratio at fixed vCPU count is approximately `2 / (1 + g)`, giving `M = (1 + g) / 2`.
 
 | Reported SMT gain (same core budget) | Implied M | Implied vCPU discount |
 |---|---|---|
@@ -514,7 +516,7 @@ The experimental geomean of 1.36x (`M = 0.735`, ~26.5% discount) back-translates
 
 ### 9.3 Three Reference Points for Sensitivity
 
-The analysis evaluates savings at three reference points that bracket the range of realistic vCPU discounts:
+The analysis evaluates savings at three reference points for vCPU-demand sensitivity:
 
 | Label | M | Implied perf ratio | Rationale |
 |---|---|---|---|
@@ -532,7 +534,7 @@ Before presenting the full results, a sanity check confirms that the demand disc
 | 0.75 | 25% | +11.0% | +9.5% |
 | 0.65 | 35% | -3.8% | -5.1% |
 
-At the geomean discount, no-SMT is still 11% *worse* on carbon without oversubscription. No-SMT only breaks even in this setting at a ~32% discount (`M = 0.676`), which is stronger than the geomean. This confirms that the projected savings in the headline results require *both* the oversubscription headroom advantage (Section 8) and the demand discount --- neither alone is sufficient at realistic geomean values.
+At the geomean discount, no-SMT is still 11% *worse* on carbon without oversubscription. No-SMT only breaks even in this setting at a ~32% discount (`M = 0.676`), which is stronger than the geomean. This confirms that the projected savings in the headline results require *both* the oversubscription headroom advantage (Section 8) and the demand discount --- neither alone is sufficient at the geomean value used here.
 
 ### 9.5 Headline Results Under the Default Resource Model
 
@@ -606,9 +608,9 @@ Under the **purpose-built scaling model** at `M = 0.75`:
 | Iso-physical-core | **-11.8%** | **-10.1%** | **-9.0%** |
 | Difference (pp) | +1.8 | +5.1 | +6.4 |
 
-The iso-physical-core basis reduces no-SMT savings by 2--6 percentage points relative to iso-LP, with the largest impact at 30% utilization where the LP pool size matters most. At 10% utilization, the difference is modest because both calibrations already permit aggressive oversubscription.
+The iso-physical-core basis reduces no-SMT savings by 2--6 percentage points relative to iso-LP, with the largest impact at 30% utilization where the LP pool size matters most. At 10% utilization, the difference is only 1.8 pp because both calibrations already permit aggressive oversubscription.
 
-The iso-LP calibration makes no-SMT look **more favorable** because it does not give SMT credit for its larger LP pool. The iso-physical-core calibration is the **more operationally realistic** basis for the "should we disable SMT?" decision on the same physical hardware. This is why the headline numbers in Section 1 use the iso-physical-core basis.
+The iso-LP calibration makes no-SMT look **more favorable** because it does not give SMT credit for its larger LP pool. The iso-physical-core calibration is the same-hardware basis for the "should we disable SMT?" decision on one physical CPU. This is why the headline numbers in Section 1 use the iso-physical-core basis.
 
 ### 10.3 Updated vs Legacy Calibration
 
@@ -619,7 +621,7 @@ A separate sensitivity check shows that updating the 8LP baseline itself (from o
 
 The updated calibration is consistently more favorable to no-SMT than the original. The iso-physical-core correction partially recovers SMT's position but does not restore the earlier, less favorable picture.
 
-> **Takeaway**: The scheduling-input basis is a first-order model choice. Updated 8LP calibration alone can flip the raw baseline from a no-SMT penalty to a no-SMT savings case, while the iso-physical-core correction gives a real but incomplete share of that gain back to SMT. **The headline numbers use the most SMT-favorable realistic basis** (iso-physical-core).
+> **Takeaway**: The scheduling-input basis is a major model choice. Updated 8LP calibration alone can flip the raw baseline from a no-SMT penalty to a no-SMT savings case, while the iso-physical-core correction gives a real but incomplete share of that gain back to SMT. **The headline numbers use the most SMT-favorable same-hardware basis considered here** (iso-physical-core).
 
 ---
 
@@ -700,7 +702,7 @@ The mixed fleet advantage is **largest where homogeneous no-SMT is weakest**: at
 
 The mechanism is the same in both metrics: the homogeneous approach applies the fleet-average discount (M = 0.75) to every workload, including workloads with little true no-SMT benefit. The mixed fleet avoids that mismatch by treating only the stronger-benefit workloads as choosing no-SMT. The gain is largest when SMT remains competitive enough that this selectivity matters.
 
-The carbon-selected and TCO-selected splits are close, but not identical. The TCO-selected split is usually slightly higher, meaning TCO prefers sending a bit more demand to no-SMT. Even so, the cross-metric sensitivity is small: for example, in the purpose-built case at 20% utilization, the mixed fleet saves 14.0% on carbon at the carbon-selected split and 13.7% on carbon at the TCO-selected split. This indicates that the mixed-fleet conclusion is not fragile to the exact split choice.
+The carbon-selected and TCO-selected splits are close, but not identical. The TCO-selected split is usually slightly higher, meaning TCO prefers sending a bit more demand to no-SMT. Even so, the cross-metric sensitivity is small: for example, in the purpose-built case at 20% utilization, the mixed fleet saves 14.0% on carbon at the carbon-selected split and 13.7% on carbon at the TCO-selected split, a difference of 0.3 pp.
 
 The split point is also not highly sensitive near the optimum. Sweep analyses show broad plateaus of near-optimal savings across a range of split points (typically 0.70--0.95), meaning the exact adoption threshold does not need to be precisely calibrated to capture most of the benefit.
 
@@ -708,7 +710,7 @@ The split point is also not highly sensitive near the optimum. Sweep analyses sh
 
 This section should **not** be interpreted as a live cloud scheduler that transparently places or migrates an existing VM between SMT and no-SMT hosts. That is not the scenario being modeled here.
 
-That kind of dynamic assignment is not realistic for two reasons. First, the difference would not be transparent to the user: SMT vs no-SMT changes the effective per-vCPU performance and can often be inferred from inside the VM through observed throughput, latency, and visible CPU topology or behavior. Second, the current model assumes that some workloads would also reduce requested vCPU count when choosing no-SMT. A cloud provider generally cannot infer the correct resize automatically for the user or silently apply it.
+That kind of dynamic assignment is not the scenario modeled here and would be hard to offer transparently for two reasons. First, the difference would not be transparent to the user: SMT vs no-SMT changes the effective per-vCPU performance and can often be inferred from inside the VM through observed throughput, latency, and visible CPU topology or behavior. Second, the current model assumes that some workloads would also reduce requested vCPU count when choosing no-SMT. A cloud provider generally cannot infer the correct resize automatically for the user or silently apply it.
 
 The intended interpretation is instead a **user-visible choice model**. The provider offers both SMT and no-SMT options, potentially with a no-SMT price discount that reflects the provider-side TCO or carbon benefit. The mixed-fleet model then asks: if workloads that see an aggregate benefit from no-SMT choose that option, and if those workloads scale their requested vCPUs according to the modeled performance gain, what steady-state split of fleet demand results?
 
@@ -771,7 +773,7 @@ The key open question is whether the per-vCPU performance advantage of no-SMT tr
 2. Did those teams scale VM count (or VM size) proportionally to the performance change? If not, what fraction of the performance gain was captured as demand reduction vs absorbed as headroom?
 3. Are there workload categories where proportional scaling is a better or worse approximation?
 
-**[Requires validation]**: Connecting peak throughput measurements to fleet-level vCPU demand changes is the most critical open assumption. The modeling results are robust in the sense that they can be re-evaluated at any demand multiplier, but the "headline number" depends on which M is considered realistic.
+**[Requires validation]**: Connecting peak throughput measurements to fleet-level vCPU demand changes is the most critical open assumption. The model can be re-evaluated at any demand multiplier, but the headline savings change directly with the chosen `M`.
 
 ### 14.2 Contention Threshold Sensitivity
 
