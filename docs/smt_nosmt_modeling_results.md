@@ -767,7 +767,7 @@ This work connects to the broader oversubscription research question: developing
 
 ## Appendix A: Results Summary Tables
 
-This appendix is a compact reference for the main numerical results already discussed in the body of the document. It does not introduce a new analysis layer or new assumptions. Instead, it puts the headline homogeneous, breakeven, and mixed-fleet results in one place so the exact values used in Sections 9, 11, and 12 can be compared quickly.
+This appendix is a compact reference for the main numerical results already discussed above. It does not introduce anything new. Instead, it puts the headline homogeneous, breakeven, and mixed-fleet results in one place so the exact values can be compared quickly.
 
 ### A.1 Homogeneous No-SMT Savings (Carbon % vs SMT Baseline)
 
