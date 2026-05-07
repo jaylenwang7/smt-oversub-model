@@ -207,6 +207,7 @@ smt-oversub-model/
       02c_scheduling_input_basis_sensitivity.md  # Sub-doc 2c (side: input-basis sensitivity)
       03_vcpu_demand_discount.md           # Sub-doc 3
       03a_constrained_savings.md           # Sub-doc 3a (side: same-HW constraints)
+      03b_oversub_ratio_breakeven.md       # Sub-doc 3b (side: R-ratio breakeven)
       04_mixed_fleet_partitioning.md       # Sub-doc 4
 ```
 
@@ -260,6 +261,11 @@ Layer 3: + vCPU Demand Discount (performance effect)
             |    SMT on existing hardware (same DIMMs/SSDs) instead
             |    of purpose-building no-SMT servers?
             |
+            +--- Side: R-Ratio Breakeven (03b)
+            |    Is there a universal breakeven ratio between SMT and
+            |    no-SMT oversubscription rates? No -- absolute R values
+            |    affect utilization, power, and resource scaling.
+            |
             v
 Layer 4: + Mixed Fleet Partitioning (heterogeneous deployment)
   Question: Instead of switching the entire fleet to no-SMT, can a
@@ -289,6 +295,7 @@ if you already have the background.
 | 02c | [Scheduling Input Basis Sensitivity](02c_scheduling_input_basis_sensitivity.md) | How much do the conclusions change when the 8LP baseline is recalibrated and SMT is then given its full LP pool on the same physical cores? | Interpolated go-cpu VP/LP operating-point tables for iso-LP and iso-physical-core regimes |
 | 03 | [vCPU Demand Discount](03_vcpu_demand_discount.md) | How does no-SMT's higher per-vCPU performance shift the breakeven? | Peak performance ratios from 30-app benchmark suite |
 | 03a | [Constrained Savings](03a_constrained_savings.md) | How do the [03] savings change when reusing existing SMT hardware with SMT disabled? | Same HW resource constraints + vCPU demand ratios |
+| 03b | [Oversubscription Ratio Breakeven](03b_oversub_ratio_breakeven.md) | Is the SMT:no-SMT oversubscription breakeven a universal ratio, or does it depend on absolute R magnitudes? | [02c] 10% iso-physical-core R values, resource scaling, geomean demand multiplier |
 | 04 | [Mixed Fleet Partitioning](04_mixed_fleet_partitioning.md) | Can a mixed SMT + no-SMT fleet with workload-aware routing outperform a homogeneous switch? | Updated iso-LP and iso-physical-core R values from [02c], vCPU discount distribution, composite scenario framework |
 
 ---
